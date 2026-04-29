@@ -1,0 +1,8 @@
+.git
+.gitignore
+Xray-core
+neutrino.db
+neutrino.db-shm
+neutrino.db-wal
+data
+

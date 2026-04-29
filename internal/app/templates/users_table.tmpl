@@ -1,0 +1,128 @@
+{{define "user-actions"}}
+<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-1.5">
+  <a href="/users/{{.ID}}"
+     class="{{chipButtonClass "blue" true}}">详情</a>
+  <button class="{{chipButtonClass "slate" true}}"
+          hx-post="/users/{{.ID}}/links" hx-target="#users-data" hx-swap="innerHTML">新链接</button>
+  {{if eq .Status "active"}}
+  <button class="{{chipButtonClass "amber" true}}"
+          hx-post="/users/{{.ID}}/disable" hx-target="#users-data" hx-swap="innerHTML">禁用</button>
+  {{else}}
+  <button class="{{chipButtonClass "emerald" true}}"
+          hx-post="/users/{{.ID}}/enable" hx-target="#users-data" hx-swap="innerHTML">启用</button>
+  {{end}}
+  <button class="{{chipButtonClass "red" true}}"
+          hx-confirm="确认删除该用户及其数据？" hx-post="/users/{{.ID}}/delete" hx-target="#users-data" hx-swap="innerHTML">删除</button>
+</div>
+{{end}}
+
+{{define "users_table.tmpl"}}
+<div class="space-y-4 md:hidden">
+  {{range .}}
+  <article class="{{surfaceCardClass}}">
+    <div class="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-4">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <h3 class="truncate text-sm font-semibold text-slate-900">{{.Username}}</h3>
+          <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold {{statusClass .Status}}">{{.Status}}</span>
+        </div>
+        <div class="mt-1 text-xs text-slate-400">#{{.ID}} · {{if .ActiveLink}}{{.ActiveLink.Protocol}}{{else}}no-link{{end}}</div>
+      </div>
+      <div class="{{softStatClass "px-2.5 py-1 text-right"}}">
+        <div class="text-[11px] text-slate-400">在线</div>
+        <div class="text-xs font-semibold text-slate-800">{{.OnlineSessionCount}} / {{.OnlineDeviceCount}}</div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 gap-3 px-4 py-4 text-xs sm:grid-cols-2">
+      <div class="{{softStatClass ""}}">
+        <div class="text-slate-400">套餐</div>
+        <div class="mt-1 font-medium text-slate-800">{{fmtBytesGB .MonthlyLimitBytes}}</div>
+        <div class="mt-1 text-slate-500">{{.PlanDays}}天 · {{.QuotaCycle}}</div>
+      </div>
+      <div class="{{softStatClass ""}}">
+        <div class="text-slate-400">到期 / IP 上限</div>
+        <div class="mt-1 font-medium text-slate-800">{{fmtTime .ExpiresAt}}</div>
+        <div class="mt-1 text-slate-500">IP 上限 ×{{.DeviceLimit}}</div>
+      </div>
+      <div class="{{softStatClass ""}}">
+        <div class="text-slate-400">窗口流量</div>
+        <div class="mt-1 text-slate-600">入 {{fmtBytesGB .WindowInboundBytes}}</div>
+        <div class="text-slate-600">出 {{fmtBytesGB .WindowOutboundBytes}}</div>
+        <div class="mt-1 font-semibold text-slate-800">计 {{fmtBytesGB .WindowEffective}}</div>
+      </div>
+      <div class="{{softStatClass ""}}">
+        <div class="text-slate-400">总流量</div>
+        <div class="mt-1 text-slate-600">入 {{fmtBytesGB .InboundBytes}}</div>
+        <div class="text-slate-600">出 {{fmtBytesGB .OutboundBytes}}</div>
+        <div class="mt-1 text-slate-500">{{fmtMaybeTime .LastSeenAt}}</div>
+      </div>
+    </div>
+
+    <div class="border-t border-slate-100 px-4 py-3">
+      {{template "user-actions" .}}
+    </div>
+  </article>
+  {{else}}
+  <div class="{{emptyStateClass}}">暂无用户</div>
+  {{end}}
+</div>
+
+<div class="hidden {{surfaceCardClass}} md:block">
+  <div class="overflow-x-auto">
+    <table class="w-full min-w-[1100px] text-sm">
+      <thead>
+        <tr class="border-b border-slate-200 bg-slate-50">
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">ID</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">用户名</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">状态</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">套餐与到期</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">在线</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">窗口流量</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">总流量</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .}}
+        <tr class="border-b border-slate-100 transition-colors hover:bg-slate-50/50">
+          <td class="px-3 py-3 text-xs font-mono text-slate-500 sm:px-4">{{.ID}}</td>
+          <td class="px-3 py-3 sm:px-4">
+            <div class="font-medium text-slate-900">{{.Username}}</div>
+            <div class="mt-0.5 text-xs text-slate-400">{{if .ActiveLink}}{{.ActiveLink.Protocol}}{{else}}no-link{{end}}</div>
+          </td>
+          <td class="px-3 py-3 sm:px-4">
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold {{statusClass .Status}}">{{.Status}}</span>
+          </td>
+          <td class="px-3 py-3 text-xs leading-relaxed text-slate-600 sm:px-4">
+            <div>限额 <span class="font-medium text-slate-800">{{fmtBytesGB .MonthlyLimitBytes}}</span></div>
+            <div>{{.PlanDays}}天 · {{.QuotaCycle}} · IP 上限×{{.DeviceLimit}}</div>
+            <div class="text-slate-400">到期 {{fmtTime .ExpiresAt}}</div>
+          </td>
+          <td class="px-3 py-3 text-xs leading-relaxed text-slate-600 sm:px-4">
+            <div>会话 <span class="font-medium text-slate-800">{{.OnlineSessionCount}}</span></div>
+            <div>不同 IP <span class="font-medium text-slate-800">{{.OnlineDeviceCount}}</span></div>
+          </td>
+          <td class="px-3 py-3 text-xs leading-relaxed text-slate-600 sm:px-4">
+            <div>入 {{fmtBytesGB .WindowInboundBytes}}</div>
+            <div>出 {{fmtBytesGB .WindowOutboundBytes}}</div>
+            <div class="font-medium text-slate-800">计 {{fmtBytesGB .WindowEffective}}</div>
+          </td>
+          <td class="px-3 py-3 text-xs leading-relaxed text-slate-600 sm:px-4">
+            <div>入 {{fmtBytesGB .InboundBytes}} / 出 {{fmtBytesGB .OutboundBytes}}</div>
+            <div class="text-slate-400">{{fmtMaybeTime .LastSeenAt}}</div>
+          </td>
+          <td class="px-3 py-3 sm:px-4">
+            {{template "user-actions" .}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="8" class="px-3 py-12 text-center text-sm text-slate-400 sm:px-4">暂无用户</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

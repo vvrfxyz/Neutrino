@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  {{template "head"}}
+  <meta name="csrf-token" content="{{.CSRFToken}}">
+  <title>Neutrino</title>
+  <style>[x-cloak]{display:none!important}</style>
+</head>
+<body class="bg-slate-50 font-sans text-slate-900 antialiased" x-data="appShell()" x-init="init()">
+  <div x-show="sidebarOpen && isMobile" x-transition.opacity class="fixed inset-0 z-30 bg-slate-950/40 lg:hidden" x-on:click="closeSidebar()" x-cloak></div>
+  {{template "sidebar" .}}
+
+  <div class="min-h-screen transition-[padding-left] duration-300" x-bind:style="mainStyle()">
+    <header class="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/75">
+      <div class="{{if eq .ActivePage "ops"}}max-w-[2100px]{{else}}max-w-7xl{{end}} mx-auto flex items-center justify-between gap-3 px-4 py-2.5 sm:px-6 sm:py-3">
+        <div class="flex min-w-0 items-center gap-3">
+          <button type="button"
+                  x-on:click="toggleSidebar()"
+                  class="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition-colors hover:bg-slate-50 hover:text-slate-900">
+            <i data-lucide="menu" class="h-4 w-4" x-show="isMobile && !sidebarOpen" x-cloak></i>
+            <i data-lucide="x" class="h-4 w-4" x-show="isMobile && sidebarOpen" x-cloak></i>
+            <i data-lucide="panel-left-open" class="h-4 w-4" x-show="!isMobile && sidebarCollapsed" x-cloak></i>
+            <i data-lucide="panel-left-close" class="h-4 w-4" x-show="!isMobile && !sidebarCollapsed" x-cloak></i>
+          </button>
+          <div class="min-w-0">
+            <div class="flex min-w-0 items-center gap-2">
+              <div class="truncate text-sm font-semibold text-slate-900">
+                {{if eq .ActivePage "users"}}用户管理{{else if eq .ActivePage "nodes"}}节点管理{{else if eq .ActivePage "traffic"}}流量分析{{else if eq .ActivePage "enforcements"}}执行记录{{else if eq .ActivePage "ops"}}运维监控{{else}}Neutrino{{end}}
+              </div>
+              <span class="inline-flex flex-shrink-0 items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 sm:hidden">当前页面</span>
+            </div>
+            <div class="mt-0.5 flex items-center gap-2">
+              <div class="hidden text-xs text-slate-500 sm:block">Neutrino 管理后台</div>
+              <div class="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-500 sm:hidden">
+                <i data-lucide="circle-user" class="h-3 w-3 flex-shrink-0"></i>
+                <span class="truncate">{{.CurrentAdmin}}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="hidden max-w-[240px] min-w-0 items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-500 sm:flex">
+          <i data-lucide="circle-user" class="h-3.5 w-3.5 flex-shrink-0"></i>
+          <span class="truncate font-medium text-slate-700">{{.CurrentAdmin}}</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="min-h-[calc(100vh-65px)]">
+      <div class="{{if eq .ActivePage "ops"}}max-w-[2100px]{{else}}max-w-7xl{{end}} mx-auto px-4 py-4 sm:px-6 sm:py-6">
+        {{template "page-content" .}}
+      </div>
+    </main>
+  </div>
+
+  {{template "toast"}}
+  {{template "confirm-dialog"}}
+
+  <script>
+    function appShell() {
+      return {
+        isMobile: false,
+        sidebarOpen: false,
+        sidebarCollapsed: false,
+        mediaQuery: null,
+        init() {
+          const saved = window.localStorage.getItem('neutrino:sidebar:collapsed');
+          this.sidebarCollapsed = saved === '1';
+          this.mediaQuery = window.matchMedia('(max-width: 1023px)');
+          const syncViewport = () => {
+            this.isMobile = this.mediaQuery.matches;
+            if (!this.isMobile) {
+              this.sidebarOpen = false;
+            }
+            this.syncBodyLock();
+            this.$nextTick(() => lucide.createIcons());
+          };
+          syncViewport();
+          if (this.mediaQuery.addEventListener) {
+            this.mediaQuery.addEventListener('change', syncViewport);
+          } else {
+            this.mediaQuery.addListener(syncViewport);
+          }
+          this.$watch('sidebarCollapsed', value => {
+            window.localStorage.setItem('neutrino:sidebar:collapsed', value ? '1' : '0');
+          });
+          this.$watch('sidebarOpen', () => this.syncBodyLock());
+          this.$watch('isMobile', () => this.syncBodyLock());
+        },
+        syncBodyLock() {
+          document.body.classList.toggle('overflow-hidden', this.isMobile && this.sidebarOpen);
+        },
+        toggleSidebar() {
+          if (this.isMobile) {
+            this.sidebarOpen = !this.sidebarOpen;
+          } else {
+            this.sidebarCollapsed = !this.sidebarCollapsed;
+          }
+          this.$nextTick(() => lucide.createIcons());
+        },
+        closeSidebar() {
+          if (!this.isMobile) return;
+          this.sidebarOpen = false;
+          this.$nextTick(() => lucide.createIcons());
+        },
+        sidebarExpanded() {
+          return this.isMobile || !this.sidebarCollapsed;
+        },
+        mainStyle() {
+          if (this.isMobile) return '';
+          return `padding-left: ${this.sidebarCollapsed ? '5rem' : '14rem'};`;
+        },
+        sidebarStyle() {
+          return `width: ${this.isMobile ? '17rem' : (this.sidebarCollapsed ? '5rem' : '14rem')};`;
+        },
+      }
+    }
+
+    // Initialize Lucide icons after page load
+    document.addEventListener('DOMContentLoaded', () => lucide.createIcons());
+    // Re-initialize after HTMX swaps
+    document.addEventListener('htmx:afterSwap', () => lucide.createIcons());
+
+    document.body.addEventListener('htmx:configRequest', (e) => {
+      const meta = document.querySelector('meta[name=csrf-token]');
+      if (meta && meta.content) {
+        e.detail.headers['X-CSRF-Token'] = meta.content;
+      }
+    });
+  </script>
+
+  <!-- Shared clipboard helper -->
+  <script>
+    function copyToClipboard(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          window.dispatchEvent(new CustomEvent('toast', { detail: { level: 'success', message: '已复制' }}));
+        }).catch(() => fallbackCopy(text));
+      } else {
+        fallbackCopy(text);
+      }
+    }
+    function fallbackCopy(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); window.dispatchEvent(new CustomEvent('toast', { detail: { level: 'success', message: '已复制' }})); }
+      catch(e) { window.prompt('复制:', text); }
+      document.body.removeChild(ta);
+    }
+  </script>
+</body>
+</html>

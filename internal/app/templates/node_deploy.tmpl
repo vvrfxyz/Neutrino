@@ -1,0 +1,536 @@
+{{define "page-content"}}
+{{$d := .Content}}
+<!-- Breadcrumb -->
+<div class="mb-6">
+  <nav class="mb-2 flex flex-wrap items-center gap-1.5 text-sm text-slate-500">
+    <a href="/nodes" class="hover:text-blue-600 transition-colors">节点管理</a>
+    <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+    <span class="text-slate-900 font-medium">{{$d.NodeName}}</span>
+    <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+    <span class="text-slate-900 font-medium">部署配置</span>
+  </nav>
+  <h1 class="text-2xl font-bold text-slate-900">节点部署配置</h1>
+</div>
+
+<div x-data="nodeDeployPage()">
+  <!-- Node info card -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4">
+    <div class="mb-3 flex flex-wrap items-center gap-2 sm:gap-3">
+      <h2 class="text-base font-semibold text-slate-900">{{$d.NodeName}}</h2>
+      <span class="text-xs font-mono text-slate-400">id={{$d.NodeID}}</span>
+      {{if $d.Node.Enabled}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">enabled</span>
+      {{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-700">disabled</span>{{end}}
+      {{if $d.Node.Managed}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">托管</span>{{end}}
+    </div>
+
+    <div class="grid grid-cols-1 gap-x-8 gap-y-2 text-sm md:grid-cols-2">
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400 w-28 flex-shrink-0">Xray Version</span>
+        <span class="font-mono text-xs">desired=<code class="bg-slate-100 px-1 py-0.5 rounded">{{if $d.Node.DesiredXrayVersion}}{{shortHash $d.Node.DesiredXrayVersion}}{{else}}-{{end}}</code> applied=<code class="bg-slate-100 px-1 py-0.5 rounded">{{if $d.Node.AppliedXrayVersion}}{{shortHash $d.Node.AppliedXrayVersion}}{{else}}-{{end}}</code></span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400 w-28 flex-shrink-0">Users Version</span>
+        <span class="font-mono text-xs">desired=<code class="bg-slate-100 px-1 py-0.5 rounded">{{if $d.Node.DesiredUsersVersion}}{{shortHash $d.Node.DesiredUsersVersion}}{{else}}-{{end}}</code> applied=<code class="bg-slate-100 px-1 py-0.5 rounded">{{if $d.Node.AppliedUsersVersion}}{{shortHash $d.Node.AppliedUsersVersion}}{{else}}-{{end}}</code></span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400 w-28 flex-shrink-0">Panel URL</span>
+        {{if $d.PanelPublicURL}}<code class="text-xs font-mono">{{$d.PanelPublicURL}}</code>{{else}}<span class="text-slate-400 text-xs">未配置</span>{{end}}
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400 w-28 flex-shrink-0">Panel mTLS</span>
+        {{if $d.PanelMTLSURL}}<code class="text-xs font-mono">{{$d.PanelMTLSURL}}</code>{{else}}<span class="text-slate-400 text-xs">未配置</span>{{end}}
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400 w-28 flex-shrink-0">Deploy Dir</span>
+        <code class="text-xs font-mono">{{$d.DeployDir}}</code>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400 w-28 flex-shrink-0">Images</span>
+        <code class="text-xs font-mono">{{$d.XrayImage}}</code> / <code class="text-xs font-mono">{{$d.AgentImage}}</code>
+      </div>
+      <div class="flex items-center gap-2 md:col-span-2">
+        <span class="text-slate-400 w-28 flex-shrink-0">Enroll Code</span>
+        {{if $d.EnrollCode}}<code class="text-xs font-mono">{{$d.EnrollCode}}</code><span class="text-xs text-slate-400 ml-2">有效期至 {{$d.EnrollExpires}}，used_at={{$d.EnrollUsedAt}}</span>
+        {{else}}<span class="text-slate-400 text-xs">未生成</span>{{end}}
+      </div>
+    </div>
+
+    {{if $d.Node.LastJobErrorKind}}
+    <div class="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-sm">
+      <span class="font-medium text-amber-800">最近错误：</span>
+      <code class="text-xs bg-amber-100 px-1.5 py-0.5 rounded text-amber-700">{{$d.Node.LastJobErrorKind}}</code>
+      <span class="text-amber-600 text-xs ml-1">at {{fmtMaybeTime $d.Node.LastJobErrorAt}}</span>
+      {{if $d.Node.LastError}}<div class="mt-1 text-xs text-amber-700 break-all">{{$d.Node.LastError}}</div>{{end}}
+    </div>
+    {{end}}
+
+    <div class="mt-3 pt-3 border-t border-slate-100">
+      <form action="/nodes/{{$d.NodeID}}/deploy" method="post" class="inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors">
+          <i data-lucide="key-round" class="w-3.5 h-3.5"></i>
+          {{if $d.EnrollCode}}重新生成 Enroll Code{{else}}生成 Enroll Code{{end}}
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {{if and $d.Node.Managed (eq $d.Node.CoreType "xray")}}
+  <!-- Managed Xray -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4" id="managed-xray">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-slate-900">托管 Xray</h2>
+        <p class="text-xs text-slate-400 mt-0.5">面板下发 desired state，node-agent 在节点本机执行已配置的 reload argv</p>
+      </div>
+    </div>
+
+    <div x-show="managedMsg" x-transition class="mb-3 text-sm" :class="managedMsgErr ? 'text-red-600' : 'text-slate-600'" x-text="managedMsg"></div>
+
+    <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+      <button type="button" x-on:click="deployXray()"
+              class="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">
+        <i data-lucide="rocket" class="w-3.5 h-3.5"></i> Deploy Xray
+      </button>
+      <button type="button" x-on:click="refreshJobs()"
+              class="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-200 sm:w-auto">
+        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 刷新 Jobs
+      </button>
+    </div>
+    <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+      <input type="text" x-model="rollbackBackup" placeholder="backup_name (可选)"
+             class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-72">
+      <button type="button" x-on:click="rollbackXray()"
+              class="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-600 sm:w-auto">
+        <i data-lucide="undo-2" class="w-3.5 h-3.5"></i> Rollback
+      </button>
+    </div>
+  </div>
+
+  <!-- Managed Xray Config -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4" id="managed-xray-config">
+    <h2 class="text-base font-semibold text-slate-900 mb-3">托管配置（node.extra_json）</h2>
+    {{if $d.ExtraJSONError}}
+    <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-2.5 text-sm text-red-700">当前 extra_json 解析失败：{{$d.ExtraJSONError}}</div>
+    {{else}}
+    <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+      <label class="flex items-center gap-2 text-sm text-slate-700">
+        <input type="checkbox" x-model="rollbackOnFail" x-on:change="refreshPreview()" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500">
+        <span class="text-xs font-medium">rollback_on_fail</span>
+      </label>
+      <span class="text-xs text-slate-400">开启后，agent 侧 apply 失败会尝试自动回滚到上一次备份。</span>
+    </div>
+
+    <div class="overflow-x-auto border border-slate-200 rounded-lg">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-200 bg-slate-50">
+            <th class="px-4 py-2 text-left text-xs font-semibold text-slate-500" style="width:35%">key</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-slate-500">value</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-slate-500 w-20">action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(v, idx) in varsRows" :key="idx">
+            <tr class="border-b border-slate-100">
+              <td class="px-4 py-1.5"><input type="text" x-model="v.key" x-on:input="refreshPreview()" class="w-full px-2 py-1 rounded border border-slate-200 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"></td>
+              <td class="px-4 py-1.5"><input type="text" x-model="v.val" x-on:input="refreshPreview()" class="w-full px-2 py-1 rounded border border-slate-200 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"></td>
+              <td class="px-4 py-1.5">
+                <button type="button" x-on:click="varsRows.splice(idx, 1); refreshPreview()"
+                        class="px-2 py-0.5 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded transition-colors">删除</button>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="varsRows.length === 0">
+            <td colspan="3" class="px-4 py-4 text-center text-xs text-slate-400">暂无变量（将使用节点本机环境变量作为默认值）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+      <button type="button" x-on:click="addVar()"
+              class="inline-flex w-full items-center justify-center gap-1 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-200 sm:w-auto">
+        <i data-lucide="plus" class="w-3 h-3"></i> 添加变量
+      </button>
+      <button type="button" x-on:click="saveExtra()"
+              class="inline-flex w-full items-center justify-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">
+        <i data-lucide="save" class="w-3 h-3"></i> 保存配置
+      </button>
+      <button type="button" x-on:click="clearExtra()"
+              class="inline-flex w-full items-center justify-center gap-1 rounded-md bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 sm:w-auto">
+        <i data-lucide="trash-2" class="w-3 h-3"></i> 清空 extra_json
+      </button>
+    </div>
+
+    <details class="mt-3">
+      <summary class="text-xs text-slate-400 cursor-pointer hover:text-slate-600">预览 extra_json</summary>
+      <textarea readonly x-text="extraPreview"
+                class="mt-1 w-full min-h-[120px] px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 font-mono text-xs text-slate-600 focus:outline-none"></textarea>
+    </details>
+    {{end}}
+  </div>
+  {{end}}
+
+  <!-- Deploy Script -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4">
+    <h2 class="text-base font-semibold text-slate-900 mb-3">部署脚本</h2>
+    {{if $d.ConfigError}}
+    <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-2.5 text-sm text-red-700">{{$d.ConfigError}}</div>
+    <p class="text-xs text-slate-500 mt-2">修复上述配置后再生成部署脚本，避免节点使用占位地址或错误 mTLS 终端。</p>
+    {{else if not $d.EnrollCode}}
+    <p class="text-xs text-slate-500">当前没有可用的 Enroll Code，先生成新的 Enroll Code，再复制部署脚本到节点执行。</p>
+    {{else}}
+    <p class="text-xs text-slate-500 mb-3">把下面脚本在节点服务器执行即可（首次会写入 <code class="bg-slate-100 px-1 py-0.5 rounded">.env</code> 和 <code class="bg-slate-100 px-1 py-0.5 rounded">docker-compose.yml</code> 并启动容器；若机器缺少 <code class="bg-slate-100 px-1 py-0.5 rounded">Docker</code> 或 <code class="bg-slate-100 px-1 py-0.5 rounded">docker compose</code>，脚本会先自动安装；若文件已存在则不会覆盖）。</p>
+    <div class="mb-3">
+      <button type="button" x-on:click="copyScript()"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors">
+        <i data-lucide="clipboard-copy" class="w-3.5 h-3.5"></i> 一键复制脚本
+      </button>
+    </div>
+    <pre class="bg-slate-900 text-slate-200 rounded-lg p-4 overflow-auto text-xs leading-relaxed font-mono"><code id="deploy-script">{{$d.Script}}</code></pre>
+    {{end}}
+  </div>
+
+  <!-- mTLS Certificates -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-4" id="certs">
+    <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-900">mTLS 证书（allowlist/pin）</h2>
+        <p class="text-xs text-slate-400 mt-0.5">节点证书必须在 panel 侧 allowlist 才能写入 usage/claim jobs；吊销后该节点会立刻 403。</p>
+      </div>
+      <form action="/api/v1/nodes/{{$d.NodeID}}/cert/revoke" method="post" class="inline"
+            x-on:submit.prevent="revokeAllCerts($event)">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="revoke_all" value="1">
+        <button type="submit"
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-md transition-colors">
+          <i data-lucide="shield-off" class="w-3.5 h-3.5"></i> 吊销全部证书
+        </button>
+      </form>
+    </div>
+    <div class="space-y-3 p-4 md:hidden">
+      {{range $d.CertPins}}
+      <article class="{{softStatClass "border border-slate-200 px-4 py-4 text-xs"}}">
+        <div class="space-y-3">
+          <div>
+            <div class="text-slate-400">cert_sha256</div>
+            <div class="mt-1 font-mono text-slate-700">{{shortHash .CertSHA256}}</div>
+          </div>
+          <div>
+            <div class="text-slate-400">spki_sha256</div>
+            <div class="mt-1 font-mono text-slate-700">{{shortHash .SPKISHA256}}</div>
+          </div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <div class="text-slate-400">not_after</div>
+              <div class="mt-1 text-slate-600">{{fmtTime .NotAfter}}</div>
+            </div>
+            <div>
+              <div class="text-slate-400">last_seen</div>
+              <div class="mt-1 text-slate-600">{{fmtMaybeTime .LastSeenAt}}</div>
+            </div>
+          </div>
+          <div>
+            <div class="text-slate-400">revoked_at</div>
+            <div class="mt-1 text-slate-600">{{fmtMaybeTime .RevokedAt}}</div>
+          </div>
+          <form action="/api/v1/nodes/{{$.Content.NodeID}}/cert/revoke" method="post"
+                x-on:submit.prevent="revokeCert($event, '{{.CertSHA256}}')">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="cert_sha256" value="{{.CertSHA256}}">
+            <button type="submit" class="{{chipButtonClass "amber" true}}">吊销</button>
+          </form>
+        </div>
+      </article>
+      {{else}}
+      <div class="py-8 text-center text-sm text-slate-400">暂无证书记录</div>
+      {{end}}
+    </div>
+    <div class="hidden overflow-x-auto md:block">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-200 bg-slate-50">
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">cert_sha256</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">spki_sha256</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">not_after</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">last_seen</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">revoked_at</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range $d.CertPins}}
+          <tr class="border-b border-slate-100">
+            <td class="px-4 py-2 text-xs font-mono text-slate-600">{{shortHash .CertSHA256}}</td>
+            <td class="px-4 py-2 text-xs font-mono text-slate-600">{{shortHash .SPKISHA256}}</td>
+            <td class="px-4 py-2 text-xs text-slate-500">{{fmtTime .NotAfter}}</td>
+            <td class="px-4 py-2 text-xs text-slate-500">{{fmtMaybeTime .LastSeenAt}}</td>
+            <td class="px-4 py-2 text-xs text-slate-500">{{fmtMaybeTime .RevokedAt}}</td>
+            <td class="px-4 py-2">
+              <form action="/api/v1/nodes/{{$.Content.NodeID}}/cert/revoke" method="post" class="inline"
+                    x-on:submit.prevent="revokeCert($event, '{{.CertSHA256}}')">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="cert_sha256" value="{{.CertSHA256}}">
+                <button type="submit" class="px-2 py-0.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded transition-colors">吊销</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-400">暂无证书记录</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Node Jobs -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+    <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-slate-900">Node Jobs（历史）</h2>
+      <button type="button" x-on:click="refreshJobs()"
+              class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors">
+        <i data-lucide="refresh-cw" class="w-3 h-3"></i> 刷新
+      </button>
+    </div>
+    <div class="space-y-3 p-4 md:hidden">
+      <template x-for="j in jobItems" :key="'mobile-job-' + j.id">
+        <article class="{{softStatClass "border border-slate-200 px-4 py-4 text-xs"}}">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <div class="text-slate-400">job</div>
+              <div class="mt-1 font-mono text-slate-700" x-text="'#' + j.id"></div>
+            </div>
+            <div class="flex flex-wrap items-center justify-end gap-2">
+              <code class="rounded bg-white px-2 py-1 font-mono text-slate-700" x-text="j.kind"></code>
+              <span class="rounded bg-slate-200 px-2 py-1 font-medium text-slate-700" x-text="j.status"></span>
+            </div>
+          </div>
+          <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <div class="text-slate-400">attempts</div>
+              <div class="mt-1 text-slate-600" x-text="j.attempts ?? 0"></div>
+            </div>
+            <div>
+              <div class="text-slate-400">created</div>
+              <div class="mt-1 text-slate-600" x-text="fmtTime(j.created_at)"></div>
+            </div>
+            <div>
+              <div class="text-slate-400">started</div>
+              <div class="mt-1 text-slate-600" x-text="fmtTime(j.started_at)"></div>
+            </div>
+            <div>
+              <div class="text-slate-400">finished</div>
+              <div class="mt-1 text-slate-600" x-text="fmtTime(j.finished_at)"></div>
+            </div>
+          </div>
+          <div class="mt-3">
+            <div class="text-slate-400">error</div>
+            <div class="mt-1 break-all rounded-lg bg-white px-3 py-2 text-red-600" x-text="j.last_error || '-'"></div>
+          </div>
+        </article>
+      </template>
+      <div x-show="jobItems.length === 0" class="py-8 text-center text-sm text-slate-400">暂无 job 记录</div>
+    </div>
+    <div class="hidden overflow-x-auto md:block">
+      <table class="w-full text-sm min-w-[800px]">
+        <thead>
+          <tr class="border-b border-slate-200 bg-slate-50">
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">id</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">kind</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">status</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">attempts</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">created</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">started</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">finished</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">error</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="j in jobItems" :key="j.id">
+            <tr class="border-b border-slate-100">
+              <td class="px-4 py-2 text-xs font-mono text-slate-400" x-text="j.id"></td>
+              <td class="px-4 py-2"><code class="text-xs bg-slate-100 rounded px-1.5 py-0.5 font-mono text-slate-700" x-text="j.kind"></code></td>
+              <td class="px-4 py-2 text-xs" x-text="j.status"></td>
+              <td class="px-4 py-2 text-xs text-slate-500" x-text="j.attempts ?? 0"></td>
+              <td class="px-4 py-2 text-xs text-slate-500" x-text="fmtTime(j.created_at)"></td>
+              <td class="px-4 py-2 text-xs text-slate-500" x-text="fmtTime(j.started_at)"></td>
+              <td class="px-4 py-2 text-xs text-slate-500" x-text="fmtTime(j.finished_at)"></td>
+              <td class="px-4 py-2 text-xs text-red-600 max-w-xs break-all" x-text="j.last_error || '-'"></td>
+            </tr>
+          </template>
+          <tr x-show="jobItems.length === 0">
+            <td colspan="8" class="px-4 py-8 text-center text-sm text-slate-400">暂无 job 记录</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function nodeDeployPage() {
+  const node = {{toJSON $d.Node}};
+  const nodeID = {{toJSON $d.NodeID}};
+  const initialVars = {{toJSON $d.ManagedXray.Vars}};
+  const initialRollback = {{toJSON $d.ManagedXray.RollbackOnFail}};
+
+  function varsToRows(vars) {
+    const out = [];
+    for (const k of Object.keys(vars || {}).sort()) {
+      out.push({ key: k, val: String(vars[k] ?? '') });
+    }
+    return out;
+  }
+
+  return {
+    managedMsg: '', managedMsgErr: false,
+    rollbackOnFail: !!initialRollback,
+    rollbackBackup: '',
+    varsRows: varsToRows(initialVars),
+    extraPreview: '',
+    jobItems: [],
+    _timeFormatter: null,
+
+    init() { this.refreshPreview(); this.refreshJobs(); },
+
+    setMsg(text, isErr) { this.managedMsg = text || ''; this.managedMsgErr = !!isErr; },
+
+    timeFormatter() {
+      if (!this._timeFormatter) {
+        this._timeFormatter = new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+          timeZone: {{panelTZJSON}},
+          timeZoneName: 'short'
+        });
+      }
+      return this._timeFormatter;
+    },
+
+    fmtTime(v) { if (!v) return '-'; try { const d = new Date(v); if (isNaN(d.getTime())) return '-'; return this.timeFormatter().format(d); } catch(_) { return '-'; } },
+
+    collectVars() {
+      const out = {};
+      for (const r of this.varsRows) {
+        const k = (r.key || '').trim();
+        if (!k) continue;
+        out[k] = r.val;
+      }
+      return out;
+    },
+
+    buildExtraJSON(vars, rollbackOnFail) {
+      return JSON.stringify({ xray: { vars: vars || {}, rollback_on_fail: !!rollbackOnFail } }, null, 2);
+    },
+
+    refreshPreview() {
+      this.extraPreview = this.buildExtraJSON(this.collectVars(), this.rollbackOnFail);
+    },
+
+    addVar() {
+      this.varsRows.push({ key: '', val: '' });
+      this.refreshPreview();
+    },
+
+    nodePatchPayload(extraJSON) {
+      return {
+        name: node.name, core_type: node.core_type, protocol: node.protocol,
+        host: node.host, port: node.port, transport: node.transport,
+        security: node.security, flow: node.flow, sni: node.sni, fp: node.fp,
+        public_key: node.public_key, short_id: node.short_id,
+        extra_json: extraJSON, enabled: !!node.enabled, managed: !!node.managed,
+        agent_url: node.agent_url || ""
+      };
+    },
+
+    async apiJSON(method, url, body) {
+      const init = { method, headers: { 'Content-Type': 'application/json' } };
+      const meta = document.querySelector('meta[name=csrf-token]');
+      if (meta && meta.content) init.headers['X-CSRF-Token'] = meta.content;
+      if (body !== undefined) init.body = JSON.stringify(body);
+      const resp = await fetch(url, init);
+      if (!resp.ok) { const txt = await resp.text(); throw new Error(txt || ('HTTP ' + resp.status)); }
+      const ct = resp.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return await resp.json();
+      return null;
+    },
+
+    async saveExtra() {
+      try {
+        this.setMsg('保存中...', false);
+        const extraJSON = this.buildExtraJSON(this.collectVars(), this.rollbackOnFail);
+        await this.apiJSON('PATCH', '/api/v1/nodes/' + nodeID, this.nodePatchPayload(extraJSON));
+        this.setMsg('已保存 extra_json。', false);
+        window.dispatchEvent(new CustomEvent('toast', { detail: { level: 'success', message: '配置已保存' } }));
+      } catch (e) { this.setMsg(e.message, true); }
+    },
+
+    async clearExtra() {
+      const ok = await Alpine.store('confirm').ask('清空 extra_json', '将回到默认：vars 依赖节点本机 env，rollback_on_fail=true', true);
+      if (!ok) return;
+      try {
+        this.setMsg('清空中...', false);
+        await this.apiJSON('PATCH', '/api/v1/nodes/' + nodeID, this.nodePatchPayload(""));
+        this.rollbackOnFail = true;
+        this.varsRows = [];
+        this.refreshPreview();
+        this.setMsg('已清空 extra_json。', false);
+      } catch (e) { this.setMsg(e.message, true); }
+    },
+
+    async deployXray() {
+      const ok = await Alpine.store('confirm').ask('Deploy Xray', '确认 enqueue xray_apply job?', false);
+      if (!ok) return;
+      try {
+        this.setMsg('正在 enqueue deploy job...', false);
+        const out = await this.apiJSON('POST', '/api/v1/nodes/' + nodeID + '/managed/xray/deploy');
+        this.setMsg('已提交：job_id=' + out.job_id + ' enqueued=' + out.enqueued + ' desired=' + (out.desired_version || '-'), false);
+        await this.refreshJobs();
+      } catch (e) { this.setMsg(e.message, true); }
+    },
+
+    async rollbackXray() {
+      const ok = await Alpine.store('confirm').ask('Rollback Xray', '确认 enqueue xray_rollback job?', false);
+      if (!ok) return;
+      try {
+        this.setMsg('正在 enqueue rollback job...', false);
+        const out = await this.apiJSON('POST', '/api/v1/nodes/' + nodeID + '/managed/xray/rollback', { backup_name: (this.rollbackBackup || '').trim() });
+        this.setMsg('已提交：job_id=' + out.job_id + ' enqueued=' + out.enqueued, false);
+        await this.refreshJobs();
+      } catch (e) { this.setMsg(e.message, true); }
+    },
+
+    async refreshJobs() {
+      try {
+        const out = await this.apiJSON('GET', '/api/v1/nodes/' + nodeID + '/jobs?limit=50');
+        this.jobItems = out.items || [];
+      } catch (e) { this.setMsg('刷新 jobs 失败: ' + e.message, true); }
+    },
+
+    copyScript() {
+      const el = document.getElementById('deploy-script');
+      if (!el) return;
+      copyToClipboard(el.textContent || '');
+    },
+
+    async revokeAllCerts(ev) {
+      const ok = await Alpine.store('confirm').ask('吊销全部证书', '确认吊销该节点的所有证书？这会立刻断开该节点的控制面连接。', true);
+      if (!ok) return;
+      ev.target.submit();
+    },
+
+    async revokeCert(ev, hash) {
+      const ok = await Alpine.store('confirm').ask('吊销证书', '确认吊销证书 ' + hash.slice(0, 8) + '... ?', true);
+      if (!ok) return;
+      ev.target.submit();
+    }
+  };
+}
+</script>
+{{end}}

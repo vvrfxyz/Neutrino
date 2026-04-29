@@ -1,0 +1,315 @@
+{{define "page-content"}}
+{{$d := .Content}}
+<!-- Header -->
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-slate-900">流量分析</h1>
+  <p class="text-sm text-slate-500 mt-1">流量趋势、Top 用户和目标分析</p>
+</div>
+
+<div x-data="trafficData()" x-init="init()">
+  <!-- Filters -->
+  <div class="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+    <div class="mb-3 flex items-center justify-between">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-900">筛选条件</h2>
+        <p class="mt-1 text-xs text-slate-500">按时间、用户、节点过滤当前统计结果</p>
+      </div>
+    </div>
+    <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+    <select x-model="range" x-on:change="fetchData()"
+            class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-auto">
+      <option value="1h">最近 1 小时</option>
+      <option value="24h" selected>最近 24 小时</option>
+      <option value="7d">最近 7 天</option>
+      <option value="30d">最近 30 天</option>
+    </select>
+    <select x-model="userId" x-on:change="fetchData()"
+            class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-auto">
+      <option value="">全部用户</option>
+      {{range $d.Users}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+    <select x-model="nodeId" x-on:change="fetchData()"
+            class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-auto">
+      <option value="">全部节点</option>
+      {{range $d.Nodes}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+    <button x-on:click="fetchData()" :disabled="loading"
+            class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto">
+      <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 刷新
+    </button>
+    </div>
+  </div>
+
+  <div x-show="loading || error" class="mb-4 space-y-2">
+    <div x-show="loading" class="px-4 py-3 rounded-lg border border-blue-200 bg-blue-50 text-sm text-blue-700">
+      正在加载流量数据...
+    </div>
+    <div x-show="error" class="px-4 py-3 rounded-lg border border-red-200 bg-red-50 text-sm text-red-700 flex items-center justify-between gap-3">
+      <span x-text="error"></span>
+      <button x-on:click="fetchData()" class="inline-flex items-center px-2.5 py-1 rounded-md border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-100 transition-colors">
+        重试
+      </button>
+    </div>
+  </div>
+
+  <!-- KPI cards -->
+  <div class="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+    <div class="bg-white rounded-xl border border-slate-200 p-4 text-center shadow-sm">
+      <div class="text-lg font-bold text-slate-900 sm:text-2xl" x-text="formatBytes(kpi.total_in)">-</div>
+      <div class="text-xs text-slate-500 mt-1">入站流量</div>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4 text-center shadow-sm">
+      <div class="text-lg font-bold text-slate-900 sm:text-2xl" x-text="formatBytes(kpi.total_out)">-</div>
+      <div class="text-xs text-slate-500 mt-1">出站流量</div>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4 text-center shadow-sm">
+      <div class="text-lg font-bold text-slate-900 sm:text-2xl" x-text="kpi.events?.toLocaleString() || '0'">-</div>
+      <div class="text-xs text-slate-500 mt-1">事件数</div>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4 text-center shadow-sm">
+      <div class="text-lg font-bold text-slate-900 sm:text-2xl" x-text="kpi.active_users || '0'">-</div>
+      <div class="text-xs text-slate-500 mt-1">活跃用户</div>
+    </div>
+  </div>
+
+  <!-- Chart -->
+  <div class="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+    <div class="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <h2 class="text-sm font-semibold text-slate-900">流量趋势</h2>
+      <span x-show="empty && !loading && !error" class="text-xs text-slate-400">当前筛选暂无流量数据</span>
+    </div>
+    <div class="relative h-56 sm:h-72">
+      <div x-show="loading" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400 bg-white/80">
+        正在加载图表...
+      </div>
+      <div x-show="error" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400 bg-white/80">
+        加载失败，请重试
+      </div>
+      <div x-show="empty && !loading && !error" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400 bg-white/80">
+        暂无趋势数据
+      </div>
+      <canvas x-ref="chart" x-show="!loading && !error && !empty"></canvas>
+    </div>
+  </div>
+
+  <!-- Top tables -->
+  <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-200"><h2 class="text-sm font-semibold text-slate-900">Top 用户</h2></div>
+      <div class="divide-y divide-slate-100 md:hidden">
+        <template x-if="loading"><div class="px-4 py-6 text-center text-sm text-slate-400">正在加载...</div></template>
+        <template x-if="!loading && error"><div class="px-4 py-6 text-center text-sm text-red-500">加载失败</div></template>
+        <template x-if="!loading && !error">
+          <template x-for="u in topUsers" :key="'mu-' + u.user_id">
+            <div class="flex items-center justify-between gap-3 px-4 py-3 text-xs">
+              <div class="min-w-0 truncate font-medium text-slate-700" x-text="u.username"></div>
+              <div class="font-mono text-slate-500" x-text="formatBytes(u.total_bytes)"></div>
+            </div>
+          </template>
+        </template>
+        <div x-show="!loading && !error && topUsers.length===0" class="px-4 py-6 text-center text-sm text-slate-400">暂无数据</div>
+      </div>
+      <table class="hidden w-full text-sm md:table">
+        <thead><tr class="border-b border-slate-200 bg-slate-50"><th class="px-4 py-2 text-left text-xs font-semibold text-slate-500">用户</th><th class="px-4 py-2 text-right text-xs font-semibold text-slate-500">流量</th></tr></thead>
+        <tbody>
+          <template x-if="loading"><tr><td colspan="2" class="px-4 py-6 text-center text-sm text-slate-400">正在加载...</td></tr></template>
+          <template x-if="!loading && error"><tr><td colspan="2" class="px-4 py-6 text-center text-sm text-red-500">加载失败</td></tr></template>
+          <template x-if="!loading && !error">
+            <template x-for="u in topUsers" :key="u.user_id"><tr class="border-b border-slate-100"><td class="px-4 py-2 text-xs text-slate-700" x-text="u.username"></td><td class="px-4 py-2 text-xs text-slate-500 text-right" x-text="formatBytes(u.total_bytes)"></td></tr></template>
+          </template>
+          <tr x-show="!loading && !error && topUsers.length===0"><td colspan="2" class="px-4 py-6 text-center text-sm text-slate-400">暂无数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-200"><h2 class="text-sm font-semibold text-slate-900">Top 目标</h2></div>
+      <div class="divide-y divide-slate-100 md:hidden">
+        <template x-if="loading"><div class="px-4 py-6 text-center text-sm text-slate-400">正在加载...</div></template>
+        <template x-if="!loading && error"><div class="px-4 py-6 text-center text-sm text-red-500">加载失败</div></template>
+        <template x-if="!loading && !error">
+          <template x-for="d in topDestinations" :key="'md-' + d.host_or_ip">
+            <div class="flex items-center justify-between gap-3 px-4 py-3 text-xs">
+              <div class="min-w-0 truncate font-medium text-slate-700" x-text="d.host_or_ip"></div>
+              <div class="font-mono text-slate-500" x-text="d.count"></div>
+            </div>
+          </template>
+        </template>
+        <div x-show="!loading && !error && topDestinations.length===0" class="px-4 py-6 text-center text-sm text-slate-400">暂无数据</div>
+      </div>
+      <table class="hidden w-full text-sm md:table">
+        <thead><tr class="border-b border-slate-200 bg-slate-50"><th class="px-4 py-2 text-left text-xs font-semibold text-slate-500">目标</th><th class="px-4 py-2 text-right text-xs font-semibold text-slate-500">次数</th></tr></thead>
+        <tbody>
+          <template x-if="loading"><tr><td colspan="2" class="px-4 py-6 text-center text-sm text-slate-400">正在加载...</td></tr></template>
+          <template x-if="!loading && error"><tr><td colspan="2" class="px-4 py-6 text-center text-sm text-red-500">加载失败</td></tr></template>
+          <template x-if="!loading && !error">
+            <template x-for="d in topDestinations" :key="d.host_or_ip"><tr class="border-b border-slate-100"><td class="px-4 py-2 text-xs text-slate-700 truncate max-w-[180px]" x-text="d.host_or_ip"></td><td class="px-4 py-2 text-xs text-slate-500 text-right" x-text="d.count"></td></tr></template>
+          </template>
+          <tr x-show="!loading && !error && topDestinations.length===0"><td colspan="2" class="px-4 py-6 text-center text-sm text-slate-400">暂无数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-200"><h2 class="text-sm font-semibold text-slate-900">Top SNI</h2></div>
+      <div class="divide-y divide-slate-100 md:hidden">
+        <template x-if="loading"><div class="px-4 py-6 text-center text-sm text-slate-400">正在加载...</div></template>
+        <template x-if="!loading && error"><div class="px-4 py-6 text-center text-sm text-red-500">加载失败</div></template>
+        <template x-if="!loading && !error">
+          <template x-for="s in topSNI" :key="'ms-' + s.sni">
+            <div class="flex items-center justify-between gap-3 px-4 py-3 text-xs">
+              <div class="min-w-0 truncate font-medium text-slate-700" x-text="s.sni"></div>
+              <div class="font-mono text-slate-500" x-text="s.count"></div>
+            </div>
+          </template>
+        </template>
+        <div x-show="!loading && !error && topSNI.length===0" class="px-4 py-6 text-center text-sm text-slate-400">暂无数据</div>
+      </div>
+      <table class="hidden w-full text-sm md:table">
+        <thead><tr class="border-b border-slate-200 bg-slate-50"><th class="px-4 py-2 text-left text-xs font-semibold text-slate-500">SNI</th><th class="px-4 py-2 text-right text-xs font-semibold text-slate-500">次数</th></tr></thead>
+        <tbody>
+          <template x-if="loading"><tr><td colspan="2" class="px-4 py-6 text-center text-sm text-slate-400">正在加载...</td></tr></template>
+          <template x-if="!loading && error"><tr><td colspan="2" class="px-4 py-6 text-center text-sm text-red-500">加载失败</td></tr></template>
+          <template x-if="!loading && !error">
+            <template x-for="s in topSNI" :key="s.sni"><tr class="border-b border-slate-100"><td class="px-4 py-2 text-xs text-slate-700 truncate max-w-[200px]" x-text="s.sni"></td><td class="px-4 py-2 text-xs text-slate-500 text-right" x-text="s.count"></td></tr></template>
+          </template>
+          <tr x-show="!loading && !error && topSNI.length===0"><td colspan="2" class="px-4 py-6 text-center text-sm text-slate-400">暂无数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function trafficData() {
+  let chart = null;
+  return {
+    range: '24h',
+    userId: '',
+    nodeId: '',
+    kpi: {},
+    series: [],
+    topUsers: [],
+    topDestinations: [],
+    topSNI: [],
+    loading: false,
+    error: '',
+    empty: false,
+    requestSeq: 0,
+    init() { this.fetchData(); },
+    async fetchData() {
+      const seq = ++this.requestSeq;
+      this.loading = true;
+      this.error = '';
+      try {
+        let url = '/api/v1/traffic/summary?range=' + encodeURIComponent(this.range);
+        if (this.userId) url += '&user_id=' + encodeURIComponent(this.userId);
+        if (this.nodeId) url += '&node_id=' + encodeURIComponent(this.nodeId);
+        const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        if (!resp.ok) {
+          throw new Error(await this.readErrorMessage(resp));
+        }
+        const data = await resp.json();
+        if (seq !== this.requestSeq) return;
+        this.kpi = data.kpi || {};
+        this.series = data.series || [];
+        this.topUsers = data.top_users || [];
+        this.topDestinations = data.top_destinations || [];
+        this.topSNI = data.top_sni || [];
+        this.empty = this.isEmptyState();
+      } catch (e) {
+        if (seq !== this.requestSeq) return;
+        this.kpi = {};
+        this.series = [];
+        this.topUsers = [];
+        this.topDestinations = [];
+        this.topSNI = [];
+        this.empty = false;
+        this.error = e instanceof Error && e.message ? e.message : '加载流量数据失败';
+        console.error('fetch traffic failed:', e);
+      } finally {
+        if (seq !== this.requestSeq) return;
+        this.loading = false;
+        requestAnimationFrame(() => {
+          if (seq !== this.requestSeq) return;
+          if (this.error || this.empty) {
+            this.clearChart();
+            return;
+          }
+          this.updateChart();
+        });
+      }
+    },
+    async readErrorMessage(resp) {
+      const fallback = '加载流量数据失败 (' + resp.status + ')';
+      const text = await resp.text();
+      if (!text) return fallback;
+      try {
+        const payload = JSON.parse(text);
+        if (payload && typeof payload.error === 'string' && payload.error.trim()) {
+          return payload.error.trim();
+        }
+      } catch (_) {}
+      return text.trim() || fallback;
+    },
+    isEmptyState() {
+      const hasSeries = this.series.some(s => Number(s.inbound_bytes || 0) > 0 || Number(s.outbound_bytes || 0) > 0);
+      const hasTop = this.topUsers.length > 0 || this.topDestinations.length > 0 || this.topSNI.length > 0;
+      const hasKPI = Number(this.kpi.total_in || 0) > 0 || Number(this.kpi.total_out || 0) > 0 || Number(this.kpi.events || 0) > 0 || Number(this.kpi.active_users || 0) > 0;
+      return !hasSeries && !hasTop && !hasKPI;
+    },
+    clearChart() {
+      if (!chart) return;
+      chart.destroy();
+      chart = null;
+    },
+    updateChart() {
+      const labels = this.series.map(s => {
+        const d = new Date(s.bucket_start);
+        if (this.range === '1h') return d.toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+        if (this.range === '24h') return d.toLocaleTimeString('zh-CN', {hour:'2-digit'}) + ':00';
+        return d.toLocaleDateString('zh-CN', {month:'short', day:'numeric'});
+      });
+      const inbound = this.series.map(s => s.inbound_bytes);
+      const outbound = this.series.map(s => s.outbound_bytes);
+      if (!chart) {
+        chart = new Chart(this.$refs.chart, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label:'入站', data: inbound, borderColor:'#3b82f6', backgroundColor:'rgba(59,130,246,0.1)', fill:true, tension:0.3, pointRadius:1 },
+              { label:'出站', data: outbound, borderColor:'#10b981', backgroundColor:'rgba(16,185,129,0.1)', fill:true, tension:0.3, pointRadius:1 }
+            ]
+          },
+          options: {
+            responsive:true, maintainAspectRatio:false,
+            interaction:{intersect:false, mode:'index'},
+            plugins:{legend:{position:'top', labels:{boxWidth:12, font:{size:11}}}},
+            scales:{
+              x:{grid:{display:false}, ticks:{font:{size:10}, maxTicksLimit:8}},
+              y:{beginAtZero:true, ticks:{font:{size:10}, callback:v=>formatBytesChart(v)}}
+            }
+          }
+        });
+        return;
+      }
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = inbound;
+      chart.data.datasets[1].data = outbound;
+      chart.update();
+    },
+    formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024; const sizes = ['B','KB','MB','GB','TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+  };
+}
+function formatBytesChart(v) {
+  if (v >= 1073741824) return (v / 1073741824).toFixed(1) + ' GB';
+  if (v >= 1048576) return (v / 1048576).toFixed(1) + ' MB';
+  if (v >= 1024) return (v / 1024).toFixed(1) + ' KB';
+  return v + ' B';
+}
+</script>
+{{end}}

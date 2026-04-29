@@ -1,0 +1,543 @@
+{{define "page-content"}}
+<!-- Header -->
+<div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900">运维监控</h1>
+    <p class="text-sm text-slate-500 mt-1">实时 CPU / 内存 / 带宽 + 在线用户</p>
+  </div>
+  <div class="flex items-center gap-2 text-xs text-slate-500">
+    <span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>
+    每 5 秒刷新
+  </div>
+</div>
+
+<div x-data="opsPage()" x-init="init()">
+  <!-- KPI cards -->
+  <div class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div class="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-900">面板快照</h2>
+        <p class="mt-1 text-[11px] text-slate-500">当前主机实时指标与自然月累计</p>
+      </div>
+      <div class="flex items-center gap-2 text-[11px] text-slate-500">
+        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+        面板主机视图
+      </div>
+    </div>
+    <div class="grid gap-px bg-slate-100 md:grid-cols-2 xl:grid-cols-5">
+      <section class="bg-white px-5 py-4">
+        <div class="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">CPU</div>
+        <div class="mt-3 font-mono text-xl font-semibold text-slate-900" x-text="cpuText">-</div>
+        <div class="mt-1 text-[11px] text-slate-500">面板主机实时使用率</div>
+      </section>
+      <section class="bg-white px-5 py-4">
+        <div class="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Memory</div>
+        <div class="mt-3 font-mono text-xl font-semibold text-slate-900" x-text="memoryText">-</div>
+        <div class="mt-1 text-[11px] text-slate-500">当前内存占用</div>
+      </section>
+      <section class="bg-white px-5 py-4">
+        <div class="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Inbound</div>
+        <div class="mt-3 font-mono text-xl font-semibold text-slate-900" x-text="inBpsText">-</div>
+        <div class="mt-1 text-[11px] text-slate-500">入站带宽</div>
+      </section>
+      <section class="bg-white px-5 py-4">
+        <div class="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Outbound</div>
+        <div class="mt-3 font-mono text-xl font-semibold text-slate-900" x-text="outBpsText">-</div>
+        <div class="mt-1 text-[11px] text-slate-500">出站带宽</div>
+      </section>
+      <section class="bg-white px-5 py-4 md:col-span-2 xl:col-span-1">
+        <div class="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">面板本月流量</div>
+        <div class="mt-3 font-mono text-lg font-semibold leading-6 text-slate-900" x-text="monthTotalText">-</div>
+        <div class="mt-1 font-mono text-[11px] text-slate-500" x-text="monthDetailText">RX - / TX -</div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Online users -->
+  <div class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div class="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-900">在线用户</h2>
+        <p class="mt-1 text-[11px] text-slate-500">最近活跃连接，按最后活动时间倒序</p>
+      </div>
+      <div class="flex items-center gap-2 text-[11px] text-slate-500">
+        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+        <span x-text="onlineHint"></span>
+      </div>
+    </div>
+    <div class="space-y-3 p-4 md:hidden">
+      <template x-for="item in onlineItems" :key="'mobile-' + item.user_id + '-' + item.client_ip + '-' + (item.node_id || 0)">
+        <article class="rounded-lg border border-slate-200 bg-slate-50 px-4 py-4 text-xs">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="truncate text-sm font-semibold text-slate-900" x-text="item.username"></div>
+              <div class="mt-1 font-mono text-slate-500" x-text="item.client_ip"></div>
+            </div>
+            <div class="rounded-full bg-white px-2 py-1 text-[11px] text-slate-500" x-text="item.node_id ? ('节点 #' + item.node_id) : '未标记节点'"></div>
+          </div>
+          <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <div class="text-slate-400">首次出现</div>
+              <div class="mt-1 text-slate-600" x-text="fmtTime(item.first_seen_at)"></div>
+            </div>
+            <div>
+              <div class="text-slate-400">最近活跃</div>
+              <div class="mt-1 font-medium text-slate-800" x-text="fmtAgo(item.last_seen_at)"></div>
+              <div class="mt-1 text-[11px] text-slate-400" x-text="fmtTime(item.last_seen_at)"></div>
+            </div>
+          </div>
+        </article>
+      </template>
+      <div x-show="onlineItems.length === 0" class="py-10 text-center text-sm text-slate-400">暂无在线用户</div>
+    </div>
+    <div class="hidden overflow-x-auto md:block">
+      <table class="w-full min-w-[720px]">
+        <thead class="bg-slate-50/70">
+          <tr class="border-b border-slate-100">
+            <th class="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">User</th>
+            <th class="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Client IP</th>
+            <th class="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">First Seen</th>
+            <th class="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Last Seen</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          <template x-for="item in onlineItems" :key="item.user_id + '-' + item.client_ip + '-' + (item.node_id || 0)">
+            <tr class="align-top transition-colors hover:bg-slate-50/60">
+              <td class="px-5 py-3.5">
+                <div class="flex items-start gap-3">
+                  <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+                  <div class="min-w-0">
+                    <div class="truncate text-xs font-medium text-slate-800" x-text="item.username"></div>
+                    <div class="mt-1 text-[10px] font-mono text-slate-400" x-text="item.node_id ? ('节点 #' + item.node_id) : '未标记节点'"></div>
+                  </div>
+                </div>
+              </td>
+              <td class="px-5 py-3.5">
+                <div class="font-mono text-xs text-slate-700" x-text="item.client_ip"></div>
+              </td>
+              <td class="px-5 py-3.5">
+                <div class="font-mono text-xs text-slate-700" x-text="fmtTime(item.first_seen_at)"></div>
+                <div class="mt-1 text-[10px] text-slate-400">首次出现</div>
+              </td>
+              <td class="px-5 py-3.5">
+                <div class="font-mono text-xs font-medium text-slate-800" x-text="fmtAgo(item.last_seen_at)"></div>
+                <div class="mt-1 text-[10px] text-slate-400" x-text="fmtTime(item.last_seen_at)"></div>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="onlineItems.length === 0">
+            <td colspan="4" class="px-5 py-10 text-center text-sm text-slate-400">暂无在线用户</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Node status -->
+  <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div class="flex items-center justify-between border-b border-slate-200 bg-slate-50/60 px-5 py-3">
+      <h2 class="text-sm font-semibold text-slate-900">节点状态</h2>
+      <span class="text-xs text-slate-500" x-text="nodesHint"></span>
+    </div>
+    <div class="grid gap-4 bg-slate-50/30 p-4 sm:gap-6 sm:p-6 2xl:grid-cols-2 min-[2500px]:grid-cols-3">
+      <template x-for="n in nodesItems" :key="'node-' + n.id">
+        <article class="relative flex h-full flex-col overflow-hidden rounded-xl border bg-white shadow-sm transition-all duration-200 hover:shadow-md" x-bind:class="cardShellClass(n)">
+          <div class="absolute bottom-0 left-0 top-0 rounded-r-full transition-all duration-200" x-bind:class="statusStripClass(n)"></div>
+
+          <header class="flex items-start justify-between gap-4 border-b border-slate-100 px-4 py-4 pl-5 sm:px-5 sm:pl-6">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2.5">
+                <h3 class="truncate text-sm font-semibold text-slate-900" x-text="n.name"></h3>
+                <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono font-medium text-slate-500">
+                  #<span x-text="n.id"></span>
+                </span>
+              </div>
+              <div class="mt-2 grid gap-0.5 text-[11px] text-slate-500">
+                <span>最近心跳</span>
+                <span class="text-[13px] font-medium text-slate-700" x-bind:title="fmtTimeWithAgo(n.last_seen_at)" x-text="fmtTime(n.last_seen_at)"></span>
+                <span class="text-[11px] text-slate-400" x-text="fmtAgo(n.last_seen_at)"></span>
+              </div>
+            </div>
+            <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ring-1 ring-inset ring-current/10" x-bind:class="healthClass(n.health)">
+                <span class="h-1.5 w-1.5 rounded-full bg-current"></span>
+                <span x-text="n.health || 'unknown'"></span>
+              </span>
+              <span x-show="n.last_error" class="inline-flex items-center rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700">
+                异常
+              </span>
+            </div>
+          </header>
+
+          <div class="border-b border-slate-100 px-4 py-4 pl-5 sm:hidden">
+            <div class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
+              <div class="rounded-lg bg-slate-50 px-3 py-2">
+                <div class="text-slate-400">待执行 Jobs</div>
+                <div class="mt-1 font-mono text-lg font-semibold text-slate-800" x-text="n.pending_jobs || 0"></div>
+              </div>
+              <div class="rounded-lg bg-slate-50 px-3 py-2">
+                <div class="text-slate-400">运行中</div>
+                <div class="mt-1 font-mono text-sm font-semibold text-slate-800" x-text="n.running_kind || 'idle'"></div>
+              </div>
+              <div class="rounded-lg bg-slate-50 px-3 py-2">
+                <div class="text-slate-400">CPU / 磁盘</div>
+                <div class="mt-1 font-mono text-slate-800">
+                  <span x-text="n.agent_metrics ? fmtPct(n.agent_metrics.cpu_percent) : '-'"></span>
+                  <span class="text-slate-400"> / </span>
+                  <span x-text="n.agent_metrics ? fmtPct(n.agent_metrics.disk_used_percent) : '-'"></span>
+                </div>
+              </div>
+              <div class="rounded-lg bg-slate-50 px-3 py-2">
+                <div class="text-slate-400">入 / 出</div>
+                <div class="mt-1 font-mono text-slate-800">
+                  <span x-text="n.agent_metrics ? fmtBps(n.agent_metrics.inbound_bps) : '-'"></span>
+                  <span class="text-slate-400"> / </span>
+                  <span x-text="n.agent_metrics ? fmtBps(n.agent_metrics.outbound_bps) : '-'"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex-1 px-4 py-4 pl-5 sm:px-5 sm:py-5 sm:pl-6">
+            <div x-show="!n.agent_metrics" class="mb-5 flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+              <span class="h-1.5 w-1.5 rounded-full bg-slate-300"></span>
+              Agent 未就绪，运行态指标暂缺
+            </div>
+
+            <div class="grid gap-6 md:grid-cols-2 xl:grid-cols-12">
+              <section class="space-y-4 xl:col-span-4">
+                <div class="border-b border-slate-100 pb-3">
+                  <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">控制面任务</h4>
+                </div>
+
+                <dl class="grid gap-4 sm:grid-cols-2">
+                  <div class="space-y-1">
+                    <dt class="text-[11px] text-slate-500">最近上报</dt>
+                    <dd class="text-[13px] font-medium leading-5 text-slate-800" x-bind:title="fmtTimeWithAgo(n.agent_metrics_at)" x-text="fmtTime(n.agent_metrics_at)"></dd>
+                    <div class="text-[11px] text-slate-400" x-text="fmtAgo(n.agent_metrics_at)"></div>
+                  </div>
+                  <div class="space-y-1">
+                    <dt class="text-[11px] text-slate-500">上报状态</dt>
+                    <dd class="pt-0.5">
+                      <span x-show="n.agent_metrics" class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+                        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                        正常上报
+                      </span>
+                      <span x-show="!n.agent_metrics" class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+                        <span class="h-1.5 w-1.5 rounded-full bg-slate-300"></span>
+                        未上报
+                      </span>
+                    </dd>
+                  </div>
+                  <div class="space-y-1">
+                    <dt class="text-[11px] text-slate-500">待执行 Jobs</dt>
+                    <dd class="font-mono text-[28px] font-semibold leading-none" x-bind:class="(n.pending_jobs || 0) > 0 ? 'text-amber-700' : 'text-slate-800'" x-text="n.pending_jobs || 0"></dd>
+                  </div>
+                  <div class="space-y-1">
+                    <dt class="text-[11px] text-slate-500">运行中</dt>
+                    <dd class="font-mono text-xl font-medium leading-none" x-bind:class="n.running_kind ? 'text-sky-700' : 'text-slate-400'" x-text="n.running_kind || 'idle'"></dd>
+                  </div>
+                </dl>
+
+                <div class="space-y-4 border-t border-slate-100 pt-4">
+                  <div class="flex items-center justify-between">
+                    <h5 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">配置版本</h5>
+                  </div>
+
+                  <div class="space-y-4">
+                    <div class="space-y-2 border-b border-slate-100 pb-4">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-[12px] font-medium text-slate-700">Users 期望 vs 实际</span>
+                        <span class="rounded px-1.5 py-0.5 text-[10px] font-medium" x-bind:class="versionStateClass(n.desired_users_version, n.applied_users_version)" x-text="versionStateLabel(n.desired_users_version, n.applied_users_version)"></span>
+                      </div>
+                      <div class="grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+                        <div class="text-slate-400">期望</div>
+                        <div class="min-w-0 truncate font-mono text-slate-500" x-bind:title="n.desired_users_version || '-'" x-text="compactVer(n.desired_users_version)"></div>
+                        <div class="text-slate-400">实际</div>
+                        <div class="min-w-0 truncate font-mono font-semibold" x-bind:title="n.applied_users_version || '-'" x-bind:class="n.desired_users_version !== n.applied_users_version ? 'text-amber-700' : 'text-emerald-700'" x-text="compactVer(n.applied_users_version)"></div>
+                      </div>
+                    </div>
+
+                    <div class="space-y-2">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-[12px] font-medium text-slate-700">Xray 期望 vs 实际</span>
+                        <span class="rounded px-1.5 py-0.5 text-[10px] font-medium" x-bind:class="versionStateClass(n.desired_xray_version, n.applied_xray_version)" x-text="versionStateLabel(n.desired_xray_version, n.applied_xray_version)"></span>
+                      </div>
+                      <div class="grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+                        <div class="text-slate-400">期望</div>
+                        <div class="min-w-0 truncate font-mono text-slate-500" x-bind:title="n.desired_xray_version || '-'" x-text="compactVer(n.desired_xray_version)"></div>
+                        <div class="text-slate-400">实际</div>
+                        <div class="min-w-0 truncate font-mono font-semibold" x-bind:title="n.applied_xray_version || '-'" x-bind:class="n.desired_xray_version !== n.applied_xray_version ? 'text-amber-700' : 'text-emerald-700'" x-text="compactVer(n.applied_xray_version)"></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="space-y-4 border-t border-slate-100 pt-4 md:border-t-0 md:pt-0 xl:col-span-3 xl:border-l xl:border-slate-100 xl:pl-6">
+                <div class="border-b border-slate-100 pb-3">
+                  <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">运行指标</h4>
+                </div>
+
+                <div class="space-y-5">
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between text-[12px]">
+                      <span class="text-slate-500">CPU</span>
+                      <span class="font-mono font-semibold text-slate-800" x-text="n.agent_metrics ? fmtPct(n.agent_metrics.cpu_percent) : '-'"></span>
+                    </div>
+                    <div class="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                      <div class="h-full rounded-full bg-slate-800 transition-all duration-200" x-bind:class="n.agent_metrics && Number(n.agent_metrics.cpu_percent || 0) > 85 ? '!bg-rose-500' : ''" x-bind:style="meterStyle(n.agent_metrics ? n.agent_metrics.cpu_percent : 0)"></div>
+                    </div>
+                  </div>
+
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between text-[12px]">
+                      <span class="text-slate-500">磁盘</span>
+                      <span class="font-mono font-semibold text-slate-800" x-text="n.agent_metrics ? fmtPct(n.agent_metrics.disk_used_percent) : '-'"></span>
+                    </div>
+                    <div class="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                      <div class="h-full rounded-full bg-slate-400 transition-all duration-200" x-bind:class="n.agent_metrics && Number(n.agent_metrics.disk_used_percent || 0) > 90 ? '!bg-rose-500' : ''" x-bind:style="meterStyle(n.agent_metrics ? n.agent_metrics.disk_used_percent : 0)"></div>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-4 border-t border-slate-100 pt-4">
+                    <div class="space-y-1">
+                      <div class="text-[11px] text-slate-500">内存</div>
+                      <div class="font-mono text-base font-semibold text-slate-800" x-text="n.agent_metrics ? fmtBytes(n.agent_metrics.memory_bytes) : '-'"></div>
+                    </div>
+                    <div class="space-y-1">
+                      <div class="text-[11px] text-slate-500">运行时长</div>
+                      <div class="font-mono text-base font-semibold text-slate-800" x-text="n.agent_metrics ? fmtDur(n.agent_metrics.uptime_sec) : '-'"></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="space-y-4 border-t border-slate-100 pt-4 md:col-span-2 xl:col-span-5 xl:border-l xl:border-slate-100 xl:pl-6 xl:border-t-0 xl:pt-0">
+                <div class="border-b border-slate-100 pb-3">
+                  <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">网络与负载</h4>
+                </div>
+
+                <div class="grid gap-4 lg:grid-cols-2">
+                  <div class="space-y-1.5 rounded-lg border border-slate-100 bg-slate-50/70 px-4 py-3">
+                    <div class="text-[11px] text-slate-500">入站</div>
+                    <div class="break-all font-mono text-xl font-semibold leading-7 text-slate-900" x-text="n.agent_metrics ? fmtBps(n.agent_metrics.inbound_bps) : '-'"></div>
+                  </div>
+                  <div class="space-y-1.5 rounded-lg border border-slate-100 bg-slate-50/70 px-4 py-3">
+                    <div class="text-[11px] text-slate-500">出站</div>
+                    <div class="break-all font-mono text-xl font-semibold leading-7 text-slate-900" x-text="n.agent_metrics ? fmtBps(n.agent_metrics.outbound_bps) : '-'"></div>
+                  </div>
+                </div>
+
+                <div class="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-4">
+                  <div class="space-y-3">
+                    <div>
+                      <div class="text-[11px] font-medium text-slate-500">自然月累计</div>
+                      <div class="mt-1 text-[11px] text-slate-400" x-text="monthUsageLabel(n.month_usage)"></div>
+                      <div class="mt-3 break-all font-mono text-[30px] font-semibold leading-8 text-slate-900" x-text="n.month_usage ? fmtBytes(n.month_usage.total_bytes) : '-'"></div>
+                    </div>
+
+                    <div class="border-t border-slate-200/80 pt-3" x-show="n.month_usage && n.month_usage.last_reported_at">
+                      <div class="text-[10px] uppercase tracking-[0.14em] text-slate-400">最近累计上报</div>
+                      <div class="mt-1 text-[13px] font-medium text-slate-700" x-bind:title="fmtTimeWithAgo(n.month_usage ? n.month_usage.last_reported_at : null)" x-text="n.month_usage ? fmtTime(n.month_usage.last_reported_at) : '-'"></div>
+                      <div class="mt-1 text-[11px] text-slate-400" x-text="n.month_usage ? fmtAgo(n.month_usage.last_reported_at) : '-'"></div>
+                    </div>
+
+                    <div class="border-t border-slate-200/80 pt-3" x-show="n.month_usage">
+                      <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1">
+                          <div class="text-[10px] uppercase tracking-[0.14em] text-slate-400">RX</div>
+                          <div class="break-all font-mono text-sm font-semibold text-slate-800" x-text="n.month_usage ? fmtBytes(n.month_usage.rx_bytes) : '-'"></div>
+                        </div>
+                        <div class="space-y-1">
+                          <div class="text-[10px] uppercase tracking-[0.14em] text-slate-400">TX</div>
+                          <div class="break-all font-mono text-sm font-semibold text-slate-800" x-text="n.month_usage ? fmtBytes(n.month_usage.tx_bytes) : '-'"></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="text-[11px] text-slate-400" x-show="!n.month_usage">暂无自然月累计上报</div>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-3 gap-3 border-t border-slate-100 pt-4">
+                  <div class="space-y-1">
+                    <div class="text-[10px] text-slate-400">队列批次</div>
+                    <div class="font-mono text-lg font-semibold text-slate-800" x-text="n.agent_metrics ? (n.agent_metrics.queue_batches || 0) : '-'"></div>
+                  </div>
+                  <div class="space-y-1">
+                    <div class="text-[10px] text-slate-400">缓冲</div>
+                    <div class="break-all font-mono text-base font-semibold text-slate-800" x-text="n.agent_metrics ? fmtBytes(n.agent_metrics.queue_bytes) : '-'"></div>
+                  </div>
+                  <div class="space-y-1">
+                    <div class="text-[10px] text-slate-400">协程</div>
+                    <div class="font-mono text-lg font-semibold text-slate-800" x-text="n.agent_metrics ? (n.agent_metrics.goroutines || 0) : '-'"></div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <template x-if="n.last_error">
+            <div class="border-t border-rose-200 bg-rose-50 px-4 py-3 pl-5 sm:px-5 sm:pl-6" x-bind:title="n.last_error">
+              <div class="flex items-start gap-2.5">
+                <div class="mt-1 h-2 w-2 shrink-0 rounded-full bg-rose-500"></div>
+                <div class="min-w-0">
+                  <div class="text-[11px] font-bold uppercase tracking-[0.18em] text-rose-800">最近错误</div>
+                  <div class="mt-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-rose-700" x-text="n.last_error"></div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </article>
+      </template>
+      <div x-show="nodesItems.length === 0" class="col-span-full rounded-xl border border-dashed border-slate-200 bg-white px-4 py-16 text-center text-sm text-slate-500">暂无监控节点</div>
+    </div>
+  </div>
+</div>
+
+<script>
+function opsPage() {
+  return {
+    cpuText: '-', memoryText: '-', inBpsText: '-', outBpsText: '-', monthText: '-', monthTotalText: '-', monthDetailText: 'RX - / TX -',
+    onlineHint: '在线 0 个连接', onlineItems: [],
+    nodesHint: '节点 0 个', nodesItems: [],
+    _timeFormatter: null,
+    init() { this.refresh(); setInterval(() => this.refresh(), 5000); },
+    async refresh() {
+      try {
+        const m = await fetch('/api/v1/metrics/host?range=1h');
+        if (m.ok) {
+          const mj = await m.json(); const arr = mj.items || []; const last = arr.length > 0 ? arr[arr.length-1] : null;
+          if (last) { this.cpuText = (last.cpu_percent||0).toFixed(2)+' %'; this.memoryText = this.fmtBytes(last.memory_bytes||0); this.inBpsText = this.fmtBps(last.inbound_bps||0); this.outBpsText = this.fmtBps(last.outbound_bps||0); }
+          const mon = mj.month || null;
+          if (mon) {
+            const rx = Number(mon.rx_bytes||0);
+            const tx = Number(mon.tx_bytes||0);
+            const total = Number(mon.total_bytes||(rx+tx));
+            this.monthText = this.fmtBytes(total) + ' (RX '+this.fmtBytes(rx)+' / TX '+this.fmtBytes(tx)+')';
+            this.monthTotalText = this.fmtBytes(total);
+            this.monthDetailText = 'RX ' + this.fmtBytes(rx) + ' / TX ' + this.fmtBytes(tx);
+          }
+        }
+      } catch (_) {}
+      try { const o = await fetch('/api/v1/online-users'); if (o.ok) { const oj = await o.json(); this.onlineItems = oj.items||[]; this.onlineHint = '在线 '+this.onlineItems.length+' 个连接'; } } catch (_) {}
+      try { const n = await fetch('/api/v1/ops/nodes'); if (n.ok) { const nj = await n.json(); this.nodesItems = nj.items||[]; this.nodesHint = '节点 '+this.nodesItems.length+' 个'; } } catch (_) {}
+    },
+    fmtBytes(v) { const units=['B','KB','MB','GB','TB']; let n=Number(v||0); let i=0; while(n>=1024&&i<units.length-1){n/=1024;i++;} return n.toFixed(2)+' '+units[i]; },
+    fmtBps(v) { return this.fmtBytes(v)+'/s'; },
+    timeFormatter() {
+      if (!this._timeFormatter) {
+        this._timeFormatter = new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+          timeZone: {{panelTZJSON}},
+          timeZoneName: 'short'
+        });
+      }
+      return this._timeFormatter;
+    },
+    fmtTime(v) {
+      if(!v) return '-';
+      const d=new Date(v);
+      if(isNaN(d.getTime())) return '-';
+      return this.timeFormatter().format(d);
+    },
+    fmtAgo(v) {
+      if(!v) return '-';
+      const d=new Date(v);
+      if(isNaN(d.getTime())) return '-';
+      const sec=Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+      if (sec < 60) return sec + ' 秒前';
+      const min=Math.floor(sec / 60);
+      if (min < 60) return min + ' 分钟前';
+      const hour=Math.floor(min / 60);
+      if (hour < 24) return hour + ' 小时前';
+      const day=Math.floor(hour / 24);
+      return day + ' 天前';
+    },
+    fmtTimeWithAgo(v) {
+      const abs = this.fmtTime(v);
+      const ago = this.fmtAgo(v);
+      if (abs === '-') return abs;
+      if (ago === '-') return abs;
+      return abs + ' · ' + ago;
+    },
+    fmtPct(v) { return Number(v||0).toFixed(1)+'%'; },
+    monthUsageLabel(v) {
+      if (!v) return '未上报';
+      const parts = [];
+      if (v.month_key) parts.push(v.month_key);
+      if (v.timezone_name) parts.push(v.timezone_name);
+      return parts.length > 0 ? parts.join(' · ') : '自然月累计';
+    },
+    meterStyle(v) {
+      const n = Math.max(0, Math.min(100, Number(v || 0)));
+      return { width: n + '%' };
+    },
+    nodeHealthTone(v) {
+      const s = String(v || '').toLowerCase();
+      if (s.includes('healthy') || s.includes('online') || s === 'ok') return 'healthy';
+      if (s.includes('stale') || s.includes('degraded') || s.includes('warn') || s.includes('pending') || s.includes('disabled')) return 'warning';
+      if (!s || s === '-' || s.includes('unknown')) return 'unknown';
+      return 'error';
+    },
+    healthClass(v) {
+      const tone = this.nodeHealthTone(v);
+      if (tone === 'healthy') return 'bg-emerald-100 text-emerald-700';
+      if (tone === 'warning') return 'bg-amber-100 text-amber-700';
+      if (tone === 'unknown') return 'bg-slate-100 text-slate-500';
+      return 'bg-rose-100 text-rose-700';
+    },
+    cardShellClass(n) {
+      const tone = this.nodeHealthTone(n && n.health);
+      if (n && n.last_error) return 'border-rose-200 shadow-rose-100/60';
+      if (tone === 'warning') return 'border-amber-200 shadow-amber-100/40';
+      if (tone === 'error') return 'border-rose-200 shadow-rose-100/40';
+      return 'border-slate-200';
+    },
+    statusStripClass(n) {
+      const tone = this.nodeHealthTone(n && n.health);
+      if (n && n.last_error) return 'w-1.5 bg-rose-500';
+      if (tone === 'warning') return 'w-1.5 bg-amber-400';
+      if (tone === 'error') return 'w-1.5 bg-rose-400';
+      return 'w-px bg-slate-200';
+    },
+    compactVer(v) {
+      const s = String(v || '').trim();
+      if (!s) return '-';
+      return s.length > 14 ? s.slice(0, 6) + '…' + s.slice(-4) : s;
+    },
+    versionStateKey(desired, applied) {
+      const d = String(desired || '').trim();
+      const a = String(applied || '').trim();
+      if (!d && !a) return 'unknown';
+      if (!a) return 'pending';
+      if (!d) return 'applied';
+      return d === a ? 'synced' : 'drift';
+    },
+    versionStateLabel(desired, applied) {
+      const s = this.versionStateKey(desired, applied);
+      if (s === 'synced') return '已同步';
+      if (s === 'pending') return '待应用';
+      if (s === 'applied') return '已上报';
+      if (s === 'drift') return '未对齐';
+      return '未知';
+    },
+    versionStateClass(desired, applied) {
+      const s = this.versionStateKey(desired, applied);
+      if (s === 'synced') return 'bg-emerald-100 text-emerald-700';
+      if (s === 'pending' || s === 'drift') return 'bg-amber-100 text-amber-700';
+      if (s === 'applied') return 'bg-sky-100 text-sky-700';
+      return 'bg-slate-100 text-slate-500';
+    },
+    fmtDur(sec) { let s=Number(sec||0); if(!isFinite(s)||s<=0) return '0s'; s=Math.floor(s); const d=Math.floor(s/86400); s%=86400; const h=Math.floor(s/3600); s%=3600; const m=Math.floor(s/60); s%=60; if(d>0) return d+'d '+h+'h'; if(h>0) return h+'h '+m+'m'; if(m>0) return m+'m '+s+'s'; return s+'s'; }
+  }
+}
+</script>
+{{end}}

@@ -1,0 +1,44 @@
+{{define "confirm-dialog"}}
+<!-- Confirm dialog (Alpine global store) -->
+<div x-data x-show="$store.confirm.open" x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center">
+  <!-- Backdrop -->
+  <div class="absolute inset-0 bg-black/50" x-on:click="$store.confirm.cancel()"></div>
+  <!-- Dialog -->
+  <div x-transition class="relative bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4">
+    <h3 class="text-base font-semibold text-slate-900 mb-2" x-text="$store.confirm.title"></h3>
+    <p class="text-sm text-slate-600 mb-5" x-text="$store.confirm.message"></p>
+    <div class="flex justify-end gap-3">
+      <button x-on:click="$store.confirm.cancel()"
+              class="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">
+        取消
+      </button>
+      <button x-on:click="$store.confirm.ok()"
+              class="px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors"
+              :class="$store.confirm.danger ? 'bg-red-600 hover:bg-red-700' : 'bg-accent hover:bg-accent-hover'">
+        确认
+      </button>
+    </div>
+  </div>
+</div>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.store('confirm', {
+    open: false,
+    title: '',
+    message: '',
+    danger: false,
+    _resolve: null,
+    ask(title, message, danger) {
+      this.title = title;
+      this.message = message;
+      this.danger = !!danger;
+      this.open = true;
+      return new Promise(resolve => { this._resolve = resolve; });
+    },
+    ok()     { this.open = false; if (this._resolve) this._resolve(true);  this._resolve = null; },
+    cancel() { this.open = false; if (this._resolve) this._resolve(false); this._resolve = null; }
+  });
+});
+</script>
+{{end}}

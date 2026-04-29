@@ -1,0 +1,10 @@
+services:
+  xray:
+    ports:
+      - "${XRAY_VLESS_PORT:-24443}:${XRAY_VLESS_PORT:-24443}"
+      - "127.0.0.1:${XRAY_API_PORT:-10085}:${XRAY_API_PORT:-10085}"
+
+  agent:
+    network_mode: host
+    ports: []
+

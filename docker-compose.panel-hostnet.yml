@@ -1,0 +1,5 @@
+services:
+  neutrino:
+    network_mode: host
+    ports: []
+

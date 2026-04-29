@@ -1,0 +1,19 @@
+services:
+  neutrino:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${http_proxy:-}
+        HTTPS_PROXY: ${https_proxy:-}
+        ALL_PROXY: ${all_proxy:-}
+    container_name: neutrino-panel
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - ./data:/data
+      - /proc:/host/proc:ro
+    restart: unless-stopped

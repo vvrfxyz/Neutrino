@@ -1,0 +1,71 @@
+services:
+  xray:
+    image: ${XRAY_IMAGE:-ghcr.io/xtls/xray-core:26.2.6}
+    container_name: neutrino-xray
+    user: "0:0"
+    ports:
+      - "24443:24443"
+    volumes:
+      - xray-logs:/var/log/xray
+      - xray-etc:/usr/local/etc/xray
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: docker/node-agent/Dockerfile
+      args:
+        HTTP_PROXY: ${http_proxy:-}
+        HTTPS_PROXY: ${https_proxy:-}
+        ALL_PROXY: ${all_proxy:-}
+    container_name: neutrino-agent
+    env_file:
+      - .env
+    environment:
+      AGENT_HTTP_ADDR: ":9090"
+      # Default to service DNS; override in .env if using hostnet.
+      XRAY_API_ADDR: "${XRAY_API_ADDR:-xray:10085}"
+      XRAY_INBOUND_TAG: "${XRAY_INBOUND_TAG:-vless-reality}"
+      XRAY_FLOW: "${XRAY_FLOW:-xtls-rprx-vision}"
+      XRAY_ACCESS_LOG_PATH: "${XRAY_ACCESS_LOG_PATH:-/var/log/xray/access.log}"
+      # For local stack bootstrap: agent renders /usr/local/etc/xray/config.json from env.
+      XRAY_VLESS_PORT: "${XRAY_VLESS_PORT:-24443}"
+      XRAY_API_PORT: "${XRAY_API_PORT:-10085}"
+      XRAY_REALITY_DEST: "${XRAY_REALITY_DEST:-www.microsoft.com:443}"
+      XRAY_REALITY_SERVER_NAME: "${XRAY_REALITY_SERVER_NAME:-www.microsoft.com}"
+      XRAY_REALITY_PRIVATE_KEY: "${XRAY_REALITY_PRIVATE_KEY:-REPLACE_WITH_REALITY_PRIVATE_KEY}"
+      XRAY_REALITY_SHORT_ID: "${XRAY_REALITY_SHORT_ID:-REPLACE_WITH_SHORT_ID}"
+      STATE_PATH: "${STATE_PATH:-/data/agent/state.json}"
+    volumes:
+      - ./data:/data
+      - /proc:/host/proc:ro
+      - xray-logs:/var/log/xray
+      - xray-etc:/usr/local/etc/xray
+      # Required for managed xray_apply/xray_rollback (agent runs docker restart/exec).
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - neutrino
+    restart: unless-stopped
+
+  neutrino:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${http_proxy:-}
+        HTTPS_PROXY: ${https_proxy:-}
+        ALL_PROXY: ${all_proxy:-}
+    container_name: neutrino-panel
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - ./data:/data
+      - /proc:/host/proc:ro
+    restart: unless-stopped
+
+volumes:
+  xray-logs:
+  xray-etc:

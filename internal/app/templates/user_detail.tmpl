@@ -1,0 +1,460 @@
+{{define "page-content"}}
+{{$d := .Content}}
+<!-- Breadcrumb + Header -->
+<div class="mb-6">
+  <nav class="mb-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+    <a href="/users" class="hover:text-slate-700 transition-colors">用户</a>
+    <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+    <span class="text-slate-900 font-medium">{{$d.User.Username}}</span>
+  </nav>
+  <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+    <div class="flex flex-wrap items-center gap-3">
+      <h1 class="text-2xl font-bold text-slate-900">{{$d.User.Username}}</h1>
+      <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold {{statusClass $d.User.Status}}">{{$d.User.Status}}</span>
+    </div>
+    <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+      <form method="post" action="/users/{{$d.User.ID}}/links" class="w-full sm:w-auto">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <button type="submit" class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 sm:w-auto">
+          <i data-lucide="link" class="w-3.5 h-3.5"></i> 新链接
+        </button>
+      </form>
+      {{if eq $d.User.Status "active"}}
+      <form method="post" action="/users/{{$d.User.ID}}/disable" class="w-full sm:w-auto">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <button type="submit" class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100 sm:w-auto">
+          <i data-lucide="pause" class="w-3.5 h-3.5"></i> 禁用
+        </button>
+      </form>
+      {{else}}
+      <form method="post" action="/users/{{$d.User.ID}}/enable" class="w-full sm:w-auto">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <button type="submit" class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-100 sm:w-auto">
+          <i data-lucide="play" class="w-3.5 h-3.5"></i> 启用
+        </button>
+      </form>
+      {{end}}
+      <form method="post" action="/users/{{$d.User.ID}}/delete" class="w-full sm:w-auto"
+            x-data x-on:submit.prevent="if(await $store.confirm.ask('删除用户','确认删除该用户及其全部数据？',true)) $el.submit()">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <button type="submit" class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 sm:w-auto">
+          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> 删除
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{{if $d.Error}}
+<div class="mb-4 px-4 py-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">{{$d.Error}}</div>
+{{end}}
+
+<!-- User info + meta -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+  <!-- Quota overview -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+    <h2 class="text-sm font-semibold text-slate-900 mb-3">配额概览</h2>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">月流量上限</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{fmtBytesGB $d.User.MonthlyLimitBytes}}</div>
+      </div>
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">计量模式</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{$d.User.CountingMode}}</div>
+      </div>
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">周期 / 时区</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{$d.User.QuotaCycle}} / {{$d.User.QuotaTZ}}</div>
+      </div>
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">IP 上限</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{$d.User.DeviceLimit}}</div>
+      </div>
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">窗口入站 / 出站</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{fmtBytesGB $d.User.WindowInboundBytes}} / {{fmtBytesGB $d.User.WindowOutboundBytes}}</div>
+      </div>
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">有效计量 / 补偿</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{fmtBytesGB $d.User.WindowEffective}} / {{fmtBytesGB $d.User.WindowCreditBytes}}</div>
+      </div>
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">总入站 / 总出站</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{fmtBytesGB $d.User.InboundBytes}} / {{fmtBytesGB $d.User.OutboundBytes}}</div>
+      </div>
+      <div class="rounded-lg bg-slate-50 px-3 py-2">
+        <div class="text-xs text-slate-500">到期时间</div>
+        <div class="text-sm font-semibold text-slate-900 mt-0.5">{{fmtTime $d.User.ExpiresAt}}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Subscription + Telegram + Admin ops -->
+  <div class="space-y-4">
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5">
+      <h2 class="text-sm font-semibold text-slate-900 mb-2">订阅 URL</h2>
+      {{if $d.SubscriptionURL}}
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <code class="flex-1 text-xs bg-slate-50 rounded-lg px-3 py-2 font-mono break-all text-slate-700">{{$d.SubscriptionURL}}</code>
+        <button onclick="copyToClipboard('{{$d.SubscriptionURL}}')" class="inline-flex flex-shrink-0 items-center justify-center rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
+          <i data-lucide="copy" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <p class="text-xs text-slate-400 mt-2">可切换 target=clash|singbox|v2rayn|shadowrocket</p>
+      {{else}}
+      <p class="text-sm text-slate-400">暂不可用</p>
+      {{end}}
+    </div>
+
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5">
+      <h2 class="text-sm font-semibold text-slate-900 mb-2">Telegram 绑定</h2>
+      <p class="text-sm text-slate-600">{{$d.TelegramBoundHint}}</p>
+      {{if $d.TelegramBindCode}}
+      <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <code class="text-xs bg-slate-50 rounded-lg px-3 py-2 font-mono text-slate-700">/bind {{$d.TelegramBindCode}}</code>
+        <button onclick="copyToClipboard('/bind {{$d.TelegramBindCode}}')" class="inline-flex flex-shrink-0 items-center justify-center rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
+          <i data-lucide="copy" class="w-4 h-4"></i>
+        </button>
+      </div>
+      {{end}}
+    </div>
+  </div>
+</div>
+
+<!-- Management operations -->
+<div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4">
+  <h2 class="text-sm font-semibold text-slate-900 mb-3">管理操作</h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+    <div class="rounded-lg border border-slate-200 p-4">
+      <div class="text-xs font-medium text-slate-500 mb-2">IP 上限</div>
+      <form method="post" action="/users/{{$d.User.ID}}/device_limit" class="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input name="device_limit" type="number" min="1" value="{{$d.User.DeviceLimit}}" required
+               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <button type="submit" class="w-full rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">更新</button>
+      </form>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4">
+      <div class="text-xs font-medium text-slate-500 mb-2">重置当前周期</div>
+      <form method="post" action="/users/{{$d.User.ID}}/quota_reset" class="flex flex-col gap-2 sm:flex-row sm:items-center"
+            x-data x-on:submit.prevent="if(await $store.confirm.ask('重置配额','确认重置当前周期配额窗口？',true)) $el.submit()">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input name="reason" type="text" placeholder="原因(可选)"
+               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <button type="submit" class="w-full rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700 sm:w-auto">重置</button>
+      </form>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4">
+      <div class="text-xs font-medium text-slate-500 mb-2">补偿流量</div>
+      <form method="post" action="/users/{{$d.User.ID}}/quota_credit" class="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input name="credit_gb" type="number" min="1" placeholder="GB"
+               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <button type="submit" class="w-full rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">补偿</button>
+      </form>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4">
+      <div class="text-xs font-medium text-slate-500 mb-2">延长到期</div>
+      <form method="post" action="/users/{{$d.User.ID}}/plan_extend" class="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input name="extend_days" type="number" min="1" placeholder="天数"
+               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <button type="submit" class="w-full rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">延期</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Node access control -->
+{{if $d.AllNodes}}
+<div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4">
+  <h2 class="text-sm font-semibold text-slate-900 mb-1">节点权限</h2>
+  <p class="text-xs text-slate-400 mb-3">不勾选任何节点表示可使用全部节点</p>
+  <form method="post" action="/users/{{$d.User.ID}}/node_access">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3 mb-4">
+      {{range $d.AllNodes}}
+      <label class="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50 transition-colors">
+        <input type="checkbox" name="node_ids" value="{{.ID}}"
+               {{if index $d.AllowedNodeIDs .ID}}checked{{end}}
+               class="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500">
+        <div class="min-w-0">
+          <div class="text-sm font-medium text-slate-700 truncate">{{.Name}}</div>
+          <div class="text-xs text-slate-400">{{.Protocol}} · {{.Host}}:{{.Port}}</div>
+        </div>
+      </label>
+      {{end}}
+    </div>
+    <button type="submit"
+            class="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700">
+      保存节点权限
+    </button>
+  </form>
+</div>
+{{end}}
+
+<!-- Traffic chart + online sessions -->
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">
+  <div class="xl:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-5"
+       x-data="trafficChart({ userId: {{$d.User.ID}} })" x-init="init()">
+    <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+      <h2 class="text-sm font-semibold text-slate-900">流量统计</h2>
+      <div class="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5">
+        <button type="button" x-on:click="switchPeriod('hourly')" :disabled="loading"
+                :class="period==='hourly' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'"
+                class="px-3 py-1 text-xs font-medium rounded-md transition-all disabled:opacity-60">小时</button>
+        <button type="button" x-on:click="switchPeriod('daily')" :disabled="loading"
+                :class="period==='daily' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'"
+                class="px-3 py-1 text-xs font-medium rounded-md transition-all disabled:opacity-60">日</button>
+        <button type="button" x-on:click="switchPeriod('monthly')" :disabled="loading"
+                :class="period==='monthly' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'"
+                class="px-3 py-1 text-xs font-medium rounded-md transition-all disabled:opacity-60">月</button>
+      </div>
+    </div>
+    <div class="h-64 relative">
+      <div x-show="loading" x-cloak class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/70 text-sm text-slate-500">加载中...</div>
+      <div x-show="error" x-cloak class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-lg bg-red-50 px-4 text-center text-sm text-red-600">
+        <span x-text="error"></span>
+        <button type="button" x-on:click="fetchSeries()" class="inline-flex items-center px-2.5 py-1 rounded-md border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-100 transition-colors">重试</button>
+      </div>
+      <div x-show="!loading && !error && isEmpty()" x-cloak class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-slate-50 text-sm text-slate-400">当前周期暂无流量数据</div>
+      <canvas x-ref="chart"></canvas>
+    </div>
+  </div>
+
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+    <div class="px-5 py-4 border-b border-slate-200">
+      <h2 class="text-sm font-semibold text-slate-900">在线会话</h2>
+      <p class="text-xs text-slate-500 mt-1">最近 {{$d.OnlineWindowSec}} 秒内活跃连接</p>
+    </div>
+    <div class="p-5 border-b border-slate-100">
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div class="rounded-lg bg-slate-50 px-3 py-2">
+          <div class="text-xs text-slate-500">活跃会话</div>
+          <div class="text-lg font-semibold text-slate-900 mt-0.5">{{$d.OnlineSessionCount}}</div>
+        </div>
+        <div class="rounded-lg bg-slate-50 px-3 py-2">
+          <div class="text-xs text-slate-500">活跃不同 IP</div>
+          <div class="text-lg font-semibold text-slate-900 mt-0.5">{{$d.OnlineDeviceCount}}</div>
+        </div>
+      </div>
+    </div>
+    <div class="space-y-3 p-4 md:hidden">
+      {{range $d.OnlineSessions}}
+      <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-xs">
+        <div class="font-mono font-medium text-slate-800">{{.ClientIP}}</div>
+        <div class="mt-1 text-slate-500">节点 {{if .NodeID}}#{{fmtMaybeInt64 .NodeID}}{{else}}-{{end}}</div>
+        <div class="mt-1 font-mono text-slate-400">{{fmtTime .LastSeen}}</div>
+      </div>
+      {{else}}
+      <div class="py-8 text-center text-sm text-slate-400">当前无在线会话</div>
+      {{end}}
+    </div>
+    <div class="hidden max-h-64 overflow-auto md:block">
+      <table class="w-full min-w-[520px] text-sm">
+        <thead>
+          <tr class="border-b border-slate-200 bg-slate-50">
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">客户端 IP</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">节点</th>
+            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">最后活跃</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range $d.OnlineSessions}}
+          <tr class="border-b border-slate-100 hover:bg-slate-50/50">
+            <td class="px-4 py-2 text-xs font-mono text-slate-700">{{.ClientIP}}</td>
+            <td class="px-4 py-2 text-xs text-slate-500">{{if .NodeID}}#{{fmtMaybeInt64 .NodeID}}{{else}}-{{end}}</td>
+            <td class="px-4 py-2 text-xs text-slate-500 font-mono">{{fmtTime .LastSeen}}</td>
+          </tr>
+          {{else}}
+          <tr><td colspan="3" class="px-4 py-8 text-center text-sm text-slate-400">当前无在线会话</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Access events -->
+<div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+  <div class="px-5 py-3 border-b border-slate-200">
+    <h2 class="text-sm font-semibold text-slate-900">访问事件 <span class="text-slate-400 font-normal">(最近 120 条)</span></h2>
+  </div>
+  <div class="space-y-3 p-4 md:hidden">
+    {{range $d.AccessEvents}}
+    <article class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-xs">
+      <div class="flex items-start justify-between gap-3">
+        <code class="rounded bg-white px-2 py-1 font-mono text-slate-600">{{.Direction}}</code>
+        <div class="font-mono text-[11px] text-slate-400">{{fmtTime .EventAt}}</div>
+      </div>
+      <div class="mt-3">
+        <div class="text-slate-400">目标</div>
+        <div class="mt-1 break-all font-mono text-slate-700">{{if .Destination}}{{.Destination}}{{else if .TargetHost}}{{.TargetHost}}{{else if .TargetIP}}{{.TargetIP}}{{else}}-{{end}}</div>
+      </div>
+      <div class="mt-3 grid grid-cols-1 gap-3 text-[11px] sm:grid-cols-2">
+        <div>
+          <div class="text-slate-400">SNI</div>
+          <div class="mt-1 break-all text-slate-600">{{if .SNI}}{{.SNI}}{{else}}-{{end}}</div>
+        </div>
+        <div>
+          <div class="text-slate-400">入口</div>
+          <div class="mt-1 break-all text-slate-600">{{if .InboundTag}}{{.InboundTag}}{{else}}-{{end}}</div>
+        </div>
+      </div>
+      <div class="mt-3">
+        <div class="text-slate-400">客户端 IP</div>
+        <div class="mt-1 font-mono text-slate-500">{{if .ClientIP}}{{.ClientIP}}{{else}}-{{end}}</div>
+      </div>
+    </article>
+    {{else}}
+    <div class="py-8 text-center text-sm text-slate-400">暂无访问事件</div>
+    {{end}}
+  </div>
+  <div class="hidden overflow-x-auto md:block">
+    <table class="w-full min-w-[760px] text-sm">
+      <thead>
+        <tr class="border-b border-slate-200 bg-slate-50">
+          <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">时间</th>
+          <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">方向</th>
+          <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">目标</th>
+          <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">SNI</th>
+          <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">入口</th>
+          <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">客户端 IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range $d.AccessEvents}}
+        <tr class="border-b border-slate-100 hover:bg-slate-50/50">
+          <td class="px-4 py-2 text-xs text-slate-500 font-mono">{{fmtTime .EventAt}}</td>
+          <td class="px-4 py-2 text-xs">{{.Direction}}</td>
+          <td class="px-4 py-2 text-xs font-mono text-slate-700">{{if .Destination}}{{.Destination}}{{else if .TargetHost}}{{.TargetHost}}{{else if .TargetIP}}{{.TargetIP}}{{else}}-{{end}}</td>
+          <td class="px-4 py-2 text-xs text-slate-500">{{if .SNI}}{{.SNI}}{{else}}-{{end}}</td>
+          <td class="px-4 py-2 text-xs text-slate-500">{{if .InboundTag}}{{.InboundTag}}{{else}}-{{end}}</td>
+          <td class="px-4 py-2 text-xs font-mono text-slate-500">{{if .ClientIP}}{{.ClientIP}}{{else}}-{{end}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-400">暂无访问事件</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function trafficChart({ userId }) {
+  let chart = null;
+  return {
+    userId,
+    period: 'hourly',
+    rows: [],
+    loading: false,
+    error: '',
+    requestSeq: 0,
+    init() {
+      this.fetchSeries();
+    },
+    async switchPeriod(period) {
+      if (period === this.period && (this.loading || (this.rows.length > 0 && !this.error))) return;
+      this.period = period;
+      await this.fetchSeries();
+    },
+    async fetchSeries() {
+      const seq = ++this.requestSeq;
+      this.loading = true;
+      this.error = '';
+      try {
+        const resp = await fetch(`/api/v1/users/${this.userId}/traffic?period=${encodeURIComponent(this.period)}`);
+        if (!resp.ok) throw new Error(await this.readErrorMessage(resp));
+        const payload = await resp.json();
+        if (seq !== this.requestSeq) return;
+        this.rows = Array.isArray(payload.series) ? payload.series : [];
+      } catch (err) {
+        if (seq !== this.requestSeq) return;
+        this.rows = [];
+        this.error = err && err.message ? err.message : '加载失败';
+        window.dispatchEvent(new CustomEvent('toast', { detail: { level: 'error', message: this.error } }));
+        console.error('fetch user traffic failed:', err);
+      } finally {
+        if (seq !== this.requestSeq) return;
+        this.loading = false;
+        requestAnimationFrame(() => {
+          if (seq !== this.requestSeq) return;
+          if (this.error || this.isEmpty()) {
+            this.clearChart();
+            return;
+          }
+          try {
+            this.updateChart();
+          } catch (err) {
+            this.clearChart();
+            this.error = err && err.message ? err.message : '渲染图表失败';
+            window.dispatchEvent(new CustomEvent('toast', { detail: { level: 'error', message: this.error } }));
+            console.error('render user traffic chart failed:', err);
+          }
+        });
+      }
+    },
+    async readErrorMessage(resp) {
+      const fallback = '加载失败 (' + resp.status + ')';
+      const text = await resp.text();
+      if (!text) return fallback;
+      try {
+        const payload = JSON.parse(text);
+        if (payload && typeof payload.error === 'string' && payload.error.trim()) {
+          return payload.error.trim();
+        }
+      } catch (_) {}
+      return text.trim() || fallback;
+    },
+    isEmpty() {
+      return !this.rows.some(r => Number(r.inbound_bytes || 0) > 0 || Number(r.outbound_bytes || 0) > 0);
+    },
+    clearChart() {
+      if (!chart) return;
+      chart.destroy();
+      chart = null;
+    },
+    updateChart() {
+      const labels = this.rows.map(r => {
+        const d = new Date(r.bucket_start);
+        if (this.period === 'hourly') return d.toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', hour12:false});
+        if (this.period === 'daily') return d.toLocaleDateString('zh-CN', {month:'2-digit', day:'2-digit'});
+        return d.toLocaleDateString('zh-CN', {year:'numeric', month:'2-digit'});
+      });
+      const inbound = this.rows.map(r => Number(r.inbound_bytes || 0));
+      const outbound = this.rows.map(r => Number(r.outbound_bytes || 0));
+      if (!chart) {
+        chart = new Chart(this.$refs.chart, {
+          type: 'line',
+          data: { labels, datasets: [
+            { label: '入站', borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 1, data: inbound },
+            { label: '出站', borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 1, data: outbound }
+          ]},
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
+            scales: {
+              x: { grid: { display: false }, ticks: { font: { size: 10 }, maxTicksLimit: 8 } },
+              y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: v => formatBytesChart(v) } }
+            }
+          }
+        });
+        return;
+      }
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = inbound;
+      chart.data.datasets[1].data = outbound;
+      chart.update();
+    }
+  };
+}
+function formatBytesChart(v) {
+  if (v >= 1073741824) return (v/1073741824).toFixed(1) + ' GB';
+  if (v >= 1048576) return (v/1048576).toFixed(1) + ' MB';
+  if (v >= 1024) return (v/1024).toFixed(1) + ' KB';
+  return v + ' B';
+}
+</script>
+{{end}}

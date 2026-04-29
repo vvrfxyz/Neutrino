@@ -1,0 +1,42 @@
+services:
+  xray:
+    image: ${XRAY_IMAGE:-ghcr.io/xtls/xray-core:26.2.6}
+    container_name: neutrino-xray
+    user: "0:0"
+    ports:
+      - "${XRAY_VLESS_PORT:-24443}:${XRAY_VLESS_PORT:-24443}"
+    volumes:
+      - xray-logs:/var/log/xray
+      - xray-etc:/usr/local/etc/xray
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: docker/node-agent/Dockerfile
+      args:
+        HTTP_PROXY: ${http_proxy:-}
+        HTTPS_PROXY: ${https_proxy:-}
+        ALL_PROXY: ${all_proxy:-}
+    container_name: neutrino-agent
+    env_file:
+      - .env
+    environment:
+      AGENT_HTTP_ADDR: ":9090"
+      XRAY_API_ADDR: "${XRAY_API_ADDR:-xray:10085}"
+      XRAY_INBOUND_TAG: "${XRAY_INBOUND_TAG:-vless-reality}"
+      XRAY_FLOW: "${XRAY_FLOW:-xtls-rprx-vision}"
+      XRAY_ACCESS_LOG_PATH: "${XRAY_ACCESS_LOG_PATH:-/var/log/xray/access.log}"
+      STATE_PATH: "${STATE_PATH:-/data/agent/state.json}"
+    volumes:
+      - ./data:/data
+      - /proc:/host/proc:ro
+      - xray-logs:/var/log/xray
+      - xray-etc:/usr/local/etc/xray
+      # Required for managed xray_apply/xray_rollback (agent runs docker restart/exec).
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  xray-logs:
+  xray-etc:
