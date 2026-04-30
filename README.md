@@ -162,6 +162,10 @@ go run ./cmd/node-agent
 ### 订阅接口
 
 - `GET /sub/{token}?target=clash|singbox|v2rayn|shadowrocket`
+  - `target` 省略时按客户端 `User-Agent` 自动识别（Clash/Stash → `clash`，sing-box/SFA/SFI → `singbox`，Shadowrocket/Quantumult/Surge/Loon → `shadowrocket`，其他 → `v2rayn`）。
+  - 响应 header：
+    - `Subscription-Userinfo: upload=<bytes>; download=<bytes>; total=<bytes>; expire=<unix>` — 上下行用量、配额上限（含信用额度）、到期时间，便于客户端订阅面板直接展示。
+    - `Profile-Update-Interval: 24` — 推荐刷新间隔（小时）。
 
 ### agent mTLS listener（专用控制面）
 

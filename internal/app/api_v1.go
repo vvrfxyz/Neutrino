@@ -80,7 +80,11 @@ func (a *App) handleSubscription(w http.ResponseWriter, r *http.Request) {
 			Enabled:   true,
 		}}
 	}
-	payload, contentType, err := subscription.RenderWithOptions(r.URL.Query().Get("target"), u, u.ActiveLink, nodes, subscription.RenderOptions{
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	if target == "" {
+		target = subscription.DetectTargetFromUA(r.Header.Get("User-Agent"))
+	}
+	payload, contentType, err := subscription.RenderWithOptions(target, u, u.ActiveLink, nodes, subscription.RenderOptions{
 		AllowActiveLinkFallback: !restrictedToNodes,
 	})
 	if err != nil {
@@ -92,7 +96,37 @@ func (a *App) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Subscription-Userinfo", buildSubscriptionUserinfo(u))
+	w.Header().Set("Profile-Update-Interval", "24")
 	_, _ = w.Write([]byte(payload))
+}
+
+// buildSubscriptionUserinfo formats the standard Subscription-Userinfo header
+// (recognized by Clash/Stash/Shadowrocket and others) so the client can show
+// the user's quota usage, total, and expiry inline in its subscription panel.
+//
+// Convention from the client's perspective: "upload" is data the client sent
+// to the server (== server inbound bytes), "download" is data the client
+// received (== server outbound bytes). When MonthlyLimitBytes == 0 we report
+// total=0, which clients display as "unlimited".
+func buildSubscriptionUserinfo(u repo.User) string {
+	upload := u.WindowInboundBytes
+	download := u.WindowOutboundBytes
+	if u.WindowStart == nil {
+		// No active window yet: fall back to the lifetime counters so the
+		// client still sees a sensible number rather than zero.
+		upload = u.InboundBytes
+		download = u.OutboundBytes
+	}
+	total := u.MonthlyLimitBytes + u.WindowCreditBytes
+	if total < 0 {
+		total = 0
+	}
+	expire := int64(0)
+	if !u.ExpiresAt.IsZero() {
+		expire = u.ExpiresAt.Unix()
+	}
+	return fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", upload, download, total, expire)
 }
 
 func (a *App) handleAPIOnlineUsers(w http.ResponseWriter, r *http.Request) {
