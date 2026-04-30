@@ -34,6 +34,9 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("/api/v1/ops/nodes", a.apiV1Auth(http.HandlerFunc(a.handleAPIOpsNodesV1)))
 	mux.Handle("/api/v1/backups", a.apiV1Auth(http.HandlerFunc(a.handleAPIBackupsV1)))
 	mux.Handle("/api/v1/backups/", a.apiV1Auth(http.HandlerFunc(a.handleAPIBackupRoutesV1)))
+	// Real-time admin stream: session-only (no API key) since browsers can't
+	// attach custom headers to native WebSocket connections.
+	mux.Handle("/api/v1/stream", a.adminOnly(http.HandlerFunc(a.handleAdminWebSocket)))
 
 	return withRequestID(mux)
 }

@@ -403,7 +403,70 @@ function opsPage() {
     onlineHint: '在线 0 个连接', onlineItems: [],
     nodesHint: '节点 0 个', nodesItems: [],
     _timeFormatter: null,
-    init() { this.refresh(); setInterval(() => this.refresh(), 5000); },
+    _ws: null,
+    _wsBackoffMs: 1000,
+    _pollTimer: null,
+    init() {
+      // Always fetch once so the page renders before the first WS frame arrives.
+      this.refresh();
+      this.connectWS();
+    },
+    connectWS() {
+      try {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(proto + '//' + location.host + '/api/v1/stream');
+        this._ws = ws;
+        ws.addEventListener('open', () => {
+          this._wsBackoffMs = 1000;
+          // WS up: stop polling, ticks will refresh us.
+          if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
+        });
+        ws.addEventListener('message', (e) => {
+          let ev = null;
+          try { ev = JSON.parse(e.data); } catch (_) { return; }
+          if (!ev || ev.kind !== 'ops_snapshot' || !ev.data) return;
+          this.applySnapshot(ev.data);
+        });
+        ws.addEventListener('close', () => this.handleWSDown());
+        ws.addEventListener('error', () => { try { ws.close(); } catch (_) {} });
+      } catch (_) {
+        this.handleWSDown();
+      }
+    },
+    handleWSDown() {
+      this._ws = null;
+      // Fall back to polling so the page keeps updating, and try to reconnect with backoff.
+      if (!this._pollTimer) {
+        this._pollTimer = setInterval(() => this.refresh(), 5000);
+      }
+      const delay = this._wsBackoffMs;
+      this._wsBackoffMs = Math.min(delay * 2, 30000);
+      setTimeout(() => this.connectWS(), delay);
+    },
+    applySnapshot(s) {
+      if (s.host) {
+        this.cpuText = (s.host.cpu_percent || 0).toFixed(2) + ' %';
+        this.memoryText = this.fmtBytes(s.host.memory_bytes || 0);
+        this.inBpsText = this.fmtBps(s.host.inbound_bps || 0);
+        this.outBpsText = this.fmtBps(s.host.outbound_bps || 0);
+        if (s.host.month) {
+          const rx = Number(s.host.month.rx_bytes || 0);
+          const tx = Number(s.host.month.tx_bytes || 0);
+          const total = Number(s.host.month.total_bytes || (rx + tx));
+          this.monthText = this.fmtBytes(total) + ' (RX ' + this.fmtBytes(rx) + ' / TX ' + this.fmtBytes(tx) + ')';
+          this.monthTotalText = this.fmtBytes(total);
+          this.monthDetailText = 'RX ' + this.fmtBytes(rx) + ' / TX ' + this.fmtBytes(tx);
+        }
+      }
+      if (Array.isArray(s.online)) {
+        this.onlineItems = s.online;
+        this.onlineHint = '在线 ' + this.onlineItems.length + ' 个连接';
+      }
+      if (Array.isArray(s.nodes)) {
+        this.nodesItems = s.nodes;
+        this.nodesHint = '节点 ' + this.nodesItems.length + ' 个';
+      }
+    },
     async refresh() {
       try {
         const m = await fetch('/api/v1/metrics/host?range=1h');

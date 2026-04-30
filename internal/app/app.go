@@ -39,6 +39,8 @@ type App struct {
 	usageService *service.UsageService
 	nodeService  *service.NodeService
 
+	wsHub *wsHub
+
 	usersSyncMu      sync.Mutex
 	lastUsersSyncReq time.Time
 }
@@ -243,6 +245,7 @@ func New(cfg config.Config, store *repo.Store) *App {
 	a.userService = service.NewUserService(store, a)
 	a.usageService = service.NewUsageService(store, cfg.OnlineWindowSec, cfg.IPLimitStrikes, a)
 	a.nodeService = service.NewNodeService(store, cfg.NodeStaleDeleteAfterSec, a)
+	a.wsHub = newWSHub()
 	return a
 }
 
@@ -618,6 +621,7 @@ func (a *App) StartWorkers(ctx context.Context) {
 	go a.telegram.Start(ctx)
 	go a.startNodeReconciler(ctx)
 	go a.startNodeJobTimeoutSweeper(ctx)
+	go a.startOpsSnapshotPublisher(ctx)
 
 	interval := 5 * time.Second
 	quotaInterval := time.Duration(a.cfg.QuotaSweepSec) * time.Second
