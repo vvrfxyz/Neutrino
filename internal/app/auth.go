@@ -295,6 +295,11 @@ func requiredScope(method, path string) string {
 		return "online:read"
 	case strings.HasPrefix(path, "/api/v1/metrics"):
 		return "metrics:read"
+	case strings.HasPrefix(path, "/api/v1/backups"):
+		if method == http.MethodGet {
+			return "backups:read"
+		}
+		return "backups:write"
 	default:
 		return ""
 	}

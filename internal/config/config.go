@@ -27,6 +27,8 @@ type Config struct {
 	PanelAgentMTLSSigningRequireStrictKeyPerms bool
 
 	DBPath string
+	// BackupDir is the local directory where on-demand SQLite backups are written.
+	BackupDir string
 
 	SubBaseURL string
 
@@ -111,6 +113,7 @@ func Load() Config {
 		PanelAgentMTLSSigningRequireStrictKeyPerms: envBool("PANEL_AGENT_MTLS_SIGNING_REQUIRE_STRICT_KEY_PERMS", true),
 
 		DBPath:     env("DB_PATH", "neutrino.db"),
+		BackupDir:  env("BACKUP_DIR", "backups"),
 		SubBaseURL: env("SUB_BASE_URL", "http://127.0.0.1:8080"),
 
 		AdminUser: env("ADMIN_USER", "admin"),

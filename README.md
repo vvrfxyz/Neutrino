@@ -116,6 +116,7 @@ go run ./cmd/node-agent
 - `traffic:read`
 - `online:read`
 - `metrics:read`
+- `backups:read` / `backups:write`
 - `admin` / `*`
 
 其中：
@@ -153,6 +154,10 @@ go run ./cmd/node-agent
 - `GET /api/v1/online-users`
 - `GET /api/v1/metrics/host?range=1h|6h|24h`
 - `GET /api/v1/ops/nodes`
+- `GET|POST /api/v1/backups`
+- `GET|DELETE /api/v1/backups/{id}`
+- `GET /api/v1/backups/{id}/download`
+- `POST /api/v1/backups/restore`（multipart：`backup` 字段，`.sqlite` 或 `.sqlite.gz`；通过校验后 stage 为 `<DBPath>.pending-restore`，需重启面板生效）
 
 ### 订阅接口
 

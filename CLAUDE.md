@@ -77,5 +77,16 @@ go test ./internal/app -run TestName
 
 ## Current Caveats
 
-- The repo contains backup-related storage/service code, but there is currently no public backup/restore HTTP route wired into `internal/app/routes.go`.
 - API key validation exists, but there is currently no UI or HTTP lifecycle management endpoint for creating / listing / revoking API keys.
+
+## Backup / Restore
+
+Routes (admin session or API key with `backups:read` / `backups:write`):
+
+- `POST /api/v1/backups` — VACUUM INTO + gzip the live DB to `BACKUP_DIR` (default `backups/`), insert a `backups` row, return record.
+- `GET  /api/v1/backups` — list recent backups.
+- `GET  /api/v1/backups/{id}/download` — stream the on-disk `.sqlite.gz`.
+- `DELETE /api/v1/backups/{id}` — remove the file (best-effort) and the row.
+- `POST /api/v1/backups/restore` — multipart upload (`backup` field) of a `.sqlite` or `.sqlite.gz`. Validates via `PRAGMA integrity_check` plus required Neutrino tables, then stages the file as `<DBPath>.pending-restore`. **A panel restart is required to apply.**
+
+On startup, `app.ApplyPendingRestore` snapshots the current DB to `<DBPath>.pre-restore-<ts>.bak` (also moves `-wal`/`-shm` aside) and renames the pending file into place. Invalid pending files are left on disk for inspection and the panel refuses to start.

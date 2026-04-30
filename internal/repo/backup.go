@@ -54,6 +54,11 @@ LIMIT ?;
 	return out, rows.Err()
 }
 
+func (s *Store) DeleteBackup(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM backups WHERE id = ?;`, id)
+	return err
+}
+
 func (s *Store) GetBackup(ctx context.Context, id int64) (BackupRecord, error) {
 	var b BackupRecord
 	var objectKey sql.NullString

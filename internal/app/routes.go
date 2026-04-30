@@ -32,6 +32,8 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("/api/v1/usage", a.apiV1AuthMTLSOnly(http.HandlerFunc(a.handleAPIUsageV1)))
 	mux.Handle("/api/v1/traffic/summary", a.apiV1Auth(http.HandlerFunc(a.handleAPITrafficSummaryV1)))
 	mux.Handle("/api/v1/ops/nodes", a.apiV1Auth(http.HandlerFunc(a.handleAPIOpsNodesV1)))
+	mux.Handle("/api/v1/backups", a.apiV1Auth(http.HandlerFunc(a.handleAPIBackupsV1)))
+	mux.Handle("/api/v1/backups/", a.apiV1Auth(http.HandlerFunc(a.handleAPIBackupRoutesV1)))
 
 	return withRequestID(mux)
 }

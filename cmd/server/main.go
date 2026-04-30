@@ -23,6 +23,14 @@ import (
 func main() {
 	cfg := config.Load()
 
+	if applied, err := app.ApplyPendingRestore(cfg.DBPath, func() string {
+		return time.Now().UTC().Format("20060102T150405Z")
+	}); err != nil {
+		log.Fatalf("apply pending restore: %v", err)
+	} else if applied {
+		log.Printf("applied pending restore from %s", cfg.DBPath+".pending-restore")
+	}
+
 	conn, err := db.Open(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
