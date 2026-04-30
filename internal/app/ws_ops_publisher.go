@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"strings"
 	"time"
+
+	"neutrino/internal/repo"
 )
 
 const opsSnapshotInterval = 5 * time.Second
@@ -43,13 +44,19 @@ func (a *App) startOpsSnapshotPublisher(ctx context.Context) {
 	}
 }
 
-// opsSnapshot mirrors the shape the /ops dashboard expects so the client
-// can update its DOM from a single push without issuing the three polling
-// requests.
+// opsSnapshot is the payload shape pushed to /api/v1/stream subscribers.
+//
+// IMPORTANT: each sub-shape must stay in lock-step with the corresponding
+// polling endpoint so the /ops dashboard renders identical fields whether
+// it's reading from WebSocket pushes or its 5s polling fallback:
+//
+//   host    → /api/v1/metrics/host (latest item + month)
+//   online  → /api/v1/online-users (items)
+//   nodes   → /api/v1/ops/nodes    (items, via buildOpsNodesItems)
 type opsSnapshot struct {
-	Host   *opsHostSnapshot         `json:"host,omitempty"`
-	Online []map[string]any         `json:"online"`
-	Nodes  []map[string]any         `json:"nodes"`
+	Host   *opsHostSnapshot   `json:"host,omitempty"`
+	Online []repo.OnlineUser  `json:"online"`
+	Nodes  []map[string]any   `json:"nodes"`
 }
 
 type opsHostSnapshot struct {
@@ -68,7 +75,7 @@ type opsMonthSnapshot struct {
 
 func (a *App) buildOpsSnapshot(ctx context.Context) (opsSnapshot, error) {
 	out := opsSnapshot{
-		Online: []map[string]any{},
+		Online: []repo.OnlineUser{},
 		Nodes:  []map[string]any{},
 	}
 
@@ -96,56 +103,16 @@ func (a *App) buildOpsSnapshot(ctx context.Context) (opsSnapshot, error) {
 		}
 	}
 
-	if onlines, err := a.store.ListOnlineUsers(ctx, a.cfg.OnlineDisplayWindowSec); err == nil {
-		for _, o := range onlines {
-			out.Online = append(out.Online, map[string]any{
-				"user_id":     o.UserID,
-				"username":    o.Username,
-				"client_ip":   o.ClientIP,
-				"last_seen":   fmtMaybeTime(&o.LastSeen),
-				"first_seen":  fmtMaybeTime(&o.FirstSeen),
-			})
-		}
+	if onlines, err := a.store.ListOnlineUsers(ctx, a.cfg.OnlineDisplayWindowSec); err == nil && len(onlines) > 0 {
+		out.Online = onlines
 	}
 
-	nodes, err := a.store.ListNodes(ctx)
+	nodes, err := a.buildOpsNodesItems(ctx)
 	if err != nil {
 		return out, err
 	}
-	metricsByNode, _ := a.store.ListNodeRuntimeMetrics(ctx)
-	staleAfter := 120 * time.Second
-	for _, n := range nodes {
-		health := "unknown"
-		switch {
-		case !n.Enabled:
-			health = "disabled"
-		case n.LastSeenAt != nil && time.Since(*n.LastSeenAt) <= staleAfter:
-			health = "online"
-		case n.LastSeenAt != nil:
-			health = "stale"
-		}
-		item := map[string]any{
-			"id":           n.ID,
-			"name":         n.Name,
-			"enabled":      n.Enabled,
-			"managed":      n.Managed,
-			"health":       health,
-			"last_seen_at": fmtMaybeTime(n.LastSeenAt),
-			"last_error":   strings.TrimSpace(n.LastError),
-		}
-		if m, ok := metricsByNode[n.ID]; ok {
-			item["agent_metrics"] = map[string]any{
-				"cpu_percent":       m.CPUPercent,
-				"memory_bytes":      m.MemoryBytes,
-				"inbound_bps":       m.InboundBPS,
-				"outbound_bps":      m.OutboundBPS,
-				"disk_used_percent": m.DiskUsedPercent,
-				"uptime_sec":        m.UptimeSec,
-				"queue_batches":     m.QueueBatches,
-			}
-			item["agent_metrics_at"] = fmtMaybeTime(&m.UpdatedAt)
-		}
-		out.Nodes = append(out.Nodes, item)
+	if len(nodes) > 0 {
+		out.Nodes = nodes
 	}
 	return out, nil
 }

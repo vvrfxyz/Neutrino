@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +13,82 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+// TestFunctional_Stream_NodePayloadShapeMatchesPolling guards against the
+// WS publisher and the /api/v1/ops/nodes polling endpoint drifting apart.
+// Codex review caught a regression where the WS payload omitted ~10 fields
+// (pending_jobs, running_kind, version markers, several agent_metrics
+// entries, month_usage). The /ops dashboard JS reads from one or the
+// other depending on transport, so the two MUST emit the same shape.
+func TestFunctional_Stream_NodePayloadShapeMatchesPolling(t *testing.T) {
+	env := setupTestEnv(t)
+	createNodeViaBasicAuth(t, env, fmt.Sprintf("stream-shape-node-%d", time.Now().UnixNano()))
+
+	// Polling reference.
+	httpResp := env.request(t, http.MethodGet, "/api/v1/ops/nodes", nil, true, "")
+	defer httpResp.Body.Close()
+	mustStatus(t, httpResp, http.StatusOK)
+	var pollPayload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&pollPayload); err != nil {
+		t.Fatalf("decode poll: %v", err)
+	}
+	if len(pollPayload.Items) == 0 {
+		t.Fatalf("expected at least one node from polling endpoint")
+	}
+	pollKeysSet := keysOf(pollPayload.Items[0])
+	pollKeys := make([]string, 0, len(pollKeysSet))
+	for k := range pollKeysSet {
+		pollKeys = append(pollKeys, k)
+	}
+
+	// Snapshot from WebSocket.
+	wsURL := streamURLFor(t, env.http.URL)
+	conn := dialAdminWebSocket(t, env, wsURL)
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		var ev struct {
+			Kind string          `json:"kind"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		if ev.Kind != "ops_snapshot" {
+			continue
+		}
+		var snap struct {
+			Nodes []map[string]any `json:"nodes"`
+		}
+		if err := json.Unmarshal(ev.Data, &snap); err != nil {
+			t.Fatalf("decode snapshot: %v", err)
+		}
+		if len(snap.Nodes) == 0 {
+			t.Fatalf("snapshot had no nodes despite polling returning %d", len(pollPayload.Items))
+		}
+		wsKeys := keysOf(snap.Nodes[0])
+		for _, want := range pollKeys {
+			if _, ok := wsKeys[want]; !ok {
+				t.Errorf("WS node payload missing key %q (present in polling response)", want)
+			}
+		}
+		return
+	}
+}
+
+func keysOf(m map[string]any) map[string]struct{} {
+	out := make(map[string]struct{}, len(m))
+	for k := range m {
+		out[k] = struct{}{}
+	}
+	return out
+}
 
 // TestFunctional_Stream_PublishesOpsSnapshot verifies the /api/v1/stream
 // endpoint fully:
