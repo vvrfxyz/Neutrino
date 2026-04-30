@@ -659,6 +659,21 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 		return nil, JobError{Retryable: false, Msg: "rendered config is not valid json"}
 	}
 
+	// Smart restart: when the canonical form of the new config matches the
+	// existing on-disk config, skip the entire apply pipeline (backup + write
+	// + reload). This prevents needless connection churn when the panel emits
+	// a re-sync that produces an identical config.
+	if old, err := os.ReadFile(a.xrayConfigPath); err == nil {
+		if configEqualCanonical(old, renderedBytes) {
+			return map[string]any{
+				"ok":          true,
+				"skipped":     true,
+				"reason":      "config unchanged",
+				"config_path": a.xrayConfigPath,
+			}, nil
+		}
+	}
+
 	backupPath := ""
 	if old, err := os.ReadFile(a.xrayConfigPath); err == nil {
 		backupPath = fmt.Sprintf("%s.bak.%s", a.xrayConfigPath, time.Now().UTC().Format("20060102T150405Z"))
