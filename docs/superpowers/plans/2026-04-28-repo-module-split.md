@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status update — 2026-05-06:** Code implementation is complete. Phase 1 repo splitting is reflected in the current tree (`extensions.go` has been removed, `store.go` is down to the shared core, and domain files exist for users, usage, subscriptions, traffic, online sessions, nodes, API keys, backups, and ops queries). Phase 2 service wiring is also complete: `internal/service/{users,usage,nodes,ops}.go` now owns lifecycle, user mutations, usage batch recording, node sync/job/managed-Xray orchestration, and ops aggregation used by handlers. Validation: `go test ./...` passes. Historical per-step commit commands below were not executed as part of this status update unless a separate commit is requested.
+
 **Goal:** Split the monolithic `internal/repo/store.go` (2407 LOC) and `internal/repo/extensions.go` (2222 LOC) into focused domain files, then introduce a thin `internal/service` layer that owns business orchestration.
 
 **Architecture:** Two phases. Phase 1 keeps everything in `package repo` but splits the two megafiles into domain-focused files. Phase 2 introduces `internal/service/{users,usage,nodes,ops}.go` that extract orchestration logic currently living in `internal/app/app.go`. Dependencies flow: `app → service → repo`. No interface abstractions yet — concrete `*Store` and `*Service` types.
@@ -15,6 +17,16 @@
 - `user` owns lifecycle/subscription rules
 - `ops` is a read-only observation window
 - Every step must pass `go test ./...` and `go build ./...`
+
+## Completion audit — 2026-05-06
+
+| Area | Current status |
+|---|---|
+| Phase 1 repo split | Complete. `internal/repo/store.go` is a shared core file, and domain behavior has been moved into focused files including `users.go`, `usage.go`, `traffic.go`, `subscriptions.go`, `online_sessions.go`, `nodes.go`, `api_keys.go`, `backup.go`, and `ops_queries.go`. |
+| `extensions.go` cleanup | Complete. The file no longer exists in `internal/repo/`. |
+| Phase 2 service layer | Complete. `internal/service/users.go`, `usage.go`, `nodes.go`, and `ops.go` are wired through `App` service accessors. |
+| App responsibility boundary | Updated. HTTP handlers retain parsing, response shaping, template rendering, and audit logging; multi-step user lifecycle/sync, usage batch side effects, node sync/job/managed-Xray orchestration, and ops aggregation are handled by services. |
+| Verification | `go test ./...` passed on 2026-05-06. |
 
 ---
 

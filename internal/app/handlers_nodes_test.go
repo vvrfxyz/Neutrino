@@ -298,6 +298,29 @@ func TestHandleAPINodeDeleteDisablesAndWaitsForEmptyUsersSync(t *testing.T) {
 	}
 }
 
+func TestHandleAPINodeDeleteMissingReturnsNotFound(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "app-test.db")
+	conn, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+	if err := db.Migrate(conn); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := repo.New(conn, config.Config{})
+	a := &App{store: store}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/404", nil)
+	rr := httptest.NewRecorder()
+
+	a.handleAPINodeByIDV1(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("delete missing node got %d body=%s, want 404", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleAPINodePatchPreservesOmittedFieldsAndQueuesDisableSync(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "app-test.db")
 	conn, err := db.Open(dbPath)
@@ -399,5 +422,68 @@ func TestHandleManagedXrayRollbackRejectsInvalidJSON(t *testing.T) {
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("invalid json should not enqueue rollback job: %+v", jobs)
+	}
+}
+
+func TestHandleManagedXrayDeployMissingNodeReturnsNotFound(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "app-test.db")
+	conn, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+	if err := db.Migrate(conn); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := repo.New(conn, config.Config{})
+	a := &App{store: store}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/404/managed/xray/deploy", nil)
+	rr := httptest.NewRecorder()
+
+	a.handleAPINodeByIDV1Extended(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("deploy missing node got %d body=%s, want 404", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleManagedXrayDeployInvalidExtraJSONReturnsBadRequest(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "app-test.db")
+	conn, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+	if err := db.Migrate(conn); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := repo.New(conn, config.Config{})
+	node, err := store.CreateNode(ctx, repo.CreateNodeInput{
+		Name:     "deploy-invalid-extra-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+		Managed:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if _, err := store.RawDB().ExecContext(ctx, `UPDATE nodes SET extra_json = ? WHERE id = ?`, "{", node.ID); err != nil {
+		t.Fatalf("poison extra_json: %v", err)
+	}
+
+	a := &App{store: store}
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/managed/xray/deploy", node.ID), nil)
+	rr := httptest.NewRecorder()
+
+	a.handleAPINodeByIDV1Extended(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("deploy invalid extra_json got %d body=%s, want 400", rr.Code, rr.Body.String())
 	}
 }

@@ -26,8 +26,29 @@ func (s *UsageService) EnforceIPLimits(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(affected) > 0 {
+	if len(affected) > 0 && s.sync != nil {
 		s.sync.RequestUsersSync(ctx)
 	}
 	return nil
+}
+
+func (s *UsageService) RecordBatch(ctx context.Context, batch []repo.UsageInput) ([]repo.UsageBatchItemResult, error) {
+	results, err := s.store.RecordUsageBatchIdempotent(ctx, batch)
+	if err != nil {
+		return nil, err
+	}
+	needUsersSync := false
+	for _, result := range results {
+		if result.Err != nil || result.Duplicate || result.User == nil {
+			continue
+		}
+		if result.User.Status != "active" {
+			needUsersSync = true
+			break
+		}
+	}
+	if needUsersSync && s.sync != nil {
+		s.sync.RequestUsersSync(ctx)
+	}
+	return results, nil
 }

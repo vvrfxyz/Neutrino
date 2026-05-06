@@ -2,8 +2,6 @@ package app
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,11 +12,11 @@ import (
 	"time"
 
 	"neutrino/internal/repo"
+	"neutrino/internal/service"
 )
 
 func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
+	return service.SHA256Hex(s)
 }
 
 func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID int64) {
@@ -70,37 +68,15 @@ func (a *App) handleAPINodeAgentUsers(w http.ResponseWriter, r *http.Request, no
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if err := a.userService.RefreshLifecycleState(r.Context()); err != nil {
+	if err := a.users().RefreshLifecycleState(r.Context()); err != nil {
 		http.Error(w, "refresh users failed", http.StatusInternalServerError)
 		return
 	}
 
-	node, err := a.store.GetNode(r.Context(), nodeID)
-	if err != nil {
-		http.Error(w, "load node failed", http.StatusInternalServerError)
-		return
-	}
-	if !node.Enabled {
-		a.writeJSON(w, http.StatusOK, map[string]any{"users": []any{}})
-		return
-	}
-
-	users, err := a.store.ListUsersForNode(r.Context(), node.ID)
+	items, err := a.nodes().UsersForAgent(r.Context(), nodeID)
 	if err != nil {
 		http.Error(w, "list users failed", http.StatusInternalServerError)
 		return
-	}
-	items := make([]map[string]any, 0, len(users))
-	for _, u := range users {
-		item := map[string]any{
-			"user_id": u.ID,
-			"email":   u.Username,
-			"status":  u.Status,
-		}
-		if u.ActiveLink != nil {
-			item["uuid"] = u.ActiveLink.UUID
-		}
-		items = append(items, item)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"users": items})
 }
@@ -313,26 +289,24 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(parts) == 2 && parts[1] == "enable" && r.Method == http.MethodPost {
-		if err := a.store.SetNodeEnabled(r.Context(), nodeID, true); err != nil {
+		if err := a.nodes().SetEnabled(r.Context(), nodeID, true); err != nil {
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		if act := actorFromRequest(a, r); act.typ != "" {
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.enable", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
-		a.requestUsersSyncNow(r.Context())
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "disable" && r.Method == http.MethodPost {
-		if err := a.store.SetNodeEnabled(r.Context(), nodeID, false); err != nil {
+		if err := a.nodes().SetEnabled(r.Context(), nodeID, false); err != nil {
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		if act := actorFromRequest(a, r); act.typ != "" {
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.disable", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
-		a.requestUsersSyncForNodeNow(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -349,7 +323,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 				limit = int(parsed)
 			}
 		}
-		items, err := a.store.ListNodeJobs(r.Context(), nodeID, limit)
+		items, err := a.nodes().ListJobs(r.Context(), nodeID, limit)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -366,35 +340,22 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 
 	// Managed config deployment endpoints (panel-managed config -> desired state + job).
 	if len(parts) == 4 && parts[1] == "managed" && parts[2] == "xray" && parts[3] == "deploy" && r.Method == http.MethodPost {
-		node, err := a.store.GetNode(r.Context(), nodeID)
+		result, err := a.nodes().DeployManagedXray(r.Context(), nodeID)
 		if err != nil {
-			http.Error(w, "node not found", http.StatusNotFound)
-			return
-		}
-		if !node.Managed {
-			http.Error(w, "node is not managed", http.StatusBadRequest)
-			return
-		}
-		if node.CoreType != "xray" {
-			http.Error(w, "node core_type is not xray", http.StatusBadRequest)
-			return
-		}
-		payload, err := buildManagedXrayApplyPayload(node)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		desiredVersion := sha256Hex(payload)
-		jobID, enqueued, err := a.store.DeployManagedXray(r.Context(), nodeID, payload, desiredVersion, 120, "xray_apply")
-		if err != nil {
-			http.Error(w, "deploy failed", http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			if errors.Is(err, repo.ErrNodeNotFound) {
+				status = http.StatusNotFound
+			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || strings.Contains(err.Error(), "not managed") || strings.Contains(err.Error(), "core_type") {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		if act := actorFromRequest(a, r); act.typ != "" {
-			detail, _ := json.Marshal(map[string]any{"desired_version": desiredVersion, "job_id": jobID, "enqueued": enqueued})
+			detail, _ := json.Marshal(map[string]any{"desired_version": result.DesiredVersion, "job_id": result.JobID, "enqueued": result.Enqueued})
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.xray.deploy", "node", fmt.Sprintf("%d", nodeID), string(detail), a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": jobID, "enqueued": enqueued, "desired_version": desiredVersion})
+		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued, "desired_version": result.DesiredVersion})
 		return
 	}
 	if len(parts) == 4 && parts[1] == "managed" && parts[2] == "xray" && parts[3] == "rollback" && r.Method == http.MethodPost {
@@ -416,39 +377,26 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 				return
 			}
 		}
-		node, err := a.store.GetNode(r.Context(), nodeID)
-		if err != nil {
-			http.Error(w, "node not found", http.StatusNotFound)
-			return
-		}
-		if !node.Managed {
-			http.Error(w, "node is not managed", http.StatusBadRequest)
-			return
-		}
-		if node.CoreType != "xray" {
-			http.Error(w, "node core_type is not xray", http.StatusBadRequest)
-			return
-		}
 		backupName := strings.TrimSpace(req.BackupName)
 		if backupName == "" && strings.TrimSpace(req.BackupPath) != "" {
 			backupName = strings.TrimSpace(filepath.Base(req.BackupPath))
 		}
-		payload, err := buildManagedXrayRollbackPayload(node, backupName)
+		result, err := a.nodes().RollbackManagedXray(r.Context(), nodeID, backupName)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		desiredVersion := sha256Hex(payload)
-		jobID, enqueued, err := a.store.EnqueueNodeJob(r.Context(), nodeID, "xray_rollback", desiredVersion, payload, 60, "xray_rollback")
-		if err != nil {
-			http.Error(w, "enqueue failed", http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			if errors.Is(err, repo.ErrNodeNotFound) {
+				status = http.StatusNotFound
+			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || strings.Contains(err.Error(), "not managed") || strings.Contains(err.Error(), "core_type") {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		if act := actorFromRequest(a, r); act.typ != "" {
-			detail, _ := json.Marshal(map[string]any{"job_id": jobID, "enqueued": enqueued})
+			detail, _ := json.Marshal(map[string]any{"job_id": result.JobID, "enqueued": result.Enqueued})
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.xray.rollback", "node", fmt.Sprintf("%d", nodeID), string(detail), a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": jobID, "enqueued": enqueued})
+		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued})
 		return
 	}
 

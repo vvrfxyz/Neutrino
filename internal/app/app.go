@@ -38,6 +38,7 @@ type App struct {
 	userService  *service.UserService
 	usageService *service.UsageService
 	nodeService  *service.NodeService
+	opsService   *service.OpsService
 
 	wsHub *wsHub
 
@@ -245,8 +246,47 @@ func New(cfg config.Config, store *repo.Store) *App {
 	a.userService = service.NewUserService(store, a)
 	a.usageService = service.NewUsageService(store, cfg.OnlineWindowSec, cfg.IPLimitStrikes, a)
 	a.nodeService = service.NewNodeService(store, cfg.NodeStaleDeleteAfterSec, a)
+	a.opsService = service.NewOpsService(store)
 	a.wsHub = newWSHub()
 	return a
+}
+
+func (a *App) ensureServices() {
+	if a.store == nil {
+		return
+	}
+	if a.userService == nil {
+		a.userService = service.NewUserService(a.store, a)
+	}
+	if a.usageService == nil {
+		a.usageService = service.NewUsageService(a.store, a.cfg.OnlineWindowSec, a.cfg.IPLimitStrikes, a)
+	}
+	if a.nodeService == nil {
+		a.nodeService = service.NewNodeService(a.store, a.cfg.NodeStaleDeleteAfterSec, a)
+	}
+	if a.opsService == nil {
+		a.opsService = service.NewOpsService(a.store)
+	}
+}
+
+func (a *App) users() *service.UserService {
+	a.ensureServices()
+	return a.userService
+}
+
+func (a *App) usage() *service.UsageService {
+	a.ensureServices()
+	return a.usageService
+}
+
+func (a *App) nodes() *service.NodeService {
+	a.ensureServices()
+	return a.nodeService
+}
+
+func (a *App) ops() *service.OpsService {
+	a.ensureServices()
+	return a.opsService
 }
 
 func loadCSRFSecret() []byte {
@@ -402,7 +442,7 @@ func (a *App) handleUsers(w http.ResponseWriter, r *http.Request) {
 				nodeIDs = append(nodeIDs, id)
 			}
 		}
-		u, err := a.store.CreateUser(r.Context(), repo.CreateUserInput{
+		u, err := a.users().Create(r.Context(), repo.CreateUserInput{
 			Username:       username,
 			MonthlyLimitGB: limitGB,
 			CountingMode:   mode,
@@ -425,7 +465,6 @@ func (a *App) handleUsers(w http.ResponseWriter, r *http.Request) {
 			"device_limit":     deviceLimit,
 			"plan_days":        planDays,
 		})
-		a.requestUsersSyncNow(r.Context())
 		if r.Header.Get("HX-Request") == "true" {
 			setHXBoolTrigger(w, "user-created")
 			a.renderUsersTableOnly(w, r)
@@ -471,7 +510,7 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 
 	switch parts[1] {
 	case "links":
-		linkUser, err := a.store.CreateProxyLink(r.Context(), userID)
+		linkUser, err := a.users().RotateProxyLink(r.Context(), userID)
 		if err != nil {
 			a.handleUserActionError(w, r, userID, "生成链接失败: "+err.Error())
 			return
@@ -484,37 +523,33 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 				return 0
 			}(),
 		})
-		a.requestUsersSyncNow(r.Context())
 		a.handleUserActionSuccess(w, r, userID, "已生成新链接")
 	case "enable":
-		u, err := a.store.SetUserStatus(r.Context(), userID, "active")
+		u, err := a.users().SetStatus(r.Context(), userID, "active")
 		if err != nil {
 			a.handleUserActionError(w, r, userID, "启用失败: "+err.Error())
 			return
 		}
 		auditAction(a, r, "user.status.set", "user", fmt.Sprintf("%d", userID), map[string]any{"status": "active"})
 		_ = u
-		a.syncUsersAndMaybeRestartManagedXray(r.Context(), false)
 		a.handleUserActionSuccess(w, r, userID, "用户已启用")
 	case "disable":
-		u, err := a.store.SetUserStatus(r.Context(), userID, "disabled")
+		u, err := a.users().SetStatus(r.Context(), userID, "disabled")
 		if err != nil {
 			a.handleUserActionError(w, r, userID, "禁用失败: "+err.Error())
 			return
 		}
 		auditAction(a, r, "user.status.set", "user", fmt.Sprintf("%d", userID), map[string]any{"status": "disabled"})
 		_ = u
-		a.syncUsersAndMaybeRestartManagedXray(r.Context(), true)
 		a.handleUserActionSuccess(w, r, userID, "用户已禁用")
 	case "delete":
-		username, err := a.store.DeleteUser(r.Context(), userID)
+		username, err := a.users().Delete(r.Context(), userID)
 		if err != nil {
 			a.handleUserActionError(w, r, userID, "删除失败: "+err.Error())
 			return
 		}
 		auditAction(a, r, "user.delete", "user", fmt.Sprintf("%d", userID), map[string]any{"username": username})
 		_ = username
-		a.syncUsersAndMaybeRestartManagedXray(r.Context(), true)
 		if r.Header.Get("HX-Request") == "true" {
 			setHXToast(w, "success", "用户已删除")
 			a.renderUsersTableOnly(w, r)
@@ -531,7 +566,7 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 			a.handleUserActionError(w, r, userID, "设备上限必须大于 0")
 			return
 		}
-		if _, err := a.store.SetUserDeviceLimit(r.Context(), userID, limit); err != nil {
+		if _, err := a.users().SetDeviceLimit(r.Context(), userID, limit); err != nil {
 			a.handleUserActionError(w, r, userID, "更新设备上限失败: "+err.Error())
 			return
 		}
@@ -543,12 +578,11 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reason := strings.TrimSpace(r.FormValue("reason"))
-		if err := a.store.ResetUserQuota(r.Context(), userID, reason); err != nil {
+		if err := a.users().ResetQuota(r.Context(), userID, reason); err != nil {
 			a.handleUserActionError(w, r, userID, "重置失败: "+err.Error())
 			return
 		}
 		auditAction(a, r, "user.quota.reset", "user", fmt.Sprintf("%d", userID), map[string]any{"reason": reason})
-		a.requestUsersSync(r.Context())
 		a.handleUserActionSuccess(w, r, userID, "配额已重置")
 	case "quota_credit":
 		if err := r.ParseForm(); err != nil {
@@ -568,12 +602,11 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 			a.handleUserActionError(w, r, userID, "补偿流量必须大于 0")
 			return
 		}
-		if err := a.store.CreditUserQuota(r.Context(), userID, creditBytes); err != nil {
+		if err := a.users().CreditQuota(r.Context(), userID, creditBytes); err != nil {
 			a.handleUserActionError(w, r, userID, "补偿失败: "+err.Error())
 			return
 		}
 		auditAction(a, r, "user.quota.credit", "user", fmt.Sprintf("%d", userID), map[string]any{"bytes": creditBytes})
-		a.requestUsersSync(r.Context())
 		a.handleUserActionSuccess(w, r, userID, "已补偿流量")
 	case "plan_extend":
 		if err := r.ParseForm(); err != nil {
@@ -585,12 +618,11 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 			a.handleUserActionError(w, r, userID, "延期天数必须大于 0")
 			return
 		}
-		if err := a.store.ExtendUserPlan(r.Context(), userID, days); err != nil {
+		if err := a.users().ExtendPlan(r.Context(), userID, days); err != nil {
 			a.handleUserActionError(w, r, userID, "延期失败: "+err.Error())
 			return
 		}
 		auditAction(a, r, "user.plan.extend", "user", fmt.Sprintf("%d", userID), map[string]any{"days": days})
-		a.requestUsersSync(r.Context())
 		a.handleUserActionSuccess(w, r, userID, "已延期")
 	case "node_access":
 		if err := r.ParseForm(); err != nil {
@@ -603,12 +635,11 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 				nodeIDs = append(nodeIDs, id)
 			}
 		}
-		if err := a.store.SetUserNodeAccess(r.Context(), userID, nodeIDs); err != nil {
+		if err := a.users().SetNodeAccess(r.Context(), userID, nodeIDs); err != nil {
 			a.handleUserActionError(w, r, userID, "更新节点权限失败: "+err.Error())
 			return
 		}
 		auditAction(a, r, "user.node_access.set", "user", fmt.Sprintf("%d", userID), map[string]any{"node_ids": nodeIDs})
-		a.requestUsersSyncNow(r.Context())
 		a.handleUserActionSuccess(w, r, userID, "节点权限已更新")
 	default:
 		http.NotFound(w, r)
@@ -643,13 +674,13 @@ func (a *App) StartWorkers(ctx context.Context) {
 			now := time.Now().UTC()
 			if lastQuotaAt.IsZero() || now.Sub(lastQuotaAt) >= quotaInterval {
 				lastQuotaAt = now
-				if err := a.userService.RefreshLifecycleState(ctx); err != nil {
+				if err := a.users().RefreshLifecycleState(ctx); err != nil {
 					log.Printf("lifecycle refresh error: %v", err)
 				}
-				if err := a.usageService.EnforceIPLimits(ctx); err != nil {
+				if err := a.usage().EnforceIPLimits(ctx); err != nil {
 					log.Printf("enforce ip limit error: %v", err)
 				}
-				if err := a.nodeService.CleanupStaleNodes(ctx); err != nil {
+				if err := a.nodes().CleanupStaleNodes(ctx); err != nil {
 					log.Printf("cleanup stale nodes error: %v", err)
 				}
 			}
@@ -747,62 +778,41 @@ func (a *App) requestUsersSyncWithThrottle(ctx context.Context, throttle bool) {
 		return
 	}
 	a.lastUsersSyncReq = now
-	a.enqueueUsersSyncForEnabledNodes(ctx)
+	if err := a.nodes().EnqueueUsersSyncForEnabledNodes(ctx); err != nil {
+		log.Printf("list nodes for users_sync: %v", err)
+	}
 }
 
 func (a *App) requestUsersSyncForNodeNow(ctx context.Context, nodeID int64) {
 	if nodeID <= 0 {
 		return
 	}
-	node, err := a.store.GetNode(ctx, nodeID)
-	if err != nil {
-		return
+	if err := a.nodes().EnqueueUsersSyncForNode(ctx, nodeID); err != nil {
+		log.Printf("enqueue users_sync for node=%d: %v", nodeID, err)
 	}
-	users := make([]repo.User, 0)
-	if node.Enabled {
-		users, err = a.store.ListUsersForNode(ctx, nodeID)
-		if err != nil {
-			return
-		}
-	}
-	ver := usersDesiredVersion(users)
-	_ = a.store.SetNodeDesiredUsersVersion(ctx, nodeID, ver)
-	_, _, _ = a.store.EnqueueNodeJob(ctx, nodeID, "users_sync", ver, "{}", 20, "users_sync")
 }
 
 // Satisfy service.SyncRequester — delegates to the throttled unexported variants.
-func (a *App) RequestUsersSync(ctx context.Context)                         { a.requestUsersSync(ctx) }
-func (a *App) RequestUsersSyncNow(ctx context.Context)                     { a.requestUsersSyncNow(ctx) }
-func (a *App) RequestUsersSyncForNodeNow(ctx context.Context, nodeID int64) { a.requestUsersSyncForNodeNow(ctx, nodeID) }
+func (a *App) RequestUsersSync(ctx context.Context)    { a.requestUsersSync(ctx) }
+func (a *App) RequestUsersSyncNow(ctx context.Context) { a.requestUsersSyncNow(ctx) }
+func (a *App) RequestUsersSyncForNodeNow(ctx context.Context, nodeID int64) {
+	a.requestUsersSyncForNodeNow(ctx, nodeID)
+}
+func (a *App) RequestManagedXrayReload(ctx context.Context) {
+	if err := a.nodes().EnqueueManagedXrayReloadForEnabledNodes(ctx); err != nil {
+		log.Printf("enqueue managed xray reload: %v", err)
+	}
+}
 
 func (a *App) syncUsersAndMaybeRestartManagedXray(ctx context.Context, restartManagedXray bool) {
 	if restartManagedXray {
-		a.enqueueManagedXrayReloadForEnabledNodes(ctx)
+		a.RequestManagedXrayReload(ctx)
 	}
 	a.requestUsersSyncNow(ctx)
 }
 
 func (a *App) listUsersWithOnlineStats(ctx context.Context) ([]repo.User, error) {
-	if err := a.userService.RefreshLifecycleState(ctx); err != nil {
-		return nil, err
-	}
-	users, err := a.store.ListUsers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	stats, err := a.store.ListUserOnlineStats(ctx, a.cfg.OnlineDisplayWindowSec)
-	if err != nil {
-		return nil, err
-	}
-	for i := range users {
-		stat, ok := stats[users[i].ID]
-		if !ok {
-			continue
-		}
-		users[i].OnlineSessionCount = stat.SessionCount
-		users[i].OnlineDeviceCount = stat.DeviceCount
-	}
-	return users, nil
+	return a.users().ListWithOnlineStats(ctx, a.cfg.OnlineDisplayWindowSec)
 }
 
 func (a *App) renderIndex(w http.ResponseWriter, r *http.Request, errMsg string) {
@@ -811,7 +821,7 @@ func (a *App) renderIndex(w http.ResponseWriter, r *http.Request, errMsg string)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	nodes, _ := a.store.ListNodes(r.Context())
+	nodes, _ := a.nodes().List(r.Context())
 	current, _ := a.currentAdmin(r)
 	data := PageData{
 		CurrentAdmin: current,
@@ -829,11 +839,7 @@ func (a *App) renderIndex(w http.ResponseWriter, r *http.Request, errMsg string)
 }
 
 func (a *App) renderUserDetail(w http.ResponseWriter, r *http.Request, userID int64, errMsg string) {
-	if err := a.userService.RefreshLifecycleState(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	user, err := a.store.GetUser(r.Context(), userID)
+	detail, err := a.users().GetDetail(r.Context(), userID, 120, a.cfg.OnlineDisplayWindowSec)
 	if err != nil {
 		if errors.Is(err, repo.ErrUserNotFound) {
 			http.NotFound(w, r)
@@ -842,62 +848,39 @@ func (a *App) renderUserDetail(w http.ResponseWriter, r *http.Request, userID in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	accessEvents, err := a.store.ListUserEventsFiltered(r.Context(), userID, 120, "xray-access", nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	onlineSessions, err := a.store.ListUserOnlineSessions(r.Context(), userID, a.cfg.OnlineDisplayWindowSec)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	onlineDevices := make(map[string]struct{}, len(onlineSessions))
-	for _, item := range onlineSessions {
-		if ip := strings.TrimSpace(item.ClientIP); ip != "" {
-			onlineDevices[ip] = struct{}{}
-		}
-	}
 
 	current, _ := a.currentAdmin(r)
 	subURL := ""
-	if tok, tokErr := a.store.GetSubscriptionTokenByUserID(r.Context(), userID); tokErr == nil {
-		subURL = subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, tok.Token, "v2rayn")
+	if detail.SubscriptionToken != nil {
+		subURL = subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, detail.SubscriptionToken.Token, "v2rayn")
 	}
 	tgCode := ""
 	tgHint := "未绑定"
-	if bind, bindErr := a.store.GetTelegramBindingByUserID(r.Context(), userID); bindErr == nil {
-		tgCode = bind.BindCode
-		if bind.TelegramChatID != nil {
-			tgHint = fmt.Sprintf("已绑定 chat_id=%d", *bind.TelegramChatID)
-			if strings.TrimSpace(bind.TelegramUsername) != "" {
-				tgHint += " @" + bind.TelegramUsername
+	if detail.TelegramBinding != nil {
+		tgCode = detail.TelegramBinding.BindCode
+		if detail.TelegramBinding.TelegramChatID != nil {
+			tgHint = fmt.Sprintf("已绑定 chat_id=%d", *detail.TelegramBinding.TelegramChatID)
+			if strings.TrimSpace(detail.TelegramBinding.TelegramUsername) != "" {
+				tgHint += " @" + detail.TelegramBinding.TelegramUsername
 			}
 		}
-	}
-	allNodes, _ := a.store.ListNodes(r.Context())
-	allowedIDs, _ := a.store.ListUserNodeIDs(r.Context(), userID)
-	allowedMap := make(map[int64]bool, len(allowedIDs))
-	for _, id := range allowedIDs {
-		allowedMap[id] = true
 	}
 	data := PageData{
 		CurrentAdmin: current,
 		ActivePage:   "users",
 		CSRFToken:    a.csrfTokenFor(r),
 		Content: userDetailData{
-			User:               user,
+			User:               detail.User,
 			SubscriptionURL:    subURL,
 			TelegramBindCode:   tgCode,
 			TelegramBoundHint:  tgHint,
-			AccessEvents:       accessEvents,
-			OnlineSessions:     onlineSessions,
-			OnlineDeviceCount:  len(onlineDevices),
-			OnlineSessionCount: len(onlineSessions),
+			AccessEvents:       detail.AccessEvents,
+			OnlineSessions:     detail.OnlineSessions,
+			OnlineDeviceCount:  detail.OnlineDeviceCount,
+			OnlineSessionCount: detail.OnlineSessionCount,
 			OnlineWindowSec:    a.cfg.OnlineDisplayWindowSec,
-			AllNodes:           allNodes,
-			AllowedNodeIDs:     allowedMap,
+			AllNodes:           detail.AllNodes,
+			AllowedNodeIDs:     detail.AllowedNodeIDs,
 			Error:              errMsg,
 		},
 	}

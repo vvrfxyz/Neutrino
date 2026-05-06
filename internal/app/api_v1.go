@@ -1,12 +1,10 @@
 package app
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -134,7 +132,7 @@ func (a *App) handleAPIOnlineUsers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	out, err := a.store.ListOnlineUsers(r.Context(), a.cfg.OnlineDisplayWindowSec)
+	out, err := a.ops().ListOnlineUsers(r.Context(), a.cfg.OnlineDisplayWindowSec)
 	if err != nil {
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
@@ -156,7 +154,7 @@ func (a *App) handleAPIMetricsHost(w http.ResponseWriter, r *http.Request) {
 		"tx_bytes":    int64(0),
 		"total_bytes": int64(0),
 	}
-	if usage, ok, err := a.store.GetHostNetMonthlyUsage(r.Context(), now); err == nil && ok {
+	if usage, ok, err := a.ops().GetHostNetMonthlyUsage(r.Context(), now); err == nil && ok {
 		month["rx_bytes"] = usage.RXBytes
 		month["tx_bytes"] = usage.TXBytes
 		month["total_bytes"] = usage.RXBytes + usage.TXBytes
@@ -170,11 +168,7 @@ func (a *App) handleAPIMetricsHost(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAPIUsersV1(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		if err := a.userService.RefreshLifecycleState(r.Context()); err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		users, err := a.store.ListUsers(r.Context())
+		users, err := a.users().List(r.Context())
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -186,7 +180,7 @@ func (a *App) handleAPIUsersV1(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		u, err := a.store.CreateUser(r.Context(), in)
+		u, err := a.users().Create(r.Context(), in)
 		if err != nil {
 			message := "create failed"
 			if errors.Is(err, repo.ErrNodeNotFound) {
@@ -196,8 +190,7 @@ func (a *App) handleAPIUsersV1(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		auditAction(a, r, "user.create", "user", fmt.Sprintf("%d", u.ID), in)
-		a.requestUsersSyncNow(r.Context())
-		tok, _ := a.store.GetOrCreateSubscriptionToken(r.Context(), u.ID)
+		tok, _ := a.users().GetOrCreateSubscriptionToken(r.Context(), u.ID)
 		a.writeJSON(w, http.StatusCreated, map[string]any{
 			"user": u,
 			"subscription": map[string]any{
@@ -293,12 +286,11 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := a.store.ResetUserQuota(r.Context(), userID, req.Reason); err != nil {
+		if err := a.users().ResetQuota(r.Context(), userID, req.Reason); err != nil {
 			http.Error(w, "reset failed", http.StatusBadRequest)
 			return
 		}
 		auditAction(a, r, "user.quota.reset", "user", fmt.Sprintf("%d", userID), map[string]any{"reason": req.Reason})
-		a.requestUsersSync(r.Context())
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -310,12 +302,11 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		if err := a.store.CreditUserQuota(r.Context(), userID, req.Bytes); err != nil {
+		if err := a.users().CreditQuota(r.Context(), userID, req.Bytes); err != nil {
 			http.Error(w, "credit failed", http.StatusBadRequest)
 			return
 		}
 		auditAction(a, r, "user.quota.credit", "user", fmt.Sprintf("%d", userID), map[string]any{"bytes": req.Bytes})
-		a.requestUsersSync(r.Context())
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -327,17 +318,16 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		if err := a.store.ExtendUserPlan(r.Context(), userID, req.Days); err != nil {
+		if err := a.users().ExtendPlan(r.Context(), userID, req.Days); err != nil {
 			http.Error(w, "extend failed", http.StatusBadRequest)
 			return
 		}
 		auditAction(a, r, "user.plan.extend", "user", fmt.Sprintf("%d", userID), map[string]any{"days": req.Days})
-		a.requestUsersSync(r.Context())
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "subscription" && r.Method == http.MethodGet {
-		tok, err := a.store.GetSubscriptionTokenByUserID(r.Context(), userID)
+		tok, err := a.users().GetSubscriptionToken(r.Context(), userID)
 		if err != nil {
 			if errors.Is(err, repo.ErrUserNotFound) || errors.Is(err, sql.ErrNoRows) {
 				a.writeJSON(w, http.StatusOK, map[string]any{})
@@ -353,7 +343,7 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 3 && parts[1] == "subscription" && parts[2] == "rotate" && r.Method == http.MethodPost {
-		tok, err := a.store.RotateSubscriptionToken(r.Context(), userID)
+		tok, err := a.users().RotateSubscriptionToken(r.Context(), userID)
 		if err != nil {
 			http.Error(w, "rotate failed", http.StatusBadRequest)
 			return
@@ -368,7 +358,7 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "telegram-bind" && r.Method == http.MethodGet {
-		bind, err := a.store.GetTelegramBindingByUserID(r.Context(), userID)
+		bind, err := a.users().GetTelegramBinding(r.Context(), userID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				a.writeJSON(w, http.StatusOK, map[string]any{})
@@ -381,7 +371,7 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 3 && parts[1] == "telegram-bind" && parts[2] == "rotate" && r.Method == http.MethodPost {
-		bind, err := a.store.RegenerateTelegramBindCode(r.Context(), userID)
+		bind, err := a.users().RegenerateTelegramBindCode(r.Context(), userID)
 		if err != nil {
 			http.Error(w, "rotate bind failed", http.StatusInternalServerError)
 			return
@@ -396,7 +386,7 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAPIUserByIDV1(w http.ResponseWriter, r *http.Request, userID int64) {
 	switch r.Method {
 	case http.MethodGet:
-		u, err := a.store.GetUser(r.Context(), userID)
+		u, err := a.users().Get(r.Context(), userID)
 		if err != nil {
 			if errors.Is(err, repo.ErrUserNotFound) {
 				http.Error(w, "not found", http.StatusNotFound)
@@ -432,35 +422,33 @@ func (a *App) handleAPIUserByIDV1(w http.ResponseWriter, r *http.Request, userID
 			return
 		}
 		if req.Status != nil {
-			if _, err := a.store.SetUserStatus(r.Context(), userID, targetStatus); err != nil {
+			if _, err := a.users().SetStatus(r.Context(), userID, targetStatus); err != nil {
 				http.Error(w, "update failed", http.StatusBadRequest)
 				return
 			}
 			auditAction(a, r, "user.status.set", "user", fmt.Sprintf("%d", userID), map[string]any{"status": targetStatus})
-			a.syncUsersAndMaybeRestartManagedXray(r.Context(), targetStatus == "disabled")
 		}
 		if req.DeviceLimit != nil {
-			if _, err := a.store.SetUserDeviceLimit(r.Context(), userID, *req.DeviceLimit); err != nil {
+			if _, err := a.users().SetDeviceLimit(r.Context(), userID, *req.DeviceLimit); err != nil {
 				http.Error(w, "update failed", http.StatusBadRequest)
 				return
 			}
 			auditAction(a, r, "user.device_limit.set", "user", fmt.Sprintf("%d", userID), map[string]any{"device_limit": *req.DeviceLimit})
 		}
-		u, err := a.store.GetUser(r.Context(), userID)
+		u, err := a.users().Get(r.Context(), userID)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
 		}
 		a.writeJSON(w, http.StatusOK, u)
 	case http.MethodDelete:
-		username, err := a.store.DeleteUser(r.Context(), userID)
+		username, err := a.users().Delete(r.Context(), userID)
 		if err != nil {
 			http.Error(w, "delete failed", http.StatusBadRequest)
 			return
 		}
 		auditAction(a, r, "user.delete", "user", fmt.Sprintf("%d", userID), map[string]any{"username": username})
 		_ = username
-		a.syncUsersAndMaybeRestartManagedXray(r.Context(), true)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -470,7 +458,7 @@ func (a *App) handleAPIUserByIDV1(w http.ResponseWriter, r *http.Request, userID
 func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		items, err := a.store.ListNodes(r.Context())
+		items, err := a.nodes().List(r.Context())
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -519,19 +507,7 @@ func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Validate managed xray extra_json schema early so we don't partially write a node and then fail.
-		coreType := strings.TrimSpace(in.CoreType)
-		if coreType == "" {
-			coreType = "xray"
-		}
-		if in.Managed && coreType == "xray" {
-			if _, err := parseNodeExtra(in.ExtraJSON); err != nil {
-				http.Error(w, "invalid extra_json for managed xray: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
-
-		item, err := a.store.CreateNode(r.Context(), in)
+		item, managed, err := a.nodes().Create(r.Context(), in)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -540,16 +516,10 @@ func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.create", "node", fmt.Sprintf("%d", item.ID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
 
-		// For managed xray nodes, keep desired state in sync automatically.
-		if item.Managed && item.CoreType == "xray" {
-			if desired, enqueued, jobID, err := ensureManagedXrayDesiredAndMaybeEnqueue(r.Context(), a.store, item); err != nil {
-				log.Printf("ensure managed xray desired failed node=%d: %v", item.ID, err)
-			} else if desired != "" {
-				// Best-effort audit breadcrumb.
-				_ = a.store.InsertAuditLog(r.Context(), "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
-					fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, desired, jobID, enqueued),
-					a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-			}
+		if managed.DesiredVersion != "" {
+			_ = a.store.InsertAuditLog(r.Context(), "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
+				fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, managed.DesiredVersion, managed.JobID, managed.Enqueued),
+				a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
 
 		a.writeJSON(w, http.StatusCreated, item)
@@ -650,15 +620,6 @@ func applyNodePatchInput(in repo.CreateNodeInput, patch patchNodeInput) repo.Cre
 	return in
 }
 
-func (a *App) syncAfterNodeEnabledTransition(ctx context.Context, nodeID int64, wasEnabled, isEnabled bool) {
-	switch {
-	case wasEnabled && !isEnabled:
-		a.requestUsersSyncForNodeNow(ctx, nodeID)
-	case !wasEnabled && isEnabled:
-		a.requestUsersSyncNow(ctx)
-	}
-}
-
 func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 	idPart := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
 	idPart = strings.Trim(idPart, "/")
@@ -669,7 +630,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		item, err := a.store.GetNode(r.Context(), nodeID)
+		item, err := a.nodes().Get(r.Context(), nodeID)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "not found") {
 				http.Error(w, "not found", http.StatusNotFound)
@@ -680,7 +641,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 		}
 		a.writeJSON(w, http.StatusOK, item)
 	case http.MethodPut, http.MethodPatch:
-		before, beforeErr := a.store.GetNode(r.Context(), nodeID)
+		before, beforeErr := a.nodes().Get(r.Context(), nodeID)
 		if beforeErr != nil {
 			if strings.Contains(strings.ToLower(beforeErr.Error()), "not found") {
 				http.Error(w, "not found", http.StatusNotFound)
@@ -796,88 +757,31 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Validate managed xray extra_json schema early so we don't partially update and then fail.
-		coreType := strings.TrimSpace(in.CoreType)
-		if coreType == "" {
-			coreType = "xray"
-		}
-		if in.Managed && coreType == "xray" {
-			if _, err := parseNodeExtra(in.ExtraJSON); err != nil {
-				http.Error(w, "invalid extra_json for managed xray: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
-
-		item, err := a.store.UpdateNode(r.Context(), nodeID, in)
+		update, err := a.nodes().Update(r.Context(), nodeID, in)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		item := update.Node
 		if act := actorFromRequest(a, r); act.typ != "" {
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.update", "node", fmt.Sprintf("%d", item.ID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
-		a.syncAfterNodeEnabledTransition(r.Context(), nodeID, before.Enabled, item.Enabled)
-
-		// For managed xray nodes, keep desired state in sync automatically.
-		if item.Managed && item.CoreType == "xray" {
-			if desired, enqueued, jobID, err := ensureManagedXrayDesiredAndMaybeEnqueue(r.Context(), a.store, item); err != nil {
-				log.Printf("ensure managed xray desired failed node=%d: %v", item.ID, err)
-			} else if desired != "" {
-				_ = a.store.InsertAuditLog(r.Context(), "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
-					fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, desired, jobID, enqueued),
-					a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-			}
+		if update.ManagedXray.DesiredVersion != "" {
+			_ = a.store.InsertAuditLog(r.Context(), "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
+				fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, update.ManagedXray.DesiredVersion, update.ManagedXray.JobID, update.ManagedXray.Enqueued),
+				a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
 
 		a.writeJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
-		node, err := a.store.GetNode(r.Context(), nodeID)
+		result, err := a.nodes().Delete(r.Context(), nodeID)
 		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "not found") {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		blocked, err := a.store.NodeDeleteWouldWidenAccess(r.Context(), nodeID)
-		if err != nil {
-			http.Error(w, "delete failed", http.StatusInternalServerError)
-			return
-		}
-		if blocked {
-			message := "node delete blocked: restricted users would implicitly gain access to other nodes"
-			if r.Header.Get("HX-Request") == "true" {
-				setHXToast(w, "error", message)
-			}
-			http.Error(w, message, http.StatusConflict)
-			return
-		}
-		if node.Enabled {
-			if err := a.store.SetNodeEnabled(r.Context(), nodeID, false); err != nil {
-				http.Error(w, "disable failed", http.StatusInternalServerError)
-				return
-			}
-			a.requestUsersSyncForNodeNow(r.Context(), nodeID)
-			if act := actorFromRequest(a, r); act.typ != "" {
-				_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.disable_for_delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-			}
-			a.writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "pending_delete": true})
-			return
-		}
-		emptyUsersVersion := usersDesiredVersion([]repo.User{})
-		if strings.TrimSpace(node.DesiredUsersVersion) != emptyUsersVersion ||
-			strings.TrimSpace(node.AppliedUsersVersion) != emptyUsersVersion {
-			a.requestUsersSyncForNodeNow(r.Context(), nodeID)
-			a.writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "pending_delete": true})
-			return
-		}
-		if err := a.store.DeleteNode(r.Context(), nodeID); err != nil {
 			status := http.StatusInternalServerError
 			message := err.Error()
 			switch {
 			case errors.Is(err, repo.ErrNodeNotFound):
 				status = http.StatusNotFound
+				message = "not found"
 			case errors.Is(err, repo.ErrNodeDeleteWouldWidenAccess):
 				status = http.StatusConflict
 				message = "node delete blocked: restricted users would implicitly gain access to other nodes"
@@ -888,8 +792,19 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, message, status)
 			return
 		}
-		if act := actorFromRequest(a, r); act.typ != "" {
-			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
+		if result.PendingDelete {
+			if result.DisabledForDelete {
+				if act := actorFromRequest(a, r); act.typ != "" {
+					_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.disable_for_delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
+				}
+			}
+			a.writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "pending_delete": true})
+			return
+		}
+		if result.Deleted {
+			if act := actorFromRequest(a, r); act.typ != "" {
+				_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
+			}
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:

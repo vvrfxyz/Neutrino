@@ -50,7 +50,7 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.userService.RefreshLifecycleState(r.Context()); err != nil {
+	if err := a.users().RefreshLifecycleState(r.Context()); err != nil {
 		http.Error(w, "record failed", http.StatusInternalServerError)
 		return
 	}
@@ -127,9 +127,8 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	needUsersSync := false
 	if len(batch) > 0 {
-		batchResults, err := a.store.RecordUsageBatchIdempotent(r.Context(), batch)
+		batchResults, err := a.usage().RecordBatch(r.Context(), batch)
 		if err != nil {
 			http.Error(w, "record failed", http.StatusInternalServerError)
 			return
@@ -193,18 +192,12 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
-			if br.User.Status != "active" {
-				needUsersSync = true
-			}
 			results[idx] = map[string]any{
 				"user_id":          br.User.ID,
 				"status":           br.User.Status,
 				"window_effective": br.User.WindowEffective,
 			}
 		}
-	}
-	if needUsersSync {
-		a.requestUsersSync(r.Context())
 	}
 	for i := range results {
 		if results[i] == nil {

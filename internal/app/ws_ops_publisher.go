@@ -50,13 +50,13 @@ func (a *App) startOpsSnapshotPublisher(ctx context.Context) {
 // polling endpoint so the /ops dashboard renders identical fields whether
 // it's reading from WebSocket pushes or its 5s polling fallback:
 //
-//   host    → /api/v1/metrics/host (latest item + month)
-//   online  → /api/v1/online-users (items)
-//   nodes   → /api/v1/ops/nodes    (items, via buildOpsNodesItems)
+//	host    → /api/v1/metrics/host (latest item + month)
+//	online  → /api/v1/online-users (items)
+//	nodes   → /api/v1/ops/nodes    (items, via buildOpsNodesItems)
 type opsSnapshot struct {
-	Host   *opsHostSnapshot   `json:"host,omitempty"`
-	Online []repo.OnlineUser  `json:"online"`
-	Nodes  []map[string]any   `json:"nodes"`
+	Host   *opsHostSnapshot  `json:"host,omitempty"`
+	Online []repo.OnlineUser `json:"online"`
+	Nodes  []map[string]any  `json:"nodes"`
 }
 
 type opsHostSnapshot struct {
@@ -92,7 +92,7 @@ func (a *App) buildOpsSnapshot(ctx context.Context) (opsSnapshot, error) {
 		}
 	}
 
-	if mu, ok, err := a.store.GetHostNetMonthlyUsage(ctx, time.Now()); err == nil && ok {
+	if mu, ok, err := a.ops().GetHostNetMonthlyUsage(ctx, time.Now()); err == nil && ok {
 		if out.Host == nil {
 			out.Host = &opsHostSnapshot{}
 		}
@@ -103,7 +103,7 @@ func (a *App) buildOpsSnapshot(ctx context.Context) (opsSnapshot, error) {
 		}
 	}
 
-	if onlines, err := a.store.ListOnlineUsers(ctx, a.cfg.OnlineDisplayWindowSec); err == nil && len(onlines) > 0 {
+	if onlines, err := a.ops().ListOnlineUsers(ctx, a.cfg.OnlineDisplayWindowSec); err == nil && len(onlines) > 0 {
 		out.Online = onlines
 	}
 

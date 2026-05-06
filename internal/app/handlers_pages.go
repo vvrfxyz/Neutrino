@@ -49,7 +49,7 @@ func (a *App) handleNodesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodes, err := a.store.ListNodes(r.Context())
+	nodes, err := a.nodes().List(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -104,16 +104,12 @@ func (a *App) handleTrafficPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.userService.RefreshLifecycleState(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	users, err := a.store.ListUsers(r.Context())
+	users, err := a.users().List(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	nodes, err := a.store.ListNodes(r.Context())
+	nodes, err := a.nodes().List(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -154,7 +150,7 @@ func (a *App) handleEnforcementsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	items, err := a.store.ListEnforcementLogs(r.Context(), 200)
+	items, err := a.ops().ListEnforcementLogs(r.Context(), 200)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
