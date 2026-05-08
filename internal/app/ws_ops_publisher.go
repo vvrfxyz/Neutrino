@@ -55,6 +55,7 @@ type opsSnapshot struct {
 	Host   *opsHostSnapshot  `json:"host,omitempty"`
 	Online []repo.OnlineUser `json:"online"`
 	Nodes  []map[string]any  `json:"nodes"`
+	Alerts []repo.OpsAlert   `json:"alerts"`
 }
 
 type opsHostSnapshot struct {
@@ -75,12 +76,11 @@ func (a *App) buildOpsSnapshot(ctx context.Context) (opsSnapshot, error) {
 	out := opsSnapshot{
 		Online: []repo.OnlineUser{},
 		Nodes:  []map[string]any{},
+		Alerts: []repo.OpsAlert{},
 	}
 
 	if a.hostMonitor != nil {
-		items := a.hostMonitor.Query("1h")
-		if n := len(items); n > 0 {
-			last := items[n-1]
+		if last, ok := a.hostMonitor.Latest(); ok {
 			out.Host = &opsHostSnapshot{
 				CPUPercent:  last.CPUPercent,
 				MemoryBytes: last.MemoryBytes,
@@ -103,6 +103,9 @@ func (a *App) buildOpsSnapshot(ctx context.Context) (opsSnapshot, error) {
 
 	if onlines, err := a.ops().ListOnlineUsers(ctx, a.cfg.OnlineDisplayWindowSec); err == nil && len(onlines) > 0 {
 		out.Online = onlines
+	}
+	if alerts, err := a.store.ListOpsAlerts(ctx, "active", 200); err == nil && len(alerts) > 0 {
+		out.Alerts = alerts
 	}
 
 	nodes, err := a.buildOpsNodesItems(ctx)

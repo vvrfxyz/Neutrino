@@ -527,3 +527,72 @@ func TestClaimNextNodeJobForNodeKindsFiltersPendingJobs(t *testing.T) {
 		t.Fatalf("expected xray job to remain pending, got %+v", xrayJob)
 	}
 }
+
+func TestProbeJobsDedupeByCorrelationTarget(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "probe-dedupe-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	firstID, enqueued, err := s.EnqueueNodeJob(ctx, node.ID, "probe_http", "", `{"url":"https://a.example/healthz"}`, 5, "probe_http:https://a.example/healthz")
+	if err != nil || !enqueued {
+		t.Fatalf("enqueue first probe id=%d enqueued=%v err=%v", firstID, enqueued, err)
+	}
+	secondID, enqueued, err := s.EnqueueNodeJob(ctx, node.ID, "probe_http", "", `{"url":"https://b.example/healthz"}`, 5, "probe_http:https://b.example/healthz")
+	if err != nil || !enqueued {
+		t.Fatalf("enqueue second probe id=%d enqueued=%v err=%v", secondID, enqueued, err)
+	}
+	if secondID == firstID {
+		t.Fatalf("different probe targets should create separate jobs")
+	}
+	replacedID, enqueued, err := s.EnqueueNodeJob(ctx, node.ID, "probe_http", "", `{"url":"https://a.example/ready"}`, 5, "probe_http:https://a.example/healthz")
+	if err != nil {
+		t.Fatalf("replace first probe: %v", err)
+	}
+	if replacedID != firstID || enqueued {
+		t.Fatalf("same probe target should replace pending job, got id=%d enqueued=%v", replacedID, enqueued)
+	}
+}
+
+func TestClaimNextNodeJobPrioritizesControlJobsOverProbes(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "probe-priority-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	if _, _, err := s.EnqueueNodeJob(ctx, node.ID, "probe_http", "", `{"url":"https://a.example/healthz"}`, 5, "probe_http:https://a.example/healthz"); err != nil {
+		t.Fatalf("enqueue probe: %v", err)
+	}
+	usersJobID, _, err := s.EnqueueNodeJob(ctx, node.ID, "users_sync", "users-v1", `{}`, 30, "users")
+	if err != nil {
+		t.Fatalf("enqueue users job: %v", err)
+	}
+
+	claimed, ok, err := s.ClaimNextNodeJobForNode(ctx, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim job ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != usersJobID || claimed.Kind != "users_sync" {
+		t.Fatalf("expected users_sync before probe, got %+v", claimed)
+	}
+}

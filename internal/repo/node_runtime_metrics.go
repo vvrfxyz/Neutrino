@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -289,170 +290,232 @@ FROM node_runtime_metrics;
 
 	out := make(map[int64]NodeRuntimeMetrics)
 	for rows.Next() {
-		var m NodeRuntimeMetrics
-		var cpuPercent sql.NullFloat64
-		var load1 sql.NullFloat64
-		var load5 sql.NullFloat64
-		var load15 sql.NullFloat64
-		var memoryBytes sql.NullInt64
-		var memoryTotalBytes sql.NullInt64
-		var memoryAvailableBytes sql.NullInt64
-		var swapUsedBytes sql.NullInt64
-		var swapTotalBytes sql.NullInt64
-		var inBPS sql.NullFloat64
-		var outBPS sql.NullFloat64
-		var diskTotal sql.NullInt64
-		var diskUsed sql.NullInt64
-		var diskFree sql.NullInt64
-		var diskUsedPerc sql.NullFloat64
-		var diskReadBPS sql.NullFloat64
-		var diskWriteBPS sql.NullFloat64
-		var tcpConnections sql.NullInt64
-		var udpConnections sql.NullInt64
-		var processCount sql.NullInt64
-		var uptime sql.NullInt64
-		var systemUptime sql.NullInt64
-		var agentUptime sql.NullInt64
-		var bootTime sql.NullString
-		var queueBytes sql.NullInt64
-		var queueBatches sql.NullInt64
-		var goroutines sql.NullInt64
-		var agentVersion sql.NullString
-		var xrayVersion sql.NullString
-		var xrayConfigVersion sql.NullString
-		var updatedAt string
-		if err := rows.Scan(
-			&m.NodeID,
-			&cpuPercent,
-			&load1,
-			&load5,
-			&load15,
-			&memoryBytes,
-			&memoryTotalBytes,
-			&memoryAvailableBytes,
-			&swapUsedBytes,
-			&swapTotalBytes,
-			&inBPS,
-			&outBPS,
-			&diskTotal,
-			&diskUsed,
-			&diskFree,
-			&diskUsedPerc,
-			&diskReadBPS,
-			&diskWriteBPS,
-			&tcpConnections,
-			&udpConnections,
-			&processCount,
-			&uptime,
-			&systemUptime,
-			&agentUptime,
-			&bootTime,
-			&queueBytes,
-			&queueBatches,
-			&goroutines,
-			&agentVersion,
-			&xrayVersion,
-			&xrayConfigVersion,
-			&updatedAt,
-		); err != nil {
+		m, err := scanNodeRuntimeMetrics(rows)
+		if err != nil {
 			return nil, err
 		}
-		if cpuPercent.Valid {
-			m.CPUPercent = cpuPercent.Float64
-		}
-		if load1.Valid {
-			m.Load1 = load1.Float64
-		}
-		if load5.Valid {
-			m.Load5 = load5.Float64
-		}
-		if load15.Valid {
-			m.Load15 = load15.Float64
-		}
-		if memoryBytes.Valid {
-			m.MemoryBytes = memoryBytes.Int64
-		}
-		if memoryTotalBytes.Valid {
-			m.MemoryTotalBytes = memoryTotalBytes.Int64
-		}
-		if memoryAvailableBytes.Valid {
-			m.MemoryAvailableBytes = memoryAvailableBytes.Int64
-		}
-		if swapUsedBytes.Valid {
-			m.SwapUsedBytes = swapUsedBytes.Int64
-		}
-		if swapTotalBytes.Valid {
-			m.SwapTotalBytes = swapTotalBytes.Int64
-		}
-		if inBPS.Valid {
-			m.InboundBPS = inBPS.Float64
-		}
-		if outBPS.Valid {
-			m.OutboundBPS = outBPS.Float64
-		}
-		if diskTotal.Valid {
-			m.DiskTotalBytes = diskTotal.Int64
-		}
-		if diskUsed.Valid {
-			m.DiskUsedBytes = diskUsed.Int64
-		}
-		if diskFree.Valid {
-			m.DiskFreeBytes = diskFree.Int64
-		}
-		if diskUsedPerc.Valid {
-			m.DiskUsedPercent = diskUsedPerc.Float64
-		}
-		if diskReadBPS.Valid {
-			m.DiskReadBPS = diskReadBPS.Float64
-		}
-		if diskWriteBPS.Valid {
-			m.DiskWriteBPS = diskWriteBPS.Float64
-		}
-		if tcpConnections.Valid {
-			m.TCPConnections = int(tcpConnections.Int64)
-		}
-		if udpConnections.Valid {
-			m.UDPConnections = int(udpConnections.Int64)
-		}
-		if processCount.Valid {
-			m.ProcessCount = int(processCount.Int64)
-		}
-		if uptime.Valid {
-			m.UptimeSec = uptime.Int64
-		}
-		if systemUptime.Valid {
-			m.SystemUptimeSec = systemUptime.Int64
-		}
-		if agentUptime.Valid {
-			m.AgentUptimeSec = agentUptime.Int64
-		}
-		if bootTime.Valid && bootTime.String != "" {
-			if t, err := time.Parse(time.RFC3339, bootTime.String); err == nil {
-				m.BootTime = &t
-			}
-		}
-		if queueBytes.Valid {
-			m.QueueBytes = queueBytes.Int64
-		}
-		if queueBatches.Valid {
-			m.QueueBatches = queueBatches.Int64
-		}
-		if goroutines.Valid {
-			m.Goroutines = int(goroutines.Int64)
-		}
-		if agentVersion.Valid {
-			m.AgentVersion = agentVersion.String
-		}
-		if xrayVersion.Valid {
-			m.XrayVersion = xrayVersion.String
-		}
-		if xrayConfigVersion.Valid {
-			m.XrayConfigVersion = xrayConfigVersion.String
-		}
-		m.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 		out[m.NodeID] = m
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetNodeRuntimeMetrics(ctx context.Context, nodeID int64) (NodeRuntimeMetrics, bool, error) {
+	if nodeID <= 0 {
+		return NodeRuntimeMetrics{}, false, fmt.Errorf("invalid node id")
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT node_id,
+	cpu_percent,
+	load1,
+	load5,
+	load15,
+	memory_bytes,
+	memory_total_bytes,
+	memory_available_bytes,
+	swap_used_bytes,
+	swap_total_bytes,
+	inbound_bps,
+	outbound_bps,
+	disk_total_bytes,
+	disk_used_bytes,
+	disk_free_bytes,
+	disk_used_percent,
+	disk_read_bps,
+	disk_write_bps,
+	tcp_connections,
+	udp_connections,
+	process_count,
+	uptime_sec,
+	system_uptime_sec,
+	agent_uptime_sec,
+	boot_time,
+	queue_bytes,
+	queue_batches,
+	goroutines,
+	agent_version,
+	xray_version,
+	xray_config_version,
+	updated_at
+FROM node_runtime_metrics
+WHERE node_id = ?;
+`, nodeID)
+	item, err := scanNodeRuntimeMetrics(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return NodeRuntimeMetrics{}, false, nil
+		}
+		return NodeRuntimeMetrics{}, false, err
+	}
+	return item, true, nil
+}
+
+type nodeRuntimeMetricsScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanNodeRuntimeMetrics(scanner nodeRuntimeMetricsScanner) (NodeRuntimeMetrics, error) {
+	var m NodeRuntimeMetrics
+	var cpuPercent sql.NullFloat64
+	var load1 sql.NullFloat64
+	var load5 sql.NullFloat64
+	var load15 sql.NullFloat64
+	var memoryBytes sql.NullInt64
+	var memoryTotalBytes sql.NullInt64
+	var memoryAvailableBytes sql.NullInt64
+	var swapUsedBytes sql.NullInt64
+	var swapTotalBytes sql.NullInt64
+	var inBPS sql.NullFloat64
+	var outBPS sql.NullFloat64
+	var diskTotal sql.NullInt64
+	var diskUsed sql.NullInt64
+	var diskFree sql.NullInt64
+	var diskUsedPerc sql.NullFloat64
+	var diskReadBPS sql.NullFloat64
+	var diskWriteBPS sql.NullFloat64
+	var tcpConnections sql.NullInt64
+	var udpConnections sql.NullInt64
+	var processCount sql.NullInt64
+	var uptime sql.NullInt64
+	var systemUptime sql.NullInt64
+	var agentUptime sql.NullInt64
+	var bootTime sql.NullString
+	var queueBytes sql.NullInt64
+	var queueBatches sql.NullInt64
+	var goroutines sql.NullInt64
+	var agentVersion sql.NullString
+	var xrayVersion sql.NullString
+	var xrayConfigVersion sql.NullString
+	var updatedAt string
+	if err := scanner.Scan(
+		&m.NodeID,
+		&cpuPercent,
+		&load1,
+		&load5,
+		&load15,
+		&memoryBytes,
+		&memoryTotalBytes,
+		&memoryAvailableBytes,
+		&swapUsedBytes,
+		&swapTotalBytes,
+		&inBPS,
+		&outBPS,
+		&diskTotal,
+		&diskUsed,
+		&diskFree,
+		&diskUsedPerc,
+		&diskReadBPS,
+		&diskWriteBPS,
+		&tcpConnections,
+		&udpConnections,
+		&processCount,
+		&uptime,
+		&systemUptime,
+		&agentUptime,
+		&bootTime,
+		&queueBytes,
+		&queueBatches,
+		&goroutines,
+		&agentVersion,
+		&xrayVersion,
+		&xrayConfigVersion,
+		&updatedAt,
+	); err != nil {
+		return NodeRuntimeMetrics{}, err
+	}
+	if cpuPercent.Valid {
+		m.CPUPercent = cpuPercent.Float64
+	}
+	if load1.Valid {
+		m.Load1 = load1.Float64
+	}
+	if load5.Valid {
+		m.Load5 = load5.Float64
+	}
+	if load15.Valid {
+		m.Load15 = load15.Float64
+	}
+	if memoryBytes.Valid {
+		m.MemoryBytes = memoryBytes.Int64
+	}
+	if memoryTotalBytes.Valid {
+		m.MemoryTotalBytes = memoryTotalBytes.Int64
+	}
+	if memoryAvailableBytes.Valid {
+		m.MemoryAvailableBytes = memoryAvailableBytes.Int64
+	}
+	if swapUsedBytes.Valid {
+		m.SwapUsedBytes = swapUsedBytes.Int64
+	}
+	if swapTotalBytes.Valid {
+		m.SwapTotalBytes = swapTotalBytes.Int64
+	}
+	if inBPS.Valid {
+		m.InboundBPS = inBPS.Float64
+	}
+	if outBPS.Valid {
+		m.OutboundBPS = outBPS.Float64
+	}
+	if diskTotal.Valid {
+		m.DiskTotalBytes = diskTotal.Int64
+	}
+	if diskUsed.Valid {
+		m.DiskUsedBytes = diskUsed.Int64
+	}
+	if diskFree.Valid {
+		m.DiskFreeBytes = diskFree.Int64
+	}
+	if diskUsedPerc.Valid {
+		m.DiskUsedPercent = diskUsedPerc.Float64
+	}
+	if diskReadBPS.Valid {
+		m.DiskReadBPS = diskReadBPS.Float64
+	}
+	if diskWriteBPS.Valid {
+		m.DiskWriteBPS = diskWriteBPS.Float64
+	}
+	if tcpConnections.Valid {
+		m.TCPConnections = int(tcpConnections.Int64)
+	}
+	if udpConnections.Valid {
+		m.UDPConnections = int(udpConnections.Int64)
+	}
+	if processCount.Valid {
+		m.ProcessCount = int(processCount.Int64)
+	}
+	if uptime.Valid {
+		m.UptimeSec = uptime.Int64
+	}
+	if systemUptime.Valid {
+		m.SystemUptimeSec = systemUptime.Int64
+	}
+	if agentUptime.Valid {
+		m.AgentUptimeSec = agentUptime.Int64
+	}
+	if bootTime.Valid && bootTime.String != "" {
+		if t, err := time.Parse(time.RFC3339, bootTime.String); err == nil {
+			m.BootTime = &t
+		}
+	}
+	if queueBytes.Valid {
+		m.QueueBytes = queueBytes.Int64
+	}
+	if queueBatches.Valid {
+		m.QueueBatches = queueBatches.Int64
+	}
+	if goroutines.Valid {
+		m.Goroutines = int(goroutines.Int64)
+	}
+	if agentVersion.Valid {
+		m.AgentVersion = agentVersion.String
+	}
+	if xrayVersion.Valid {
+		m.XrayVersion = xrayVersion.String
+	}
+	if xrayConfigVersion.Valid {
+		m.XrayConfigVersion = xrayConfigVersion.String
+	}
+	m.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return m, nil
 }
 
 func clampFloatMin(v, min float64) float64 {

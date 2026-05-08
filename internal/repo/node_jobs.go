@@ -37,7 +37,8 @@ type NodeJobSummary struct {
 	RunningCorrelation string
 }
 
-// EnqueueNodeJob upserts a pending job for a node+kind (latest desired_version wins).
+// EnqueueNodeJob upserts a pending job for a node+kind. Probe jobs dedupe by
+// node+kind+correlation so different targets do not overwrite each other.
 // If there is a running job of the same kind with the same desired_version, it returns it without enqueueing.
 func (s *Store) EnqueueNodeJob(ctx context.Context, nodeID int64, kind string, desiredVersion string, payloadJSON string, timeoutSec int, correlationID string) (jobID int64, enqueued bool, err error) {
 	return enqueueNodeJobExec(ctx, s.db, nodeID, kind, desiredVersion, payloadJSON, timeoutSec, correlationID)
@@ -57,19 +58,35 @@ func enqueueNodeJobExec(ctx context.Context, q execQueryContext, nodeID int64, k
 	if timeoutSec < 0 {
 		timeoutSec = 0
 	}
+	dedupeByCorrelation := nodeJobDedupeByCorrelation(kind)
+	dedupeCorrelationID := strings.TrimSpace(correlationID)
 
 	// If a running job of the same kind is already running with the same desired_version, do nothing.
 	var runningID int64
 	var runningDesired sql.NullString
-	err = q.QueryRowContext(ctx, `
-SELECT id, desired_version
+	var runningCorrelation sql.NullString
+	runningArgs := []any{nodeID, kind}
+	runningQuery := `
+SELECT id, desired_version, correlation_id
 FROM node_jobs
 WHERE node_id = ? AND kind = ? AND status = 'running'
+`
+	if dedupeByCorrelation {
+		runningQuery += ` AND COALESCE(correlation_id, '') = ?`
+		runningArgs = append(runningArgs, dedupeCorrelationID)
+	}
+	runningQuery += `
 ORDER BY id DESC
 LIMIT 1;
-`, nodeID, kind).Scan(&runningID, &runningDesired)
-	if err == nil && runningID > 0 && strings.TrimSpace(runningDesired.String) == desiredVersion && desiredVersion != "" {
-		return runningID, false, nil
+`
+	err = q.QueryRowContext(ctx, runningQuery, runningArgs...).Scan(&runningID, &runningDesired, &runningCorrelation)
+	if err == nil && runningID > 0 {
+		if dedupeByCorrelation && strings.TrimSpace(runningCorrelation.String) == dedupeCorrelationID {
+			return runningID, false, nil
+		}
+		if strings.TrimSpace(runningDesired.String) == desiredVersion && desiredVersion != "" {
+			return runningID, false, nil
+		}
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, false, err
@@ -79,13 +96,21 @@ LIMIT 1;
 
 	// If a pending job exists, overwrite it with the latest desired_version and payload.
 	var pendingID int64
-	err = q.QueryRowContext(ctx, `
+	pendingArgs := []any{nodeID, kind}
+	pendingQuery := `
 SELECT id
 FROM node_jobs
 WHERE node_id = ? AND kind = ? AND status = 'pending'
+`
+	if dedupeByCorrelation {
+		pendingQuery += ` AND COALESCE(correlation_id, '') = ?`
+		pendingArgs = append(pendingArgs, dedupeCorrelationID)
+	}
+	pendingQuery += `
 ORDER BY id DESC
 LIMIT 1;
-`, nodeID, kind).Scan(&pendingID)
+`
+	err = q.QueryRowContext(ctx, pendingQuery, pendingArgs...).Scan(&pendingID)
 	if err == nil && pendingID > 0 {
 		_, err := q.ExecContext(ctx, `
 UPDATE node_jobs
@@ -120,6 +145,10 @@ RETURNING id;
 		return 0, false, err
 	}
 	return jobID, true, nil
+}
+
+func nodeJobDedupeByCorrelation(kind string) bool {
+	return strings.HasPrefix(strings.TrimSpace(kind), "probe_")
 }
 
 func (s *Store) HasPendingOrRunningNodeJob(ctx context.Context, nodeID int64, kind string) (bool, error) {
@@ -205,7 +234,7 @@ func (s *Store) ClaimNextNodeJobForNodeKinds(ctx context.Context, nodeID int64, 
 		query += " AND kind IN (" + strings.Join(placeholders, ", ") + ")"
 	}
 	query += `
-	ORDER BY created_at ASC, id ASC
+	ORDER BY CASE WHEN kind IN ('users_sync','xray_apply','xray_rollback') THEN 0 ELSE 1 END, created_at ASC, id ASC
 	LIMIT 1;
 `
 	err = tx.QueryRowContext(ctx, query, queryArgs...).Scan(&j.ID, &j.NodeID, &j.Kind, &desiredVersion, &j.PayloadJSON, &j.Status, &j.Attempts, &retryableInt, &httpStatus, &timeoutSec, &correlationID, &lastErr, &resultJSON, &createdAt, &startedAt, &finishedAt)

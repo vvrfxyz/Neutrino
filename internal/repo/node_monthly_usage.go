@@ -303,23 +303,8 @@ ORDER BY node_id ASC, month_key DESC, COALESCE(last_reported_at, '') DESC;
 
 	out := make(map[int64]NodeMonthlyUsage)
 	for rows.Next() {
-		var item NodeMonthlyUsage
-		var lastReportedAt sql.NullString
-		var updatedAt string
-		if err := rows.Scan(
-			&item.NodeID,
-			&item.MonthKey,
-			&item.TimezoneName,
-			&item.RXBytes,
-			&item.TXBytes,
-			&item.BaselineRX,
-			&item.BaselineTX,
-			&item.LastRXTotal,
-			&item.LastTXTotal,
-			&item.CounterSource,
-			&lastReportedAt,
-			&updatedAt,
-		); err != nil {
+		item, err := scanNodeMonthlyUsage(rows)
+		if err != nil {
 			return nil, err
 		}
 		if _, exists := out[item.NodeID]; exists {
@@ -328,13 +313,76 @@ ORDER BY node_id ASC, month_key DESC, COALESCE(last_reported_at, '') DESC;
 		if normalizeNodeMonthKey(item.MonthKey) == "" {
 			continue
 		}
-		if lastReportedAt.Valid && strings.TrimSpace(lastReportedAt.String) != "" {
-			if parsed, err := time.Parse(time.RFC3339, lastReportedAt.String); err == nil {
-				item.LastReportedAt = &parsed
-			}
-		}
-		item.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 		out[item.NodeID] = item
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetLatestNodeMonthlyUsage(ctx context.Context, nodeID int64) (NodeMonthlyUsage, bool, error) {
+	if nodeID <= 0 {
+		return NodeMonthlyUsage{}, false, fmt.Errorf("invalid node id")
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT
+	node_id,
+	month_key,
+	timezone_name,
+	rx_bytes,
+	tx_bytes,
+	baseline_rx_total,
+	baseline_tx_total,
+	last_rx_total,
+	last_tx_total,
+	counter_source,
+	last_reported_at,
+	updated_at
+FROM node_monthly_usage
+WHERE node_id = ?
+ORDER BY month_key DESC, COALESCE(last_reported_at, '') DESC
+LIMIT 1;
+`, nodeID)
+	item, err := scanNodeMonthlyUsage(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return NodeMonthlyUsage{}, false, nil
+		}
+		return NodeMonthlyUsage{}, false, err
+	}
+	if normalizeNodeMonthKey(item.MonthKey) == "" {
+		return NodeMonthlyUsage{}, false, nil
+	}
+	return item, true, nil
+}
+
+type nodeMonthlyUsageScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanNodeMonthlyUsage(scanner nodeMonthlyUsageScanner) (NodeMonthlyUsage, error) {
+	var item NodeMonthlyUsage
+	var lastReportedAt sql.NullString
+	var updatedAt string
+	if err := scanner.Scan(
+		&item.NodeID,
+		&item.MonthKey,
+		&item.TimezoneName,
+		&item.RXBytes,
+		&item.TXBytes,
+		&item.BaselineRX,
+		&item.BaselineTX,
+		&item.LastRXTotal,
+		&item.LastTXTotal,
+		&item.CounterSource,
+		&lastReportedAt,
+		&updatedAt,
+	); err != nil {
+		return NodeMonthlyUsage{}, err
+	}
+	if lastReportedAt.Valid && strings.TrimSpace(lastReportedAt.String) != "" {
+		if parsed, err := time.Parse(time.RFC3339, lastReportedAt.String); err == nil {
+			item.LastReportedAt = &parsed
+		}
+	}
+	item.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return item, nil
 }

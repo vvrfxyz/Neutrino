@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"neutrino/internal/repo"
@@ -12,10 +13,11 @@ const opsNodeStaleAfter = 120 * time.Second
 
 type OpsService struct {
 	store *repo.Store
+	cache *OpsLatestCache
 }
 
 func NewOpsService(store *repo.Store) *OpsService {
-	return &OpsService{store: store}
+	return &OpsService{store: store, cache: NewOpsLatestCache(5 * time.Second)}
 }
 
 func (s *OpsService) ListEnforcementLogs(ctx context.Context, limit int) ([]repo.EnforcementLog, error) {
@@ -31,6 +33,71 @@ func (s *OpsService) GetHostNetMonthlyUsage(ctx context.Context, at time.Time) (
 }
 
 func (s *OpsService) BuildNodeItems(ctx context.Context) ([]map[string]any, error) {
+	if s.cache != nil {
+		if items, ok := s.cache.Get(); ok {
+			return items, nil
+		}
+	}
+	items, err := s.buildNodeItemsFresh(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.cache != nil {
+		s.cache.Set(items)
+	}
+	return items, nil
+}
+
+func (s *OpsService) WarmUp(ctx context.Context) error {
+	items, err := s.buildNodeItemsFresh(ctx)
+	if err != nil {
+		return err
+	}
+	if s.cache != nil {
+		s.cache.Set(items)
+	}
+	return nil
+}
+
+func (s *OpsService) InvalidateNode(nodeID int64) {
+	if s.cache != nil {
+		s.cache.Invalidate()
+	}
+}
+
+func (s *OpsService) RefreshNode(ctx context.Context, nodeID int64) error {
+	if s.cache == nil {
+		return nil
+	}
+	item, ok, err := s.buildSingleNodeItem(ctx, nodeID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			s.cache.RemoveNode(nodeID)
+			return nil
+		}
+		return err
+	}
+	if !ok {
+		s.cache.RemoveNode(nodeID)
+		return nil
+	}
+	s.cache.UpsertNode(item)
+	return nil
+}
+
+func (s *OpsService) RemoveNode(nodeID int64) {
+	if s.cache != nil {
+		s.cache.RemoveNode(nodeID)
+	}
+}
+
+func (s *OpsService) InvalidateAll() {
+	if s.cache != nil {
+		s.cache.Invalidate()
+	}
+}
+
+func (s *OpsService) buildNodeItemsFresh(ctx context.Context) ([]map[string]any, error) {
 	nodes, err := s.store.ListNodes(ctx)
 	if err != nil {
 		return nil, err
@@ -38,11 +105,9 @@ func (s *OpsService) BuildNodeItems(ctx context.Context) ([]map[string]any, erro
 	metricsByNode, _ := s.store.ListNodeRuntimeMetrics(ctx)
 	monthlyUsageByNode, _ := s.store.ListLatestNodeMonthlyUsage(ctx)
 	jobSummariesByNode, _ := s.store.ListNodeJobSummaries(ctx)
-	metadataByNode := make(map[int64]repo.NodeMetadata, len(nodes))
-	for _, n := range nodes {
-		if meta, ok, err := s.store.GetNodeMetadata(ctx, n.ID); err == nil && ok {
-			metadataByNode[n.ID] = meta
-		}
+	metadataByNode, err := s.store.ListNodeMetadata(ctx)
+	if err != nil {
+		metadataByNode = map[int64]repo.NodeMetadata{}
 	}
 	now := time.Now().UTC()
 	items := make([]map[string]any, 0, len(nodes))
@@ -50,6 +115,29 @@ func (s *OpsService) BuildNodeItems(ctx context.Context) ([]map[string]any, erro
 		items = append(items, s.buildNodeItem(n, metricsByNode[n.ID], monthlyUsageByNode[n.ID], jobSummariesByNode[n.ID], metadataByNode[n.ID], now))
 	}
 	return items, nil
+}
+
+func (s *OpsService) buildSingleNodeItem(ctx context.Context, nodeID int64) (map[string]any, bool, error) {
+	node, err := s.store.GetNode(ctx, nodeID)
+	if err != nil {
+		return nil, false, err
+	}
+	metrics, _, _ := s.store.GetNodeRuntimeMetrics(ctx, nodeID)
+	monthly, _, _ := s.store.GetLatestNodeMonthlyUsage(ctx, nodeID)
+	pending, runningKind, runningDesired, runningStartedAt, runningCorrelation, _ := s.store.GetNodeJobSummary(ctx, nodeID)
+	jobSummary := repo.NodeJobSummary{
+		NodeID:             nodeID,
+		Pending:            pending,
+		RunningKind:        runningKind,
+		RunningDesired:     runningDesired,
+		RunningStartedAt:   runningStartedAt,
+		RunningCorrelation: runningCorrelation,
+	}
+	metadata, ok, _ := s.store.GetNodeMetadata(ctx, nodeID)
+	if !ok {
+		metadata = repo.NodeMetadata{}
+	}
+	return s.buildNodeItem(node, metrics, monthly, jobSummary, metadata, time.Now().UTC()), true, nil
 }
 
 func (s *OpsService) buildNodeItem(n repo.Node, metrics repo.NodeRuntimeMetrics, monthly repo.NodeMonthlyUsage, jobSummary repo.NodeJobSummary, metadata repo.NodeMetadata, now time.Time) map[string]any {
@@ -140,4 +228,109 @@ func fmtMaybeTime(t *time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+type OpsLatestCache struct {
+	mu        sync.RWMutex
+	ttl       time.Duration
+	items     []map[string]any
+	expiresAt time.Time
+}
+
+func NewOpsLatestCache(ttl time.Duration) *OpsLatestCache {
+	if ttl <= 0 {
+		ttl = 5 * time.Second
+	}
+	return &OpsLatestCache{ttl: ttl}
+}
+
+func (c *OpsLatestCache) Get() ([]map[string]any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.items == nil || time.Now().UTC().After(c.expiresAt) {
+		return nil, false
+	}
+	return cloneOpsItems(c.items), true
+}
+
+func (c *OpsLatestCache) Set(items []map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = cloneOpsItems(items)
+	c.expiresAt = time.Now().UTC().Add(c.ttl)
+}
+
+func (c *OpsLatestCache) UpsertNode(item map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if item == nil || c.items == nil {
+		return
+	}
+	nodeID, ok := int64FromAny(item["id"])
+	if !ok || nodeID <= 0 {
+		return
+	}
+	cp := cloneOpsItem(item)
+	for i, existing := range c.items {
+		if existingID, ok := int64FromAny(existing["id"]); ok && existingID == nodeID {
+			c.items[i] = cp
+			c.expiresAt = time.Now().UTC().Add(c.ttl)
+			return
+		}
+	}
+	c.items = append([]map[string]any{cp}, c.items...)
+	c.expiresAt = time.Now().UTC().Add(c.ttl)
+}
+
+func (c *OpsLatestCache) RemoveNode(nodeID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.items == nil || nodeID <= 0 {
+		return
+	}
+	out := c.items[:0]
+	for _, item := range c.items {
+		if existingID, ok := int64FromAny(item["id"]); ok && existingID == nodeID {
+			continue
+		}
+		out = append(out, item)
+	}
+	c.items = out
+	c.expiresAt = time.Now().UTC().Add(c.ttl)
+}
+
+func (c *OpsLatestCache) Invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = nil
+	c.expiresAt = time.Time{}
+}
+
+func cloneOpsItems(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, cloneOpsItem(item))
+	}
+	return out
+}
+
+func cloneOpsItem(item map[string]any) map[string]any {
+	cp := make(map[string]any, len(item))
+	for k, v := range item {
+		cp[k] = v
+	}
+	return cp
+}
+
+func int64FromAny(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), n == float64(int64(n))
+	default:
+		return 0, false
+	}
 }

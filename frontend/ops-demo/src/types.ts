@@ -82,13 +82,24 @@ export type MetricPoint = {
 export type ProbeResult = {
   id: number;
   node_id: number;
-  kind: "probe_ping" | "probe_tcp" | "probe_http";
+  kind: "probe_dns" | "probe_ping" | "probe_tcp" | "probe_http";
   target: string;
   success: boolean;
   latency_ms: number;
   status_code?: number;
   error?: string;
   checked_at: string;
+};
+
+export type ProbeJobPayload = {
+  kind: "probe_dns" | "probe_tcp" | "probe_http";
+  target?: string;
+  port?: number;
+  url?: string;
+  method?: "GET" | "HEAD";
+  timeout_ms?: number;
+  allow_private?: boolean;
+  expect_status?: number[];
 };
 
 export type OpsAlert = {

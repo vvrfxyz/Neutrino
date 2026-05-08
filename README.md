@@ -52,6 +52,9 @@ Neutrino 是一个基于 **Go + SQLite + SSR Templates + HTMX/Alpine.js** 的代
   - panel 接收的 heartbeat 时刻（用于 online / stale 判断）
   - agent 本地 probe 采样时刻
   - 节点本地自然月 `RX/TX` 累计
+- `/ops` 使用 latest cache + WebSocket 快照；节点 report、job、metadata 变更会按单节点刷新 cache。
+- runtime 历史样本异步批量写入；内存队列满时先落 panel 本地磁盘队列，磁盘也不可用时才丢历史样本并写 ops alert。
+- 安全 probe job 支持 `probe_dns` / `probe_tcp` / `probe_http`，`probe_ping` 仅保留为 legacy alias。
 - 托管 Xray 仅下发模板与变量；真正执行的 reload / test argv 固定在节点本地环境变量中
 - 节点部署页可直接生成一键脚本；脚本会优先检查并自动安装 `docker compose`
 
@@ -150,6 +153,10 @@ go run ./cmd/node-agent
 - `POST /api/v1/nodes/{id}/managed/xray/rollback`
 - `GET /api/v1/nodes/{id}/jobs`
 - `POST /api/v1/nodes/{id}/cert/revoke`
+- `GET /api/v1/nodes/{id}/metrics?range=1h&step=raw|1m|5m|1h`
+- `GET|PUT|POST /api/v1/nodes/{id}/metadata`
+- `GET /api/v1/nodes/{id}/probe-results`
+- `POST /api/v1/nodes/{id}/probes`
 - `GET /api/v1/traffic/summary?range=1h|24h|7d|30d[&user_id=...][&node_id=...]`
 - `GET /api/v1/online-users`
 - `GET /api/v1/metrics/host?range=1h|6h|24h`
@@ -179,6 +186,30 @@ go run ./cmd/node-agent
 - `POST /api/v1/nodes/{id}/jobs/claim?wait=25`
 - `POST /api/v1/nodes/{id}/jobs/{job_id}/finish`（body 必须带 claim 返回的 `attempt`）
 - `POST /api/v1/nodes/{id}/cert/renew`
+
+### Probe job 示例
+
+```json
+{ "kind": "probe_dns", "target": "example.com", "timeout_ms": 3000 }
+```
+
+```json
+{ "kind": "probe_tcp", "target": "example.com", "port": 443, "timeout_ms": 3000 }
+```
+
+```json
+{ "kind": "probe_http", "url": "https://example.com/healthz", "method": "GET", "timeout_ms": 3000, "expect_status": [200] }
+```
+
+默认拒绝 localhost、link-local、cloud metadata IP 和私网地址；确需探测私网目标时显式加 `"allow_private": true`。
+
+### Ops 监控队列配置
+
+- `NODE_METRIC_HISTORY_QUEUE_CAPACITY`：历史 sample/detail 内存队列容量，默认 `4096`。
+- `NODE_METRIC_HISTORY_QUEUE_DIR`：磁盘兜底目录；默认跟随 `DB_PATH` 所在目录下的 `node_metric_history_queue`。
+- `NODE_METRIC_HISTORY_QUEUE_MAX_BYTES`：磁盘兜底上限，默认 `67108864`。
+
+runtime latest 写入仍是同步关键路径；历史 sample/detail 写入失败、队列满或磁盘兜底满不会影响 heartbeat/report 成功。
 
 ### 用量写入示例
 

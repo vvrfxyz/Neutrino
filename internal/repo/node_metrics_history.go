@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -117,7 +118,17 @@ type InsertNodeProbeResultInput struct {
 	SourceJobID *int64
 }
 
+type NodeMetricHistoryInput struct {
+	NodeID    int64
+	SampledAt time.Time
+	Metrics   NodeReportMetricsInput
+}
+
 func (s *Store) InsertNodeMetricSample(ctx context.Context, nodeID int64, sampledAt time.Time, in NodeReportMetricsInput) error {
+	return insertNodeMetricSampleExec(ctx, s.db, nodeID, sampledAt, in)
+}
+
+func insertNodeMetricSampleExec(ctx context.Context, q execContext, nodeID int64, sampledAt time.Time, in NodeReportMetricsInput) error {
 	if nodeID <= 0 {
 		return fmt.Errorf("invalid node id")
 	}
@@ -134,7 +145,7 @@ func (s *Store) InsertNodeMetricSample(ctx context.Context, nodeID int64, sample
 	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(in.BootTime)); err == nil && !t.IsZero() {
 		bootTime = sql.NullString{String: t.UTC().Format(time.RFC3339), Valid: true}
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := q.ExecContext(ctx, `
 INSERT INTO node_metric_samples(
 	node_id, sampled_at, cpu_percent, load1, load5, load15,
 	memory_used_bytes, memory_total_bytes, memory_available_bytes,
@@ -159,6 +170,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 }
 
 func (s *Store) InsertNodeMetricDetails(ctx context.Context, nodeID int64, sampledAt time.Time, raw json.RawMessage) error {
+	return insertNodeMetricDetailsExec(ctx, s.db, nodeID, sampledAt, raw)
+}
+
+func insertNodeMetricDetailsExec(ctx context.Context, q execContext, nodeID int64, sampledAt time.Time, raw json.RawMessage) error {
 	if nodeID <= 0 {
 		return fmt.Errorf("invalid node id")
 	}
@@ -172,11 +187,40 @@ func (s *Store) InsertNodeMetricDetails(ctx context.Context, nodeID int64, sampl
 	if sampledAt.IsZero() {
 		sampledAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := q.ExecContext(ctx, `
 INSERT INTO node_metric_details(node_id, sampled_at, data_json)
 VALUES (?, ?, ?);
 `, nodeID, sampledAt.UTC().Format(time.RFC3339), string(raw))
 	return err
+}
+
+func (s *Store) InsertNodeMetricHistoryBatch(ctx context.Context, items []NodeMetricHistoryInput) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var errs []error
+	for _, item := range items {
+		if err := insertNodeMetricSampleExec(ctx, tx, item.NodeID, item.SampledAt, item.Metrics); err != nil {
+			errs = append(errs, fmt.Errorf("sample node_id=%d: %w", item.NodeID, err))
+			continue
+		}
+		if len(item.Metrics.Details) == 0 {
+			continue
+		}
+		if err := insertNodeMetricDetailsExec(ctx, tx, item.NodeID, item.SampledAt, item.Metrics.Details); err != nil {
+			errs = append(errs, fmt.Errorf("details node_id=%d: %w", item.NodeID, err))
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Store) UpsertNodeStaticFacts(ctx context.Context, nodeID int64, reportedAt time.Time, in NodeStaticFactsInput) error {
@@ -543,13 +587,14 @@ func normalizeStaticFactsInput(in NodeStaticFactsInput) NodeStaticFactsInput {
 	if in.CPULogicalCores < 0 {
 		in.CPULogicalCores = 0
 	}
-	if len(in.FactsJSON) == 0 || !json.Valid(in.FactsJSON) {
-		in.FactsJSON = json.RawMessage(`{}`)
-	}
 	return in
 }
 
 func staticFactsHash(in NodeStaticFactsInput) (string, string, error) {
+	factsJSON, err := canonicalJSON(in.FactsJSON)
+	if err != nil {
+		return "", "", err
+	}
 	body := struct {
 		OSName           string          `json:"os_name"`
 		OSVersion        string          `json:"os_version"`
@@ -568,12 +613,33 @@ func staticFactsHash(in NodeStaticFactsInput) (string, string, error) {
 		OSName: in.OSName, OSVersion: in.OSVersion, Kernel: in.Kernel, KernelVersion: in.KernelVersion,
 		Arch: in.Arch, Hostname: in.Hostname, Virtualization: in.Virtualization, CPUModel: in.CPUModel,
 		CPUPhysicalCores: in.CPUPhysicalCores, CPULogicalCores: in.CPULogicalCores,
-		AgentVersion: in.AgentVersion, XrayVersion: in.XrayVersion, FactsJSON: in.FactsJSON,
+		AgentVersion: in.AgentVersion, XrayVersion: in.XrayVersion, FactsJSON: factsJSON,
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
 		return "", "", err
 	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), string(b), nil
+	return hex.EncodeToString(sum[:]), string(factsJSON), nil
+}
+
+func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	if !json.Valid(raw) {
+		return json.RawMessage(`{}`), nil
+	}
+	var v any
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
 }

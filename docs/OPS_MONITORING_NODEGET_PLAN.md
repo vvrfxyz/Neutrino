@@ -18,9 +18,18 @@
 - latest durable 表已有：`node_runtime_metrics`。
 - 历史样本/详情已有：`node_metric_samples`、`node_metric_details`。
 - 静态信息 hash 去重已有：`node_static_facts` 的 `UNIQUE(node_id, data_hash)`。
-- 探测任务已有：`probe_ping`、`probe_tcp`、`probe_http`，并复用 `node_jobs` claim/finish/result 流程。
+- 探测任务已有：`probe_dns`、`probe_tcp`、`probe_http`，并复用 `node_jobs` claim/finish/result 流程；`probe_ping` 仅作为 legacy alias。
 - 探测结果已有：`node_probe_results`。
 - ops 告警已有：`ops_alerts`。
+
+## 当前落地状态
+
+- Phase 0 已完成：只读 API key 不再能写 ops alert、probe、metadata。
+- Phase 1 已完成：`OpsLatestCache` 已接入 warmup、WS/ops 读路径、单节点精确刷新；report/job/metadata/node 变更会刷新对应 node，删除会移除 cache 项。
+- Phase 2 已完成：runtime latest 同步落库，历史 sample/detail 改为有界内存队列 + 批量 flush；内存满时落 panel 本地磁盘队列，磁盘也满或不可写时才记 drop 并由 worker 同步 `metric_history_dropped` alert。
+- Phase 3 已完成：static facts canonical hash 已稳定。
+- Phase 4 保持决策门：暂未新增 rollup 表，继续使用 `node_metric_samples` + bucket 聚合。
+- Phase 5 已完成安全化与基础 UI：`probe_dns` 语义、target policy、HTTP redirect/方法/body 限制、按 target/correlation 去重、关键 job 优先级、ops-v2 节点抽屉手动 probe 管理均已落地。周期 probe 仍为后续扩展。
 
 因此实施重点调整为：
 
@@ -130,12 +139,14 @@
 - 队列满时允许丢历史 sample/detail，但不能影响 heartbeat/report。
 - 增加 drop 计数日志或 ops alert。
 - graceful shutdown 尽量 flush 剩余批次。
-- 暂不做磁盘队列；如后续 panel outage 场景需要，再单独设计。
+- 内存队列满时写入 panel 本地磁盘兜底队列；磁盘上限可配置，worker 成功落库后删除 backlog 文件。
 
 验收：
 
 - latest 写失败才让 report 失败。
 - sample/detail 写失败或队列满不影响 node liveness。
+- 内存队列满但磁盘队列可写时不计入 dropped。
+- 磁盘队列满或不可写时计入 dropped，并由 worker 写入 ops alert。
 - 高并发 report 下 SQLite 写锁等待明显下降。
 
 测试：
@@ -143,6 +154,8 @@
 - latest 写失败返回错误。
 - sample/detail 队列满仍返回 report 成功。
 - flush worker 批量写入成功。
+- 内存满时磁盘 fallback 可被 flush 回 DB。
+- 内存和磁盘都满时记录 drop alert。
 - shutdown flush 覆盖剩余队列。
 - detail invalid JSON 不影响 latest。
 
@@ -263,7 +276,8 @@
   - probe 不能饿死 `users_sync` / `xray_apply` / `xray_rollback`。
   - 增加 priority 或 probe 独立并发限制。
 - UI：
-  - 先展示最近 probe results 和失败状态。
+  - 在 ops-v2 节点抽屉展示最近 probe results 和失败状态。
+  - 支持手动创建 `probe_dns` / `probe_tcp` / `probe_http` job。
   - 周期探测作为后续扩展，不和安全策略同批做。
 
 验收：
@@ -326,6 +340,5 @@
 
 - 暂缓 1 秒默认刷新，等 latest-cache 和写入缓冲完成。
 - 暂缓新增 node metric rollup 表，等压测数据证明需要。
-- 暂缓周期 probe 和更复杂 UI，先完成安全策略和 job 语义。
+- 暂缓周期 probe；基础手动 probe UI 已完成，更复杂的探测编排等后续需求。
 - 暂缓任意命令执行、terminal、JS worker 类能力。这些不符合 Neutrino 的安全边界。
-

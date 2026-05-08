@@ -315,6 +315,7 @@
 - 卡片头部：节点名、ID、health、异常提示
 - 左列：控制面信息（最近心跳 / 上报状态 / jobs / users & xray version 对齐）
 - 右列：运行态信息（CPU、内存、磁盘、带宽、队列、goroutines）
+- 抽屉：历史趋势、静态信息、最近 probe 结果和手动 probe job
 - 底部：如有 `last_error`，以错误横幅显示
 
 每个节点会显示：
@@ -343,6 +344,42 @@
   - 这是节点主机 OS 级网络累计，不是用户配额汇总
   - node-agent 上报宿主机 raw counter，panel 侧负责月基线和累计
 - last error
+
+### 8.4 Probe
+
+ops-v2 节点抽屉支持查看最近 probe 结果，并手动创建安全 probe job：
+
+- `probe_dns`：DNS/解析可达性检查。
+- `probe_tcp`：TCP 端口连通性检查。
+- `probe_http`：HTTP/HTTPS GET 或 HEAD 检查。
+
+示例 payload：
+
+```json
+{ "kind": "probe_dns", "target": "example.com", "timeout_ms": 3000 }
+```
+
+```json
+{ "kind": "probe_tcp", "target": "example.com", "port": 443, "timeout_ms": 3000 }
+```
+
+```json
+{ "kind": "probe_http", "url": "https://example.com/healthz", "method": "GET", "timeout_ms": 3000, "expect_status": [200] }
+```
+
+默认拒绝 localhost、link-local、cloud metadata IP 和私网地址；确需探测私网目标时加 `"allow_private": true`。`probe_ping` 仍作为 legacy alias 接受，但语义已归一为 `probe_dns`。
+
+### 8.5 Runtime 历史队列
+
+节点 report 的 latest 状态同步写入 `node_runtime_metrics` / `node_monthly_usage`。历史 sample/detail 通过 panel 内存队列异步批量写入；内存队列满时会写入 panel 本地磁盘兜底队列，worker 后续成功落库后删除文件。
+
+相关环境变量：
+
+- `NODE_METRIC_HISTORY_QUEUE_CAPACITY`：默认 `4096`。
+- `NODE_METRIC_HISTORY_QUEUE_DIR`：默认位于 `DB_PATH` 同目录的 `node_metric_history_queue`。
+- `NODE_METRIC_HISTORY_QUEUE_MAX_BYTES`：默认 `67108864`。
+
+磁盘兜底也满或不可写时，历史样本会被丢弃，并由 worker 写入 `metric_history_dropped` ops alert；这不会影响节点 heartbeat/report。
 
 排障提示：
 

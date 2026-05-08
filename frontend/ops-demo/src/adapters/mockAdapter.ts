@@ -274,7 +274,7 @@ const nodes: OpsNode[] = [
     metadata: metadata[2],
     static_facts: facts[2],
     samples: makeSeries(2),
-    probes: [{ id: 5, node_id: 13, kind: "probe_ping", target: "1.1.1.1", success: false, latency_ms: 0, error: "timeout", checked_at: isoAgo(130) }]
+    probes: [{ id: 5, node_id: 13, kind: "probe_dns", target: "1.1.1.1", success: false, latency_ms: 0, error: "timeout", checked_at: isoAgo(130) }]
   },
   {
     id: 14,

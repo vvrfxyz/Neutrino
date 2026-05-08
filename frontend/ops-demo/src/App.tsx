@@ -30,9 +30,9 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { Button, Chip } from "@heroui/react";
-import { connectLiveStream, fetchLiveConfig, fetchLiveDataset, mergeLiveDataset } from "./adapters/liveAdapter";
+import { connectLiveStream, enqueueNodeProbe, fetchLiveConfig, fetchLiveDataset, mergeLiveDataset } from "./adapters/liveAdapter";
 import { jitterDataset, mockDataset } from "./adapters/mockAdapter";
-import type { MonthUsage, NodeMetadata, OpsAlert, OpsDataset, OpsNode, ScenarioName } from "./types";
+import type { MonthUsage, NodeMetadata, OpsAlert, OpsDataset, OpsNode, ProbeJobPayload, ScenarioName } from "./types";
 import {
   absoluteTime,
   compactVersion,
@@ -97,6 +97,8 @@ function App() {
     if (mode !== "live") return;
     let stopped = false;
     let pollingTimer = 0;
+    let streamOpen = false;
+    let pollEveryMs = liveIntervalMs;
     let enrichEveryMs = 30000;
     let nextEnrichAt = 0;
     setLoading(true);
@@ -121,31 +123,51 @@ function App() {
       }
     };
 
+    const stopPolling = () => {
+      if (pollingTimer) {
+        window.clearInterval(pollingTimer);
+        pollingTimer = 0;
+      }
+    };
+
+    const startPolling = (forceEnrich = false) => {
+      if (pollingTimer || stopped || streamOpen) return;
+      void poll(forceEnrich);
+      pollingTimer = window.setInterval(() => void poll(), pollEveryMs);
+    };
+
     const start = async () => {
       const config = await fetchLiveConfig();
       if (stopped) return;
-      const pollEveryMs = config.poll_interval_ms;
+      pollEveryMs = config.poll_interval_ms;
       enrichEveryMs = config.enrich_interval_ms;
       setLiveIntervalMs(pollEveryMs);
-      void poll(true);
-      pollingTimer = window.setInterval(() => void poll(), pollEveryMs);
+      startPolling(true);
     };
 
     void start();
     const disconnect = connectLiveStream(
       (live) => {
         if (stopped) return;
-        setDataset((current) => mergeLiveDataset(current, live, { preserveAlerts: true, preserveEnrichment: true }));
+        setDataset((current) => mergeLiveDataset(current, live, { preserveEnrichment: true }));
         setLoading(false);
         setError("");
       },
       (message) => {
-        if (!stopped) setError(message);
+        if (!stopped) {
+          streamOpen = false;
+          setError(message);
+          startPolling(false);
+        }
+      },
+      () => {
+        streamOpen = true;
+        stopPolling();
       }
     );
     return () => {
       stopped = true;
-      window.clearInterval(pollingTimer);
+      stopPolling();
       disconnect();
     };
   }, [mode]);
@@ -176,6 +198,17 @@ function App() {
   const activeAlerts = dataset.alerts.filter((alert) => alert.status === "active");
   const failedProbes = dataset.probes.filter((probe) => !probe.success);
   const totals = useMemo(() => fleetTotals(dataset.nodes), [dataset.nodes]);
+
+  const refreshLiveDataset = async () => {
+    if (mode !== "live") return;
+    try {
+      const live = await fetchLiveDataset({ enrich: true });
+      setDataset((current) => mergeLiveDataset(current, live));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "live refresh failed");
+    }
+  };
 
   return (
     <main className="ops-shell">
@@ -216,7 +249,7 @@ function App() {
         </div>
       </div>
 
-      <NodeDrawer node={selectedNode} onClose={() => setSelectedNodeID(null)} />
+      <NodeDrawer node={selectedNode} onClose={() => setSelectedNodeID(null)} onProbeQueued={mode === "live" ? refreshLiveDataset : undefined} />
     </main>
   );
 }
@@ -734,7 +767,7 @@ function ProbeStack({ failedCount, nodes }: { failedCount: number; nodes: OpsNod
   );
 }
 
-function NodeDrawer({ node, onClose }: { node: OpsNode | null; onClose: () => void }) {
+function NodeDrawer({ node, onClose, onProbeQueued }: { node: OpsNode | null; onClose: () => void; onProbeQueued?: (nodeID: number) => void | Promise<void> }) {
   if (!node) return null;
   const metrics = node.agent_metrics;
   const facts = node.static_facts;
@@ -833,6 +866,8 @@ function NodeDrawer({ node, onClose }: { node: OpsNode | null; onClose: () => vo
             </div>
           </section>
 
+          <ProbeManager node={node} onProbeQueued={onProbeQueued} />
+
           {meta?.tags?.length ? (
             <div className="flex flex-wrap gap-2">
               {meta.tags.map((tag) => (
@@ -844,6 +879,212 @@ function NodeDrawer({ node, onClose }: { node: OpsNode | null; onClose: () => vo
       </aside>
     </div>
   );
+}
+
+const probeKindOptions: Array<{ value: ProbeJobPayload["kind"]; label: string }> = [
+  { value: "probe_dns", label: "DNS" },
+  { value: "probe_tcp", label: "TCP" },
+  { value: "probe_http", label: "HTTP" }
+];
+
+function ProbeManager({ node, onProbeQueued }: { node: OpsNode; onProbeQueued?: (nodeID: number) => void | Promise<void> }) {
+  const [kind, setKind] = useState<ProbeJobPayload["kind"]>("probe_dns");
+  const [target, setTarget] = useState(node.host || "");
+  const [url, setURL] = useState(node.host ? `https://${node.host}/` : "");
+  const [port, setPort] = useState("443");
+  const [method, setMethod] = useState<"GET" | "HEAD">("GET");
+  const [timeoutMS, setTimeoutMS] = useState("3000");
+  const [allowPrivate, setAllowPrivate] = useState(false);
+  const [expectStatus, setExpectStatus] = useState("200");
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [formError, setFormError] = useState("");
+  const inputClass = "h-9 w-full rounded-[6px] border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:bg-slate-100";
+  const labelClass = "mb-1 block text-xs font-medium text-slate-500";
+  const latestProbes = node.probes.slice(0, 8);
+  const disabled = !onProbeQueued || submitting;
+
+  useEffect(() => {
+    setTarget(node.host || "");
+    setURL(node.host ? `https://${node.host}/` : "");
+    setMessage("");
+    setFormError("");
+  }, [node.id, node.host]);
+
+  const submit = async (event: { preventDefault: () => void }) => {
+    event.preventDefault();
+    if (!onProbeQueued) return;
+    setFormError("");
+    setMessage("");
+    setSubmitting(true);
+    try {
+      const timeout = normalizeProbeNumber(timeoutMS, 3000, 100, 30000, "timeout_ms");
+      const payload: ProbeJobPayload = { kind, timeout_ms: timeout, allow_private: allowPrivate };
+      if (kind === "probe_dns") {
+        const value = target.trim();
+        if (!value) throw new Error("target 不能为空");
+        payload.target = value;
+      }
+      if (kind === "probe_tcp") {
+        const value = target.trim();
+        if (!value) throw new Error("target 不能为空");
+        payload.target = value;
+        payload.port = normalizeProbeNumber(port, 443, 1, 65535, "port");
+      }
+      if (kind === "probe_http") {
+        const value = url.trim();
+        if (!value) throw new Error("url 不能为空");
+        payload.url = value;
+        payload.method = method;
+        const statuses = parseProbeStatusCodes(expectStatus);
+        if (statuses.length > 0) payload.expect_status = statuses;
+      }
+      const result = await enqueueNodeProbe(node.id, payload);
+      setMessage(result.enqueued ? `已创建 job #${result.job_id}` : `已复用 job #${result.job_id}`);
+      await onProbeQueued(node.id);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "probe job 创建失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <section className="ops-panel rounded-[8px] p-4 shadow-none">
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <Zap size={17} className="text-amber-700" />
+          <h3 className="text-sm font-semibold text-slate-900">Probe</h3>
+        </div>
+        <Chip className={`rounded-[6px] ${latestProbes.some((probe) => !probe.success) ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}`} size="sm">
+          {latestProbes.filter((probe) => !probe.success).length} 失败
+        </Chip>
+      </div>
+
+      <form className="grid gap-3" onSubmit={submit}>
+        <div className="grid gap-3 sm:grid-cols-[120px_minmax(0,1fr)_120px]">
+          <label>
+            <span className={labelClass}>类型</span>
+            <select className={inputClass} disabled={disabled} value={kind} onChange={(event) => setKind(event.target.value as ProbeJobPayload["kind"])}>
+              {probeKindOptions.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </label>
+          {kind === "probe_http" ? (
+            <label>
+              <span className={labelClass}>URL</span>
+              <input className={inputClass} disabled={disabled} value={url} onChange={(event) => setURL(event.target.value)} placeholder="https://example.com/healthz" />
+            </label>
+          ) : (
+            <label>
+              <span className={labelClass}>Target</span>
+              <input className={inputClass} disabled={disabled} value={target} onChange={(event) => setTarget(event.target.value)} placeholder="example.com" />
+            </label>
+          )}
+          {kind === "probe_tcp" ? (
+            <label>
+              <span className={labelClass}>Port</span>
+              <input className={inputClass} disabled={disabled} inputMode="numeric" value={port} onChange={(event) => setPort(event.target.value)} />
+            </label>
+          ) : (
+            <label>
+              <span className={labelClass}>Timeout</span>
+              <input className={inputClass} disabled={disabled} inputMode="numeric" value={timeoutMS} onChange={(event) => setTimeoutMS(event.target.value)} />
+            </label>
+          )}
+        </div>
+
+        {kind === "probe_http" || kind === "probe_tcp" ? (
+          <div className="grid gap-3 sm:grid-cols-3">
+            {kind === "probe_http" ? (
+              <>
+                <label>
+                  <span className={labelClass}>Method</span>
+                  <select className={inputClass} disabled={disabled} value={method} onChange={(event) => setMethod(event.target.value as "GET" | "HEAD")}>
+                    <option value="GET">GET</option>
+                    <option value="HEAD">HEAD</option>
+                  </select>
+                </label>
+                <label>
+                  <span className={labelClass}>Expect</span>
+                  <input className={inputClass} disabled={disabled} value={expectStatus} onChange={(event) => setExpectStatus(event.target.value)} placeholder="200, 204" />
+                </label>
+              </>
+            ) : null}
+            <label>
+              <span className={labelClass}>Timeout</span>
+              <input className={inputClass} disabled={disabled} inputMode="numeric" value={timeoutMS} onChange={(event) => setTimeoutMS(event.target.value)} />
+            </label>
+          </div>
+        ) : null}
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input className="h-4 w-4 rounded border-slate-300 text-sky-600" checked={allowPrivate} disabled={disabled} type="checkbox" onChange={(event) => setAllowPrivate(event.target.checked)} />
+            allow_private
+          </label>
+          <Button className="h-9 rounded-[8px] bg-slate-900 px-3 text-sm font-semibold text-white disabled:bg-slate-300" isDisabled={disabled} size="sm" type="submit">
+            {submitting ? <LoaderCircle className="animate-spin" size={15} /> : <Zap size={15} />}
+            创建探测
+          </Button>
+        </div>
+        {formError ? <div className="rounded-[6px] bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{formError}</div> : null}
+        {message ? <div className="rounded-[6px] bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">{message}</div> : null}
+      </form>
+
+      <div className="mt-4 space-y-2">
+        {latestProbes.length === 0 ? <EmptyBlock icon={<Zap size={20} />} label="暂无探测" compact /> : null}
+        {latestProbes.map((probe) => (
+          <div key={probe.id} className="rounded-[8px] border border-slate-200 bg-white p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-slate-900">{probeKindName(probe.kind)}</span>
+                  {probe.status_code ? <span className="font-mono text-[11px] text-slate-400">HTTP {probe.status_code}</span> : null}
+                </div>
+                <div className="mt-1 break-all text-xs text-slate-600">{probe.target}</div>
+                <div className="mt-1 text-[11px] text-slate-400">{absoluteTime(probe.checked_at)}</div>
+                {!probe.success && probe.error ? <div className="mt-1 break-all text-[11px] text-rose-600">{probe.error}</div> : null}
+              </div>
+              <Chip className={`rounded-[6px] ${probe.success ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`} size="sm">
+                {probe.success ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                {probe.success ? `${Math.round(probe.latency_ms)}ms` : "失败"}
+              </Chip>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function normalizeProbeNumber(raw: string, fallback: number, min: number, max: number, label: string): number {
+  const value = raw.trim() === "" ? fallback : Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`${label} 必须是数字`);
+  const rounded = Math.round(value);
+  if (rounded < min || rounded > max) throw new Error(`${label} 需在 ${min}-${max}`);
+  return rounded;
+}
+
+function parseProbeStatusCodes(raw: string): number[] {
+  const text = raw.trim();
+  if (!text) return [];
+  const out = text.split(/[,\s]+/).filter(Boolean).map((part) => {
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 100 || value > 599) {
+      throw new Error("expect_status 需为 100-599");
+    }
+    return value;
+  });
+  return Array.from(new Set(out));
+}
+
+function probeKindName(kind: string): string {
+  if (kind === "probe_dns" || kind === "probe_ping") return "DNS";
+  if (kind === "probe_tcp") return "TCP";
+  if (kind === "probe_http") return "HTTP";
+  return kind.replace("probe_", "").toUpperCase();
 }
 
 function DetailPanel({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) {

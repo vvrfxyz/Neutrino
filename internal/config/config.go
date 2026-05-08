@@ -64,12 +64,15 @@ type Config struct {
 	RealityPublicK string
 	RealityShortID string
 
-	OnlineWindowSec        int
-	OnlineDisplayWindowSec int
-	OpsSnapshotIntervalSec int
-	HostMetricsIntervalSec int
-	IPLimitStrikes         int
-	QuotaSweepSec          int
+	OnlineWindowSec                int
+	OnlineDisplayWindowSec         int
+	OpsSnapshotIntervalSec         int
+	HostMetricsIntervalSec         int
+	NodeMetricHistoryQueueCapacity int
+	NodeMetricHistoryQueueDir      string
+	NodeMetricHistoryQueueMaxBytes int64
+	IPLimitStrikes                 int
+	QuotaSweepSec                  int
 
 	// Data retention + pruning.
 	XrayAccessRetentionDays        int
@@ -153,12 +156,15 @@ func Load() Config {
 		RealityPublicK: env("REALITY_PUBLIC_KEY", "REPLACE_WITH_REALITY_PUBLIC_KEY"),
 		RealityShortID: env("REALITY_SHORT_ID", "REPLACE_WITH_SHORT_ID"),
 
-		OnlineWindowSec:        onlineWindowSec,
-		OnlineDisplayWindowSec: onlineDisplayWindowSec,
-		OpsSnapshotIntervalSec: envInt("OPS_SNAPSHOT_INTERVAL_SEC", 2),
-		HostMetricsIntervalSec: envInt("HOST_METRICS_INTERVAL_SEC", 2),
-		IPLimitStrikes:         envInt("IP_LIMIT_STRIKES", 3),
-		QuotaSweepSec:          envInt("QUOTA_SWEEP_SEC", 30),
+		OnlineWindowSec:                onlineWindowSec,
+		OnlineDisplayWindowSec:         onlineDisplayWindowSec,
+		OpsSnapshotIntervalSec:         envInt("OPS_SNAPSHOT_INTERVAL_SEC", 2),
+		HostMetricsIntervalSec:         envInt("HOST_METRICS_INTERVAL_SEC", 2),
+		NodeMetricHistoryQueueCapacity: envInt("NODE_METRIC_HISTORY_QUEUE_CAPACITY", 4096),
+		NodeMetricHistoryQueueDir:      env("NODE_METRIC_HISTORY_QUEUE_DIR", ""),
+		NodeMetricHistoryQueueMaxBytes: envInt64("NODE_METRIC_HISTORY_QUEUE_MAX_BYTES", 64*1024*1024),
+		IPLimitStrikes:                 envInt("IP_LIMIT_STRIKES", 3),
+		QuotaSweepSec:                  envInt("QUOTA_SWEEP_SEC", 30),
 
 		XrayAccessRetentionDays:        envInt("XRAY_ACCESS_RETENTION_DAYS", 7),
 		XrayStatsRetentionDays:         envInt("XRAY_STATS_RETENTION_DAYS", 2),
@@ -250,6 +256,18 @@ func envInt(k string, fallback int) int {
 		return fallback
 	}
 	parsed, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envInt64(k string, fallback int64) int64 {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return fallback
 	}

@@ -5,15 +5,18 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
 )
 
 const (
-	KindPing = "probe_ping"
+	KindDNS  = "probe_dns"
+	KindPing = "probe_ping" // Legacy alias for probe_dns.
 	KindTCP  = "probe_tcp"
 	KindHTTP = "probe_http"
 )
@@ -25,6 +28,7 @@ type Payload struct {
 	Method       string `json:"method,omitempty"`
 	TimeoutMS    int    `json:"timeout_ms,omitempty"`
 	Count        int    `json:"count,omitempty"`
+	AllowPrivate bool   `json:"allow_private,omitempty"`
 	ExpectStatus []int  `json:"expect_status,omitempty"`
 }
 
@@ -54,10 +58,10 @@ func ParsePayload(kind string, raw string) (Payload, error) {
 }
 
 func Validate(kind string, p Payload) error {
-	switch strings.TrimSpace(kind) {
-	case KindPing:
+	switch NormalizeKind(kind) {
+	case KindDNS:
 		target := strings.TrimSpace(p.Target)
-		if err := validateHost(target); err != nil {
+		if err := validateHost(target, p.AllowPrivate); err != nil {
 			return err
 		}
 		if normalizedTimeout(p.TimeoutMS) <= 0 {
@@ -71,7 +75,7 @@ func Validate(kind string, p Payload) error {
 			return fmt.Errorf("count must be 1..5")
 		}
 	case KindTCP:
-		if err := validateHost(strings.TrimSpace(p.Target)); err != nil {
+		if err := validateHost(strings.TrimSpace(p.Target), p.AllowPrivate); err != nil {
 			return err
 		}
 		if p.Port < 1 || p.Port > 65535 {
@@ -81,6 +85,9 @@ func Validate(kind string, p Payload) error {
 		u, err := url.Parse(strings.TrimSpace(p.URL))
 		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || strings.TrimSpace(u.Hostname()) == "" {
 			return fmt.Errorf("url must be http or https")
+		}
+		if err := validateHost(u.Hostname(), p.AllowPrivate); err != nil {
+			return err
 		}
 		method := strings.ToUpper(strings.TrimSpace(p.Method))
 		if method == "" {
@@ -103,15 +110,16 @@ func Validate(kind string, p Payload) error {
 func Run(ctx context.Context, kind string, p Payload) Result {
 	start := time.Now()
 	checkedAt := start.UTC().Format(time.RFC3339)
-	result := Result{Kind: strings.TrimSpace(kind), CheckedAt: checkedAt}
+	kind = NormalizeKind(kind)
+	result := Result{Kind: kind, CheckedAt: checkedAt}
 	timeout := time.Duration(normalizedTimeout(p.TimeoutMS)) * time.Millisecond
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	switch strings.TrimSpace(kind) {
-	case KindPing:
+	switch kind {
+	case KindDNS:
 		result.Target = strings.TrimSpace(p.Target)
-		_, err := net.DefaultResolver.LookupIPAddr(runCtx, result.Target)
+		_, err := resolveAllowedIPs(runCtx, result.Target, p.AllowPrivate)
 		result.LatencyMS = elapsedMS(start)
 		if err != nil {
 			result.Error = err.Error()
@@ -120,9 +128,8 @@ func Run(ctx context.Context, kind string, p Payload) Result {
 		result.Success = true
 		return result
 	case KindTCP:
-		result.Target = fmt.Sprintf("%s:%d", strings.TrimSpace(p.Target), p.Port)
-		d := net.Dialer{Timeout: timeout}
-		conn, err := d.DialContext(runCtx, "tcp", result.Target)
+		result.Target = TargetString(kind, p)
+		conn, err := dialTCP(runCtx, strings.TrimSpace(p.Target), p.Port, timeout, p.AllowPrivate)
 		result.LatencyMS = elapsedMS(start)
 		if err != nil {
 			result.Error = err.Error()
@@ -144,8 +151,22 @@ func Run(ctx context.Context, kind string, p Payload) Result {
 		}
 		client := &http.Client{
 			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+				DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+					host, portText, err := net.SplitHostPort(address)
+					if err != nil {
+						return nil, err
+					}
+					port, err := net.LookupPort("tcp", portText)
+					if err != nil {
+						return nil, err
+					}
+					return dialTCP(ctx, host, port, timeout, p.AllowPrivate)
+				},
 			},
 		}
 		resp, err := client.Do(req)
@@ -155,6 +176,7 @@ func Run(ctx context.Context, kind string, p Payload) Result {
 			return result
 		}
 		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 		status := resp.StatusCode
 		result.StatusCode = &status
 		result.Success = expectedStatus(status, p.ExpectStatus)
@@ -181,7 +203,32 @@ func normalizedTimeout(ms int) int {
 	return ms
 }
 
-func validateHost(target string) error {
+func NormalizeKind(kind string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == KindPing {
+		return KindDNS
+	}
+	return kind
+}
+
+func TargetString(kind string, p Payload) string {
+	switch NormalizeKind(kind) {
+	case KindHTTP:
+		return strings.TrimSpace(p.URL)
+	case KindTCP:
+		return net.JoinHostPort(strings.TrimSpace(p.Target), fmt.Sprintf("%d", p.Port))
+	case KindDNS:
+		return strings.TrimSpace(p.Target)
+	default:
+		return strings.TrimSpace(p.Target)
+	}
+}
+
+func CorrelationID(kind string, p Payload) string {
+	return NormalizeKind(kind) + ":" + TargetString(kind, p)
+}
+
+func validateHost(target string, allowPrivate bool) error {
 	if target == "" {
 		return fmt.Errorf("target required")
 	}
@@ -191,7 +238,91 @@ func validateHost(target string) error {
 	if strings.ContainsAny(target, "/\\\x00\r\n\t ") {
 		return fmt.Errorf("target must be a hostname or IP")
 	}
+	if strings.Contains(target, ":") && net.ParseIP(target) == nil {
+		return fmt.Errorf("target must not include a port")
+	}
+	lower := strings.TrimSuffix(strings.ToLower(target), ".")
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") || lower == "metadata.google.internal" || lower == "metadata" {
+		return fmt.Errorf("target is not allowed")
+	}
+	if ip := net.ParseIP(target); ip != nil {
+		if err := validateAllowedIP(ip, allowPrivate); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func resolveAllowedIPs(ctx context.Context, host string, allowPrivate bool) ([]net.IP, error) {
+	host = strings.TrimSpace(host)
+	if ip := net.ParseIP(host); ip != nil {
+		if err := validateAllowedIP(ip, allowPrivate); err != nil {
+			return nil, err
+		}
+		return []net.IP{ip}, nil
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no addresses resolved")
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		if err := validateAllowedIP(addr.IP, allowPrivate); err != nil {
+			return nil, err
+		}
+		ips = append(ips, addr.IP)
+	}
+	return ips, nil
+}
+
+func dialTCP(ctx context.Context, host string, port int, timeout time.Duration, allowPrivate bool) (net.Conn, error) {
+	ips, err := resolveAllowedIPs(ctx, host, allowPrivate)
+	if err != nil {
+		return nil, err
+	}
+	d := net.Dialer{Timeout: timeout}
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port)))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("connect failed")
+}
+
+func validateAllowedIP(ip net.IP, allowPrivate bool) error {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return fmt.Errorf("target address is not allowed")
+	}
+	addr = addr.Unmap()
+	if addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() || isCloudMetadataAddr(addr) {
+		return fmt.Errorf("target address is not allowed")
+	}
+	if addr.IsPrivate() && !allowPrivate {
+		return fmt.Errorf("private target address requires allow_private")
+	}
+	return nil
+}
+
+func isCloudMetadataAddr(addr netip.Addr) bool {
+	switch addr {
+	case netip.MustParseAddr("169.254.169.254"),
+		netip.MustParseAddr("169.254.169.253"),
+		netip.MustParseAddr("100.100.100.200"),
+		netip.MustParseAddr("fd00:ec2::254"):
+		return true
+	default:
+		return false
+	}
 }
 
 func expectedStatus(status int, allowed []int) bool {

@@ -468,7 +468,7 @@ func (a *Agent) execJob(ctx context.Context, job *NodeJob) jobResult {
 			appliedVersion = "rollback:" + strings.TrimSpace(name)
 		}
 		return jobResult{Status: "succeeded", ResultJSON: out, AppliedVersion: appliedVersion}
-	case probe.KindPing, probe.KindTCP, probe.KindHTTP:
+	case probe.KindDNS, probe.KindPing, probe.KindTCP, probe.KindHTTP:
 		req, err := probe.ParsePayload(job.Kind, job.PayloadJSON)
 		if err != nil {
 			return jobResult{Status: "failed", Retryable: false, Error: err.Error()}

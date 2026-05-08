@@ -1,10 +1,11 @@
-import type { HostSnapshot, NodeMetadata, OnlineUser, OpsDataset, OpsNode, ProbeResult } from "../types";
+import type { HostSnapshot, NodeMetadata, OnlineUser, OpsDataset, OpsNode, ProbeJobPayload, ProbeResult } from "../types";
 import { mockDataset } from "./mockAdapter";
 
 type OpsSnapshotWire = {
   host?: HostSnapshot;
   online?: OnlineUser[];
   nodes?: Array<Partial<OpsNode> & { id: number; name: string }>;
+  alerts?: OpsDataset["alerts"];
 };
 
 export type LiveConfig = {
@@ -100,6 +101,26 @@ export async function fetchLiveDataset(options: FetchLiveOptions = {}): Promise<
   };
 }
 
+export async function enqueueNodeProbe(nodeID: number, payload: ProbeJobPayload): Promise<{ job_id: number; enqueued: boolean }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const csrf = csrfToken();
+  if (csrf) headers["X-CSRF-Token"] = csrf;
+  const data = await fetchJSON(`/api/v1/nodes/${nodeID}/probes`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload)
+  });
+  return {
+    job_id: Number(data.job_id || 0),
+    enqueued: Boolean(data.enqueued)
+  };
+}
+
+function csrfToken(): string {
+  if (typeof document === "undefined") return "";
+  return document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content.trim() || "";
+}
+
 export function mergeLiveDataset(previous: OpsDataset, incoming: OpsDataset, options: MergeOptions = {}): OpsDataset {
   const previousByID = new Map(previous.nodes.map((node) => [node.id, node]));
   const nodes = incoming.nodes.map((node) => {
@@ -185,8 +206,8 @@ function numberValue(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-async function fetchJSON(path: string) {
-  const resp = await fetch(path);
+async function fetchJSON(path: string, init?: RequestInit) {
+  const resp = await fetch(path, init);
   if (!resp.ok) {
     throw new Error(`${path} returned ${resp.status}`);
   }
@@ -200,10 +221,16 @@ function clampInterval(value: number, min: number, max: number): number {
   return Math.round(value);
 }
 
-export function connectLiveStream(onDataset: (dataset: OpsDataset) => void, onError: (message: string) => void): () => void {
+export function connectLiveStream(
+  onDataset: (dataset: OpsDataset) => void,
+  onError: (message: string) => void,
+  onOpen?: () => void
+): () => void {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/stream`);
   let closed = false;
+
+  ws.addEventListener("open", () => onOpen?.());
 
   ws.addEventListener("message", (event) => {
     try {
@@ -215,7 +242,7 @@ export function connectLiveStream(onDataset: (dataset: OpsDataset) => void, onEr
         host: data.host || mockDataset("empty").host,
         nodes,
         online: Array.isArray(data.online) ? data.online : [],
-        alerts: [],
+        alerts: Array.isArray(data.alerts) ? data.alerts : [],
         probes: nodes.flatMap((node) => node.probes),
         updated_at: envelope.at || new Date().toISOString()
       });

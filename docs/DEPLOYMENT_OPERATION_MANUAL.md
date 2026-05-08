@@ -55,6 +55,7 @@
 建议：
 
 - 默认保持 `ALLOW_BASIC_AUTH=false`
+- 如需调整 ops runtime 历史队列容量，配置 `NODE_METRIC_HISTORY_QUEUE_CAPACITY`、`NODE_METRIC_HISTORY_QUEUE_DIR`、`NODE_METRIC_HISTORY_QUEUE_MAX_BYTES`；默认会在 `DB_PATH` 同目录建立 `node_metric_history_queue` 磁盘兜底目录。
 - 如果后台域名走 CDN / 反代，而 `:8443` 需要节点直连源站，设置：
   - `NODE_DEFAULT_PANEL_MTLS_URL=https://mtls.example.com:8443`
 

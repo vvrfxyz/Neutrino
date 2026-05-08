@@ -521,6 +521,7 @@ func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, managed.DesiredVersion, managed.JobID, managed.Enqueued),
 				a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
+		_ = a.ops().RefreshNode(r.Context(), item.ID)
 
 		a.writeJSON(w, http.StatusCreated, item)
 	default:
@@ -771,6 +772,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, update.ManagedXray.DesiredVersion, update.ManagedXray.JobID, update.ManagedXray.Enqueued),
 				a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
+		_ = a.ops().RefreshNode(r.Context(), nodeID)
 
 		a.writeJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
@@ -793,6 +795,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if result.PendingDelete {
+			_ = a.ops().RefreshNode(r.Context(), nodeID)
 			if result.DisabledForDelete {
 				if act := actorFromRequest(a, r); act.typ != "" {
 					_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.disable_for_delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
@@ -806,6 +809,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 				_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 			}
 		}
+		a.ops().RemoveNode(nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

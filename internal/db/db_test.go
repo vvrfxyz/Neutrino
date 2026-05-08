@@ -154,6 +154,9 @@ VALUES (1, 'probe_tcp', 'example.com:443', 1, '2026-01-01T00:00:00Z', 1);
 	if _, err := conn.Exec(`INSERT INTO node_jobs(node_id, kind, status, created_at) VALUES (1, 'probe_tcp', 'pending', '2026-01-01T00:00:01Z');`); err != nil {
 		t.Fatalf("probe kind insert after migrate: %v", err)
 	}
+	if _, err := conn.Exec(`INSERT INTO node_jobs(node_id, kind, status, created_at) VALUES (1, 'probe_dns', 'pending', '2026-01-01T00:00:02Z');`); err != nil {
+		t.Fatalf("probe_dns kind insert after migrate: %v", err)
+	}
 	var count int
 	if err := conn.QueryRow(`SELECT COUNT(1) FROM node_jobs WHERE kind = 'users_sync';`).Scan(&count); err != nil {
 		t.Fatalf("count old job: %v", err)

@@ -135,6 +135,48 @@ WHERE node_id = ?;
 	return out, true, nil
 }
 
+func (s *Store) ListNodeMetadata(ctx context.Context) (map[int64]NodeMetadata, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT node_id, provider, region, country, city, latitude, longitude, tags_json, monthly_cost_cents, currency, renew_cycle, renew_at, note, updated_at
+FROM node_metadata;
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]NodeMetadata)
+	for rows.Next() {
+		item, err := scanNodeMetadata(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[item.NodeID] = item
+	}
+	return out, rows.Err()
+}
+
+type nodeMetadataScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanNodeMetadata(row nodeMetadataScanner) (NodeMetadata, error) {
+	var out NodeMetadata
+	var tagsJSON string
+	var renewAt sql.NullString
+	var updatedAt string
+	if err := row.Scan(&out.NodeID, &out.Provider, &out.Region, &out.Country, &out.City, &out.Latitude, &out.Longitude, &tagsJSON, &out.MonthlyCostCents, &out.Currency, &out.RenewCycle, &renewAt, &out.Note, &updatedAt); err != nil {
+		return NodeMetadata{}, err
+	}
+	_ = json.Unmarshal([]byte(tagsJSON), &out.Tags)
+	if renewAt.Valid && renewAt.String != "" {
+		if t, err := time.Parse(time.RFC3339, renewAt.String); err == nil {
+			out.RenewAt = &t
+		}
+	}
+	out.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return out, nil
+}
+
 func (s *Store) UpsertOpsAlert(ctx context.Context, nodeID *int64, kind, severity, message, dedupeKey string, at time.Time) (int64, error) {
 	kind = trimLimit(kind, 128)
 	severity = trimLimit(defaultText(severity, "warning"), 32)

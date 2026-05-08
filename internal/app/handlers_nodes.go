@@ -32,6 +32,7 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	a.ensureServices()
 	// Node-agent control-plane is mTLS only (no bearer tokens).
 	if mtlsID, ok := nodeIDFromMTLS(r); !ok || mtlsID != nodeID {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -52,13 +53,18 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 		// If no JSON, keep backward compatibility (heartbeat with empty body).
 		_ = r.Body.Close()
 	}
-	if err := a.store.ApplyNodeReport(r.Context(), nodeID, rep); err != nil {
+	reportedAt, err := a.store.ApplyNodeReportLatest(r.Context(), nodeID, rep)
+	if err != nil {
 		http.Error(w, "apply node report failed", http.StatusInternalServerError)
 		return
+	}
+	if rep.Metrics != nil {
+		_ = a.metricHistoryQueue.Enqueue(nodeID, reportedAt, *rep.Metrics)
 	}
 
 	receivedAt := time.Now().UTC()
 	_ = a.store.UpdateNodeAgentStatus(r.Context(), nodeID, &receivedAt, "")
+	_ = a.ops().RefreshNode(r.Context(), nodeID)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"timestamp":    receivedAt.Format(time.RFC3339),
@@ -137,6 +143,7 @@ func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nod
 		if ok {
 			now = time.Now().UTC()
 			_ = a.store.UpdateNodeAgentStatus(r.Context(), nodeID, &now, "")
+			_ = a.ops().RefreshNode(r.Context(), nodeID)
 			auditAction(a, r, "node.job.claim", "node_job", fmt.Sprintf("%d", job.ID), map[string]any{
 				"node_id":         nodeID,
 				"kind":            job.Kind,
@@ -242,6 +249,7 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 
 	job, ok, _ := a.store.GetNodeJob(r.Context(), jobID)
 	if ok {
+		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		if strings.HasPrefix(job.Kind, "probe_") {
 			var result struct {
 				Kind       string  `json:"kind"`
@@ -252,23 +260,38 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 				Error      string  `json:"error"`
 				CheckedAt  string  `json:"checked_at"`
 			}
-			if strings.TrimSpace(resultJSON) != "" && json.Unmarshal([]byte(resultJSON), &result) == nil {
-				checkedAt := time.Now().UTC()
-				if t, err := time.Parse(time.RFC3339, result.CheckedAt); err == nil {
-					checkedAt = t
+			if strings.TrimSpace(resultJSON) != "" {
+				_ = json.Unmarshal([]byte(resultJSON), &result)
+			}
+			checkedAt := time.Now().UTC()
+			if t, err := time.Parse(time.RFC3339, result.CheckedAt); err == nil {
+				checkedAt = t
+			}
+			kind := defaultString(probe.NormalizeKind(result.Kind), probe.NormalizeKind(job.Kind))
+			target := strings.TrimSpace(result.Target)
+			if target == "" {
+				var payload probe.Payload
+				if json.Unmarshal([]byte(defaultString(job.PayloadJSON, "{}")), &payload) == nil {
+					target = probe.TargetString(kind, payload)
+				}
+			}
+			if target != "" {
+				success := result.Success
+				if strings.TrimSpace(resultJSON) == "" {
+					success = status == "succeeded"
 				}
 				sourceJobID := jobID
 				_, _ = a.store.InsertNodeProbeResult(r.Context(), nodeID, repo.InsertNodeProbeResultInput{
-					Kind:        defaultString(result.Kind, job.Kind),
-					Target:      result.Target,
-					Success:     result.Success,
+					Kind:        kind,
+					Target:      target,
+					Success:     success,
 					LatencyMS:   result.LatencyMS,
 					StatusCode:  result.StatusCode,
 					Error:       defaultString(result.Error, req.Error),
 					CheckedAt:   checkedAt,
 					SourceJobID: &sourceJobID,
 				})
-				_ = a.syncProbeOpsAlert(r.Context(), nodeID, defaultString(result.Kind, job.Kind), result.Target, result.Success, defaultString(result.Error, req.Error), checkedAt)
+				_ = a.syncProbeOpsAlert(r.Context(), nodeID, kind, target, success, defaultString(result.Error, req.Error), checkedAt)
 			}
 		}
 		if status == "succeeded" && strings.TrimSpace(req.AppliedVersion) != "" {
@@ -330,6 +353,7 @@ func (a *App) handleAPINodeMetadata(w http.ResponseWriter, r *http.Request, node
 			http.Error(w, "metadata update failed", http.StatusBadRequest)
 			return
 		}
+		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		item, _, _ := a.store.GetNodeMetadata(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item})
 	default:
@@ -352,13 +376,13 @@ func (a *App) handleAPINodeProbes(w http.ResponseWriter, r *http.Request, nodeID
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	kind := strings.TrimSpace(req.Kind)
+	kind := probe.NormalizeKind(req.Kind)
 	if err := probe.Validate(kind, req.Payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	body, _ := json.Marshal(req.Payload)
-	jobID, enqueued, err := a.store.EnqueueNodeJob(r.Context(), nodeID, kind, "", string(body), probeTimeoutSec(req.Payload.TimeoutMS), "")
+	jobID, enqueued, err := a.store.EnqueueNodeJob(r.Context(), nodeID, kind, "", string(body), probeTimeoutSec(req.Payload.TimeoutMS), probe.CorrelationID(kind, req.Payload))
 	if err != nil {
 		http.Error(w, "enqueue probe failed", http.StatusBadRequest)
 		return
@@ -415,6 +439,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 		if act := actorFromRequest(a, r); act.typ != "" {
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.enable", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
+		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -426,6 +451,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 		if act := actorFromRequest(a, r); act.typ != "" {
 			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.disable", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
 		}
+		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}

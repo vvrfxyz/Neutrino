@@ -217,7 +217,7 @@ func Migrate(conn *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS node_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-			kind TEXT NOT NULL CHECK(kind IN ('users_sync','xray_apply','xray_rollback','probe_ping','probe_tcp','probe_http')),
+			kind TEXT NOT NULL CHECK(kind IN ('users_sync','xray_apply','xray_rollback','probe_dns','probe_ping','probe_tcp','probe_http')),
 			desired_version TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','canceled')),
@@ -683,7 +683,7 @@ func ensureNodeJobsProbeKinds(conn *sql.DB) error {
 	if err := conn.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'node_jobs';`).Scan(&ddl); err != nil {
 		return err
 	}
-	if strings.Contains(ddl, "probe_ping") && strings.Contains(ddl, "probe_tcp") && strings.Contains(ddl, "probe_http") {
+	if strings.Contains(ddl, "probe_dns") && strings.Contains(ddl, "probe_ping") && strings.Contains(ddl, "probe_tcp") && strings.Contains(ddl, "probe_http") {
 		return nil
 	}
 	if _, err := conn.Exec(`PRAGMA foreign_keys = OFF;`); err != nil {
@@ -707,7 +707,7 @@ func ensureNodeJobsProbeKinds(conn *sql.DB) error {
 	if _, err := tx.Exec(`CREATE TABLE node_jobs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-		kind TEXT NOT NULL CHECK(kind IN ('users_sync','xray_apply','xray_rollback','probe_ping','probe_tcp','probe_http')),
+		kind TEXT NOT NULL CHECK(kind IN ('users_sync','xray_apply','xray_rollback','probe_dns','probe_ping','probe_tcp','probe_http')),
 		desired_version TEXT NOT NULL DEFAULT '',
 		payload_json TEXT NOT NULL DEFAULT '{}',
 		status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','canceled')),

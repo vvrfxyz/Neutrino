@@ -40,7 +40,8 @@ type App struct {
 	nodeService  *service.NodeService
 	opsService   *service.OpsService
 
-	wsHub *wsHub
+	wsHub              *wsHub
+	metricHistoryQueue *nodeMetricHistoryQueue
 
 	usersSyncMu      sync.Mutex
 	lastUsersSyncReq time.Time
@@ -254,6 +255,7 @@ func New(cfg config.Config, store *repo.Store) *App {
 	a.nodeService = service.NewNodeService(store, cfg.NodeStaleDeleteAfterSec, a)
 	a.opsService = service.NewOpsService(store)
 	a.wsHub = newWSHub()
+	a.metricHistoryQueue = newNodeMetricHistoryQueueFromConfig(store, cfg)
 	return a
 }
 
@@ -273,6 +275,28 @@ func (a *App) ensureServices() {
 	if a.opsService == nil {
 		a.opsService = service.NewOpsService(a.store)
 	}
+	if a.metricHistoryQueue == nil {
+		a.metricHistoryQueue = newNodeMetricHistoryQueueFromConfig(a.store, a.cfg)
+	}
+}
+
+func newNodeMetricHistoryQueueFromConfig(store *repo.Store, cfg config.Config) *nodeMetricHistoryQueue {
+	capacity := cfg.NodeMetricHistoryQueueCapacity
+	if capacity < 0 {
+		capacity = 0
+	}
+	if capacity == 0 && cfg.NodeMetricHistoryQueueDir == "" && cfg.NodeMetricHistoryQueueMaxBytes == 0 {
+		capacity = 4096
+	}
+	diskDir := strings.TrimSpace(cfg.NodeMetricHistoryQueueDir)
+	if diskDir == "" && cfg.NodeMetricHistoryQueueMaxBytes > 0 {
+		dbDir := filepath.Dir(strings.TrimSpace(cfg.DBPath))
+		if dbDir == "" || dbDir == "." {
+			dbDir = "."
+		}
+		diskDir = filepath.Join(dbDir, "node_metric_history_queue")
+	}
+	return newNodeMetricHistoryQueueWithDisk(store, capacity, diskDir, cfg.NodeMetricHistoryQueueMaxBytes)
 }
 
 func (a *App) users() *service.UserService {
@@ -418,7 +442,7 @@ func (a *App) handleOpsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	staticDir := filepath.Join("frontend", "ops-demo", "dist")
 	if r.URL.Path == "/ops-v2" || r.URL.Path == "/ops-v2/" {
-		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+		a.serveOpsV2Index(w, r, filepath.Join(staticDir, "index.html"))
 		return
 	}
 	rel := strings.TrimPrefix(r.URL.Path, "/ops-v2/")
@@ -428,6 +452,21 @@ func (a *App) handleOpsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, filepath.Join(staticDir, rel))
+}
+
+func (a *App) serveOpsV2Index(w http.ResponseWriter, r *http.Request, path string) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	body := string(raw)
+	if token := a.csrfTokenFor(r); token != "" && !strings.Contains(body, `name="csrf-token"`) {
+		meta := fmt.Sprintf(`    <meta name="csrf-token" content="%s" />`, template.HTMLEscapeString(token))
+		body = strings.Replace(body, "</head>", meta+"\n  </head>", 1)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(body))
 }
 
 func (a *App) handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -676,12 +715,17 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) StartWorkers(ctx context.Context) {
+	a.ensureServices()
 	go a.hostMonitor.Start(ctx, a.cfg.HostMetricsInterval(), a.store.GetTrafficTotals)
 	go a.startHostNetMonthlyRecorder(ctx)
 	go a.telegram.Start(ctx)
 	go a.startNodeReconciler(ctx)
 	go a.startNodeJobTimeoutSweeper(ctx)
 	go a.startOpsSnapshotPublisher(ctx)
+	go a.metricHistoryQueue.Run(ctx)
+	if err := a.ops().WarmUp(ctx); err != nil {
+		log.Printf("ops cache warmup error: %v", err)
+	}
 
 	interval := 5 * time.Second
 	quotaInterval := time.Duration(a.cfg.QuotaSweepSec) * time.Second

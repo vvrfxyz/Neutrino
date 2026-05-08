@@ -95,33 +95,26 @@ type NodeStaticFactsInput struct {
 	FactsJSON        json.RawMessage `json:"facts_json,omitempty"`
 }
 
-// ApplyNodeReport updates node fields that are needed for subscription rendering.
-// It never accepts private keys.
-func (s *Store) ApplyNodeReport(ctx context.Context, nodeID int64, in NodeReportInput) error {
+// ApplyNodeReportLatest updates node fields and latest runtime/monthly state
+// needed for subscription rendering and ops liveness. It never accepts private
+// keys. Historical metric sample/detail writes are left to the caller so API
+// report paths can buffer them without delaying heartbeat success.
+func (s *Store) ApplyNodeReportLatest(ctx context.Context, nodeID int64, in NodeReportInput) (time.Time, error) {
 	if nodeID <= 0 {
-		return fmt.Errorf("invalid node id")
+		return time.Time{}, fmt.Errorf("invalid node id")
 	}
 	reportedAt := normalizeNodeReportTime(in.ReportedAt, time.Now().UTC())
 	if in.Metrics != nil {
 		if err := s.UpsertNodeRuntimeMetrics(ctx, nodeID, reportedAt, *in.Metrics); err != nil {
-			return err
-		}
-		if err := s.InsertNodeMetricSample(ctx, nodeID, reportedAt, *in.Metrics); err != nil {
-			// Historical samples must not break latest-state reporting.
-			_ = err
-		}
-		if len(in.Metrics.Details) > 0 {
-			if err := s.InsertNodeMetricDetails(ctx, nodeID, reportedAt, in.Metrics.Details); err != nil {
-				_ = err
-			}
+			return time.Time{}, err
 		}
 		if err := s.UpsertNodeMonthlyUsageFromReport(ctx, nodeID, *in.Metrics, reportedAt); err != nil {
-			return err
+			return time.Time{}, err
 		}
 	}
 	if in.StaticFacts != nil {
 		if err := s.UpsertNodeStaticFacts(ctx, nodeID, reportedAt, *in.StaticFacts); err != nil {
-			return err
+			return time.Time{}, err
 		}
 	}
 	sni := strings.TrimSpace(in.SNI)
@@ -134,7 +127,7 @@ func (s *Store) ApplyNodeReport(ctx context.Context, nodeID int64, in NodeReport
 
 	// Nothing to update.
 	if sni == "" && pbk == "" && sid == "" && !port.Valid {
-		return nil
+		return reportedAt, nil
 	}
 
 	// Clamp obvious junk (avoid accidentally writing huge strings).
@@ -158,7 +151,32 @@ SET sni = COALESCE(NULLIF(?, ''), sni),
 	updated_at = ?
 WHERE id = ?;
 `, sni, pbk, sid, port, now, nodeID)
-	return err
+	if err != nil {
+		return time.Time{}, err
+	}
+	return reportedAt, nil
+}
+
+// ApplyNodeReport updates node latest state and writes metric history
+// synchronously. It is kept for repo-level callers; the HTTP report path uses
+// ApplyNodeReportLatest plus an async history queue.
+func (s *Store) ApplyNodeReport(ctx context.Context, nodeID int64, in NodeReportInput) error {
+	reportedAt, err := s.ApplyNodeReportLatest(ctx, nodeID, in)
+	if err != nil {
+		return err
+	}
+	if in.Metrics != nil {
+		if err := s.InsertNodeMetricSample(ctx, nodeID, reportedAt, *in.Metrics); err != nil {
+			// Historical samples must not break latest-state reporting.
+			_ = err
+		}
+		if len(in.Metrics.Details) > 0 {
+			if err := s.InsertNodeMetricDetails(ctx, nodeID, reportedAt, in.Metrics.Details); err != nil {
+				_ = err
+			}
+		}
+	}
+	return nil
 }
 
 func normalizeNodeReportTime(raw string, fallback time.Time) time.Time {

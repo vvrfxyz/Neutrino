@@ -151,3 +151,146 @@ func TestListNodeMetricSeriesRejectsUnsupportedRangeAndStep(t *testing.T) {
 		t.Fatalf("expected unsupported step error")
 	}
 }
+
+func TestStaticFactsCanonicalHashIgnoresJSONKeyOrder(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "canonical-facts-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "facts.example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	base := NodeStaticFactsInput{
+		OSName:      "Ubuntu",
+		OSVersion:   "24.04",
+		Kernel:      "Linux",
+		Arch:        "amd64",
+		Hostname:    "facts-host",
+		FactsJSON:   json.RawMessage(`{"b":2,"a":{"y":2,"x":1}}`),
+		XrayVersion: "26.2.6",
+	}
+	if err := s.UpsertNodeStaticFacts(ctx, node.ID, time.Now().UTC(), base); err != nil {
+		t.Fatalf("upsert facts: %v", err)
+	}
+	base.FactsJSON = json.RawMessage(`{ "a" : { "x" : 1, "y" : 2 }, "b" : 2 }`)
+	if err := s.UpsertNodeStaticFacts(ctx, node.ID, time.Now().UTC().Add(time.Minute), base); err != nil {
+		t.Fatalf("upsert reordered facts: %v", err)
+	}
+	history, err := s.ListNodeStaticFacts(ctx, node.ID, 10)
+	if err != nil {
+		t.Fatalf("list facts: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("reordered facts should not create duplicate rows, got %d", len(history))
+	}
+	if string(history[0].FactsJSON) != `{"a":{"x":1,"y":2},"b":2}` {
+		t.Fatalf("facts_json not canonical: %s", string(history[0].FactsJSON))
+	}
+
+	base.XrayVersion = "26.3.0"
+	if err := s.UpsertNodeStaticFacts(ctx, node.ID, time.Now().UTC().Add(2*time.Minute), base); err != nil {
+		t.Fatalf("upsert changed facts: %v", err)
+	}
+	history, err = s.ListNodeStaticFacts(ctx, node.ID, 10)
+	if err != nil {
+		t.Fatalf("list changed facts: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("changed structured facts should create a new row, got %d", len(history))
+	}
+}
+
+func TestListNodeMetricSeriesSupportsPlannedSteps(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "metric-step-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "steps.example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	for i := 0; i < 3; i++ {
+		if err := s.InsertNodeMetricSample(ctx, node.ID, now.Add(time.Duration(i)*30*time.Second), NodeReportMetricsInput{CPUPercent: float64(10 + i), MemoryBytes: 100, MemoryTotalBytes: 200}); err != nil {
+			t.Fatalf("insert sample: %v", err)
+		}
+	}
+	for _, step := range []string{"raw", "1m", "5m", "1h"} {
+		t.Run(step, func(t *testing.T) {
+			items, err := s.ListNodeMetricSeries(ctx, node.ID, "1h", step, now.Add(time.Minute))
+			if err != nil {
+				t.Fatalf("step %s: %v", step, err)
+			}
+			if len(items) == 0 {
+				t.Fatalf("step %s returned no points", step)
+			}
+		})
+	}
+}
+
+func TestInsertNodeMetricHistoryBatchUsesTransactionAndKeepsSamplesOnDetailError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "metric-batch-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "batch.example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	err = s.InsertNodeMetricHistoryBatch(ctx, []NodeMetricHistoryInput{
+		{
+			NodeID:    node.ID,
+			SampledAt: now,
+			Metrics: NodeReportMetricsInput{
+				CPUPercent:       44,
+				MemoryBytes:      100,
+				MemoryTotalBytes: 200,
+				Details:          json.RawMessage(`{"bad"`),
+			},
+		},
+		{
+			NodeID:    node.ID,
+			SampledAt: now.Add(time.Second),
+			Metrics: NodeReportMetricsInput{
+				CPUPercent:       45,
+				MemoryBytes:      120,
+				MemoryTotalBytes: 240,
+				Details:          json.RawMessage(`{"ok":true}`),
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected invalid detail error")
+	}
+	series, err := s.ListNodeMetricSeries(ctx, node.ID, "1h", "raw", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("metric series: %v", err)
+	}
+	if len(series) != 2 {
+		t.Fatalf("batch should keep sample rows even when one detail fails, got %+v", series)
+	}
+	details, ok, err := s.GetLatestNodeMetricDetails(ctx, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("latest valid details ok=%v err=%v", ok, err)
+	}
+	if string(details.Data) != `{"ok":true}` {
+		t.Fatalf("unexpected latest details: %s", string(details.Data))
+	}
+}

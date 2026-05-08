@@ -279,7 +279,12 @@ func requiredScope(method, path string) string {
 		return "usage:write"
 	case strings.HasPrefix(path, "/api/v1/traffic"):
 		return "traffic:read"
-	case strings.HasPrefix(path, "/api/v1/ops/nodes"), strings.HasPrefix(path, "/api/v1/ops/alerts"), strings.HasPrefix(path, "/api/v1/ops/config"):
+	case strings.HasPrefix(path, "/api/v1/ops/alerts"):
+		if method == http.MethodGet {
+			return "nodes:read"
+		}
+		return "nodes:write"
+	case strings.HasPrefix(path, "/api/v1/ops/nodes"), strings.HasPrefix(path, "/api/v1/ops/config"):
 		return "nodes:read"
 	case strings.HasPrefix(path, "/api/v1/nodes/") && method == http.MethodGet &&
 		(strings.Contains(path, "/metrics") || strings.Contains(path, "/metric-details") || strings.Contains(path, "/static-facts")):

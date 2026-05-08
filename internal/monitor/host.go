@@ -170,3 +170,12 @@ func (m *HostMonitor) Query(rangeName string) []Snapshot {
 	}
 	return out
 }
+
+func (m *HostMonitor) Latest() (Snapshot, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.samples) == 0 {
+		return Snapshot{}, false
+	}
+	return m.samples[len(m.samples)-1], true
+}
