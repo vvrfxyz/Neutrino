@@ -1,0 +1,82 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+:root {
+  color-scheme: light;
+  font-family: "Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #f8fafc;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.ops-shell {
+  min-height: 100vh;
+  padding: 18px;
+  background: #f8fafc;
+}
+
+.ops-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 16px;
+}
+
+.ops-panel {
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.metric-card {
+  min-height: 112px;
+}
+
+.node-card {
+  min-height: 132px;
+}
+
+.chart-frame {
+  height: 192px;
+  min-width: 0;
+}
+
+.drawer-backdrop {
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(6px);
+}
+
+@media (max-width: 1180px) {
+  .ops-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .ops-shell {
+    padding: 10px;
+  }
+
+  .metric-card {
+    min-height: 96px;
+  }
+
+  .node-card {
+    min-height: 0;
+  }
+}

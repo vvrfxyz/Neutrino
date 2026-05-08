@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -28,34 +29,70 @@ WHERE id = ?;
 }
 
 type NodeReportInput struct {
-	ReportedAt string                  `json:"reported_at,omitempty"`
-	Port       *int                    `json:"port,omitempty"`
-	SNI        string                  `json:"sni,omitempty"`
-	PublicKey  string                  `json:"public_key,omitempty"`
-	ShortID    string                  `json:"short_id,omitempty"`
-	Metrics    *NodeReportMetricsInput `json:"metrics,omitempty"`
+	ReportedAt  string                  `json:"reported_at,omitempty"`
+	Port        *int                    `json:"port,omitempty"`
+	SNI         string                  `json:"sni,omitempty"`
+	PublicKey   string                  `json:"public_key,omitempty"`
+	ShortID     string                  `json:"short_id,omitempty"`
+	Metrics     *NodeReportMetricsInput `json:"metrics,omitempty"`
+	StaticFacts *NodeStaticFactsInput   `json:"static_facts,omitempty"`
 }
 
 type NodeReportMetricsInput struct {
-	CPUPercent    float64 `json:"cpu_percent,omitempty"`
-	MemoryBytes   int64   `json:"memory_bytes,omitempty"`
-	InboundBPS    float64 `json:"inbound_bps,omitempty"`
-	OutboundBPS   float64 `json:"outbound_bps,omitempty"`
-	MonthKey      string  `json:"month_key,omitempty"`
-	MonthTimezone string  `json:"month_timezone,omitempty"`
-	NetRXTotal    int64   `json:"net_rx_total_bytes,omitempty"`
-	NetTXTotal    int64   `json:"net_tx_total_bytes,omitempty"`
-	NetSource     string  `json:"net_counter_source,omitempty"`
+	CPUPercent           float64 `json:"cpu_percent,omitempty"`
+	Load1                float64 `json:"load1,omitempty"`
+	Load5                float64 `json:"load5,omitempty"`
+	Load15               float64 `json:"load15,omitempty"`
+	MemoryBytes          int64   `json:"memory_bytes,omitempty"`
+	MemoryTotalBytes     int64   `json:"memory_total_bytes,omitempty"`
+	MemoryAvailableBytes int64   `json:"memory_available_bytes,omitempty"`
+	SwapUsedBytes        int64   `json:"swap_used_bytes,omitempty"`
+	SwapTotalBytes       int64   `json:"swap_total_bytes,omitempty"`
+	InboundBPS           float64 `json:"inbound_bps,omitempty"`
+	OutboundBPS          float64 `json:"outbound_bps,omitempty"`
+	MonthKey             string  `json:"month_key,omitempty"`
+	MonthTimezone        string  `json:"month_timezone,omitempty"`
+	NetRXTotal           int64   `json:"net_rx_total_bytes,omitempty"`
+	NetTXTotal           int64   `json:"net_tx_total_bytes,omitempty"`
+	NetSource            string  `json:"net_counter_source,omitempty"`
 
 	DiskTotalBytes  int64   `json:"disk_total_bytes,omitempty"`
 	DiskUsedBytes   int64   `json:"disk_used_bytes,omitempty"`
 	DiskFreeBytes   int64   `json:"disk_free_bytes,omitempty"`
 	DiskUsedPercent float64 `json:"disk_used_percent,omitempty"`
+	DiskReadBPS     float64 `json:"disk_read_bps,omitempty"`
+	DiskWriteBPS    float64 `json:"disk_write_bps,omitempty"`
+	TCPConnections  int     `json:"tcp_connections,omitempty"`
+	UDPConnections  int     `json:"udp_connections,omitempty"`
+	ProcessCount    int     `json:"process_count,omitempty"`
 
-	UptimeSec    int64 `json:"uptime_sec,omitempty"`
-	QueueBytes   int64 `json:"queue_bytes,omitempty"`
-	QueueBatches int64 `json:"queue_batches,omitempty"`
-	Goroutines   int   `json:"goroutines,omitempty"`
+	UptimeSec         int64           `json:"uptime_sec,omitempty"`
+	SystemUptimeSec   int64           `json:"system_uptime_sec,omitempty"`
+	AgentUptimeSec    int64           `json:"agent_uptime_sec,omitempty"`
+	BootTime          string          `json:"boot_time,omitempty"`
+	QueueBytes        int64           `json:"queue_bytes,omitempty"`
+	QueueBatches      int64           `json:"queue_batches,omitempty"`
+	Goroutines        int             `json:"goroutines,omitempty"`
+	AgentVersion      string          `json:"agent_version,omitempty"`
+	XrayVersion       string          `json:"xray_version,omitempty"`
+	XrayConfigVersion string          `json:"xray_config_version,omitempty"`
+	Details           json.RawMessage `json:"details,omitempty"`
+}
+
+type NodeStaticFactsInput struct {
+	OSName           string          `json:"os_name,omitempty"`
+	OSVersion        string          `json:"os_version,omitempty"`
+	Kernel           string          `json:"kernel,omitempty"`
+	KernelVersion    string          `json:"kernel_version,omitempty"`
+	Arch             string          `json:"arch,omitempty"`
+	Hostname         string          `json:"hostname,omitempty"`
+	Virtualization   string          `json:"virtualization,omitempty"`
+	CPUModel         string          `json:"cpu_model,omitempty"`
+	CPUPhysicalCores int             `json:"cpu_physical_cores,omitempty"`
+	CPULogicalCores  int             `json:"cpu_logical_cores,omitempty"`
+	AgentVersion     string          `json:"agent_version,omitempty"`
+	XrayVersion      string          `json:"xray_version,omitempty"`
+	FactsJSON        json.RawMessage `json:"facts_json,omitempty"`
 }
 
 // ApplyNodeReport updates node fields that are needed for subscription rendering.
@@ -69,7 +106,21 @@ func (s *Store) ApplyNodeReport(ctx context.Context, nodeID int64, in NodeReport
 		if err := s.UpsertNodeRuntimeMetrics(ctx, nodeID, reportedAt, *in.Metrics); err != nil {
 			return err
 		}
+		if err := s.InsertNodeMetricSample(ctx, nodeID, reportedAt, *in.Metrics); err != nil {
+			// Historical samples must not break latest-state reporting.
+			_ = err
+		}
+		if len(in.Metrics.Details) > 0 {
+			if err := s.InsertNodeMetricDetails(ctx, nodeID, reportedAt, in.Metrics.Details); err != nil {
+				_ = err
+			}
+		}
 		if err := s.UpsertNodeMonthlyUsageFromReport(ctx, nodeID, *in.Metrics, reportedAt); err != nil {
+			return err
+		}
+	}
+	if in.StaticFacts != nil {
+		if err := s.UpsertNodeStaticFacts(ctx, nodeID, reportedAt, *in.StaticFacts); err != nil {
 			return err
 		}
 	}

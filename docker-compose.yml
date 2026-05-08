@@ -39,6 +39,7 @@ services:
     volumes:
       - ./data:/data
       - /proc:/host/proc:ro
+      - /etc/os-release:/host/etc/os-release:ro
       - xray-logs:/var/log/xray
       - xray-etc:/usr/local/etc/xray
       # Required for managed xray_apply/xray_rollback (agent runs docker restart/exec).

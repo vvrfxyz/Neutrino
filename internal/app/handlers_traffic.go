@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.users().RefreshLifecycleState(r.Context()); err != nil {
+		log.Printf("api usage lifecycle refresh failed: %v", err)
 		http.Error(w, "record failed", http.StatusInternalServerError)
 		return
 	}
@@ -130,6 +132,7 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 	if len(batch) > 0 {
 		batchResults, err := a.usage().RecordBatch(r.Context(), batch)
 		if err != nil {
+			log.Printf("api usage record batch failed events=%d: %v", len(batch), err)
 			http.Error(w, "record failed", http.StatusInternalServerError)
 			return
 		}

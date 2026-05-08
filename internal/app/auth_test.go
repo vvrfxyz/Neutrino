@@ -13,6 +13,32 @@ func TestRequiredScope_ProtectsOpsNodes(t *testing.T) {
 	}
 }
 
+func TestRequiredScope_ProtectsOpsAlerts(t *testing.T) {
+	if got := requiredScope("GET", "/api/v1/ops/alerts"); got != "nodes:read" {
+		t.Fatalf("requiredScope(GET, /api/v1/ops/alerts)=%q, want %q", got, "nodes:read")
+	}
+}
+
+func TestRequiredScope_ProtectsOpsConfig(t *testing.T) {
+	if got := requiredScope("GET", "/api/v1/ops/config"); got != "nodes:read" {
+		t.Fatalf("requiredScope(GET, /api/v1/ops/config)=%q, want %q", got, "nodes:read")
+	}
+}
+
+func TestRequiredScope_ProtectsNodeMetrics(t *testing.T) {
+	paths := []string{
+		"/api/v1/nodes/1/metrics",
+		"/api/v1/nodes/1/metric-details/latest",
+		"/api/v1/nodes/1/static-facts/latest",
+		"/api/v1/nodes/1/static-facts/history",
+	}
+	for _, path := range paths {
+		if got := requiredScope("GET", path); got != "metrics:read" {
+			t.Fatalf("requiredScope(GET, %s)=%q, want %q", path, got, "metrics:read")
+		}
+	}
+}
+
 func TestRequestIsHTTPS(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://example.com", nil)
 	if requestIsHTTPS(req) {

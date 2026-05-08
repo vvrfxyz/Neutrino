@@ -107,6 +107,12 @@ func New(cfg config.Config, store *repo.Store) *App {
 			return t.In(panelLoc).Format("2006-01-02 15:04:05")
 		},
 		"panelTZJSON": panelTZJSON,
+		"opsPollIntervalSec": func() int {
+			return int(cfg.OpsSnapshotInterval() / time.Second)
+		},
+		"opsPollIntervalMS": func() int {
+			return int(cfg.OpsSnapshotInterval() / time.Millisecond)
+		},
 		"fmtMaybeInt64": func(v *int64) string {
 			if v == nil {
 				return "-"
@@ -401,6 +407,29 @@ func (a *App) handleOps(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) handleOpsV2(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !a.cfg.EnableOpsV2 {
+		http.NotFound(w, r)
+		return
+	}
+	staticDir := filepath.Join("frontend", "ops-demo", "dist")
+	if r.URL.Path == "/ops-v2" || r.URL.Path == "/ops-v2/" {
+		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+		return
+	}
+	rel := strings.TrimPrefix(r.URL.Path, "/ops-v2/")
+	rel = filepath.Clean(rel)
+	if rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(staticDir, rel))
+}
+
 func (a *App) handleUsers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -647,7 +676,7 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) StartWorkers(ctx context.Context) {
-	go a.hostMonitor.Start(ctx, 5*time.Second, a.store.GetTrafficTotals)
+	go a.hostMonitor.Start(ctx, a.cfg.HostMetricsInterval(), a.store.GetTrafficTotals)
 	go a.startHostNetMonthlyRecorder(ctx)
 	go a.telegram.Start(ctx)
 	go a.startNodeReconciler(ctx)
@@ -662,6 +691,7 @@ func (a *App) StartWorkers(ctx context.Context) {
 
 	lastQuotaAt := time.Time{}
 	lastPruneAt := time.Time{}
+	lastOpsAlertsAt := time.Time{}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -695,6 +725,12 @@ func (a *App) StartWorkers(ctx context.Context) {
 				lastPruneAt = now
 				if err := a.pruneOnce(ctx, now); err != nil {
 					log.Printf("prune error: %v", err)
+				}
+			}
+			if lastOpsAlertsAt.IsZero() || now.Sub(lastOpsAlertsAt) >= 30*time.Second {
+				lastOpsAlertsAt = now
+				if err := a.syncOpsAlerts(ctx, now); err != nil {
+					log.Printf("ops alert sync error: %v", err)
 				}
 			}
 			if err := a.dispatchPendingAlerts(ctx); err != nil {
@@ -732,6 +768,13 @@ func (a *App) pruneOnce(ctx context.Context, now time.Time) error {
 		} else if n > 0 {
 			log.Printf("pruned online_sessions deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
 		}
+	}
+	counts, err := a.store.CleanupOpsData(ctx, now, a.cfg.NodeMetricSampleRetentionDays, a.cfg.NodeMetricDetailRetentionHours, a.cfg.NodeProbeResultRetentionDays, a.cfg.OpsAlertResolvedRetentionDays, 5000)
+	if err != nil {
+		return err
+	}
+	if counts.MetricSamples > 0 || counts.MetricDetails > 0 || counts.ProbeResults > 0 || counts.OpsAlerts > 0 {
+		log.Printf("pruned ops data metric_samples=%d metric_details=%d probe_results=%d ops_alerts=%d", counts.MetricSamples, counts.MetricDetails, counts.ProbeResults, counts.OpsAlerts)
 	}
 	return nil
 }

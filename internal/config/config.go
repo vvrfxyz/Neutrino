@@ -66,14 +66,20 @@ type Config struct {
 
 	OnlineWindowSec        int
 	OnlineDisplayWindowSec int
+	OpsSnapshotIntervalSec int
+	HostMetricsIntervalSec int
 	IPLimitStrikes         int
 	QuotaSweepSec          int
 
 	// Data retention + pruning.
-	XrayAccessRetentionDays     int
-	XrayStatsRetentionDays      int
-	OnlineSessionsRetentionDays int
-	PruneEverySec               int
+	XrayAccessRetentionDays        int
+	XrayStatsRetentionDays         int
+	OnlineSessionsRetentionDays    int
+	NodeMetricSampleRetentionDays  int
+	NodeMetricDetailRetentionHours int
+	NodeProbeResultRetentionDays   int
+	OpsAlertResolvedRetentionDays  int
+	PruneEverySec                  int
 
 	TelegramBotToken     string
 	TelegramAdminChatIDs string
@@ -88,6 +94,8 @@ type Config struct {
 	// PanelTZ drives panel-side natural-month host-net rollup + display.
 	// Defaults to "UTC" (not process time.Local) for reproducibility.
 	PanelTZ string
+
+	EnableOpsV2 bool
 }
 
 func Load() Config {
@@ -147,13 +155,19 @@ func Load() Config {
 
 		OnlineWindowSec:        onlineWindowSec,
 		OnlineDisplayWindowSec: onlineDisplayWindowSec,
+		OpsSnapshotIntervalSec: envInt("OPS_SNAPSHOT_INTERVAL_SEC", 2),
+		HostMetricsIntervalSec: envInt("HOST_METRICS_INTERVAL_SEC", 2),
 		IPLimitStrikes:         envInt("IP_LIMIT_STRIKES", 3),
 		QuotaSweepSec:          envInt("QUOTA_SWEEP_SEC", 30),
 
-		XrayAccessRetentionDays:     envInt("XRAY_ACCESS_RETENTION_DAYS", 7),
-		XrayStatsRetentionDays:      envInt("XRAY_STATS_RETENTION_DAYS", 2),
-		OnlineSessionsRetentionDays: envInt("ONLINE_SESSIONS_RETENTION_DAYS", 1),
-		PruneEverySec:               envInt("PRUNE_EVERY_SEC", 3600),
+		XrayAccessRetentionDays:        envInt("XRAY_ACCESS_RETENTION_DAYS", 7),
+		XrayStatsRetentionDays:         envInt("XRAY_STATS_RETENTION_DAYS", 2),
+		OnlineSessionsRetentionDays:    envInt("ONLINE_SESSIONS_RETENTION_DAYS", 1),
+		NodeMetricSampleRetentionDays:  envInt("NODE_METRIC_SAMPLE_RETENTION_DAYS", 14),
+		NodeMetricDetailRetentionHours: envInt("NODE_METRIC_DETAIL_RETENTION_HOURS", 72),
+		NodeProbeResultRetentionDays:   envInt("NODE_PROBE_RESULT_RETENTION_DAYS", 30),
+		OpsAlertResolvedRetentionDays:  envInt("OPS_ALERT_RESOLVED_RETENTION_DAYS", 90),
+		PruneEverySec:                  envInt("PRUNE_EVERY_SEC", 3600),
 
 		TelegramBotToken:     env("TELEGRAM_BOT_TOKEN", ""),
 		TelegramAdminChatIDs: env("TELEGRAM_ADMIN_CHAT_IDS", ""),
@@ -166,7 +180,30 @@ func Load() Config {
 		SMTPTo:   env("SMTP_TO", ""),
 
 		PanelTZ: env("PANEL_TZ", "UTC"),
+
+		EnableOpsV2: envBool("ENABLE_OPS_V2", false),
 	}
+}
+
+func (c Config) OpsSnapshotInterval() time.Duration {
+	return intervalSeconds(c.OpsSnapshotIntervalSec, 2, 1) * time.Second
+}
+
+func (c Config) HostMetricsInterval() time.Duration {
+	return intervalSeconds(c.HostMetricsIntervalSec, 2, 1) * time.Second
+}
+
+func intervalSeconds(value, fallback, min int) time.Duration {
+	if fallback < min {
+		fallback = min
+	}
+	if value <= 0 {
+		value = fallback
+	}
+	if value < min {
+		value = min
+	}
+	return time.Duration(value)
 }
 
 // PanelLocation returns the configured panel timezone, defaulting to UTC.

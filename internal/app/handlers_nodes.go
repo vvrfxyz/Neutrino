@@ -11,12 +11,20 @@ import (
 	"strings"
 	"time"
 
+	"neutrino/internal/probe"
 	"neutrino/internal/repo"
 	"neutrino/internal/service"
 )
 
 func sha256Hex(s string) string {
 	return service.SHA256Hex(s)
+}
+
+func defaultString(v string, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }
 
 func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID int64) {
@@ -234,6 +242,35 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 
 	job, ok, _ := a.store.GetNodeJob(r.Context(), jobID)
 	if ok {
+		if strings.HasPrefix(job.Kind, "probe_") {
+			var result struct {
+				Kind       string  `json:"kind"`
+				Target     string  `json:"target"`
+				Success    bool    `json:"success"`
+				LatencyMS  float64 `json:"latency_ms"`
+				StatusCode *int    `json:"status_code"`
+				Error      string  `json:"error"`
+				CheckedAt  string  `json:"checked_at"`
+			}
+			if strings.TrimSpace(resultJSON) != "" && json.Unmarshal([]byte(resultJSON), &result) == nil {
+				checkedAt := time.Now().UTC()
+				if t, err := time.Parse(time.RFC3339, result.CheckedAt); err == nil {
+					checkedAt = t
+				}
+				sourceJobID := jobID
+				_, _ = a.store.InsertNodeProbeResult(r.Context(), nodeID, repo.InsertNodeProbeResultInput{
+					Kind:        defaultString(result.Kind, job.Kind),
+					Target:      result.Target,
+					Success:     result.Success,
+					LatencyMS:   result.LatencyMS,
+					StatusCode:  result.StatusCode,
+					Error:       defaultString(result.Error, req.Error),
+					CheckedAt:   checkedAt,
+					SourceJobID: &sourceJobID,
+				})
+				_ = a.syncProbeOpsAlert(r.Context(), nodeID, defaultString(result.Kind, job.Kind), result.Target, result.Success, defaultString(result.Error, req.Error), checkedAt)
+			}
+		}
 		if status == "succeeded" && strings.TrimSpace(req.AppliedVersion) != "" {
 			switch job.Kind {
 			case "users_sync":
@@ -244,12 +281,16 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 			case "xray_rollback":
 				_ = a.store.MarkNodeXrayRolledBack(r.Context(), nodeID, req.AppliedVersion)
 			}
-		} else if status != "succeeded" {
+		}
+		if status == "succeeded" {
+			_ = a.syncNodeJobOpsAlert(r.Context(), nodeID, job.Kind, "succeeded", "", time.Now().UTC())
+		} else {
 			kind := "retryable"
 			if !req.Retryable {
 				kind = "permanent"
 			}
 			_ = a.store.SetNodeJobError(r.Context(), nodeID, job.Kind, kind, summarizeNodeJobFailure(req.Error, req.ResultJSON))
+			_ = a.syncNodeJobOpsAlert(r.Context(), nodeID, job.Kind, final, summarizeNodeJobFailure(req.Error, req.ResultJSON), time.Now().UTC())
 		}
 	}
 
@@ -262,6 +303,84 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 		"applied_version": strings.TrimSpace(req.AppliedVersion),
 	})
 	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "final_status": final})
+}
+
+func (a *App) handleAPINodeMetadata(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	switch r.Method {
+	case http.MethodGet:
+		item, ok, err := a.store.GetNodeMetadata(r.Context(), nodeID)
+		if err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": nil})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": item})
+	case http.MethodPut, http.MethodPost:
+		var in repo.UpsertNodeMetadataInput
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&in); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		if err := a.store.UpsertNodeMetadata(r.Context(), nodeID, in); err != nil {
+			http.Error(w, "metadata update failed", http.StatusBadRequest)
+			return
+		}
+		item, _, _ := a.store.GetNodeMetadata(r.Context(), nodeID)
+		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *App) handleAPINodeProbes(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Kind string `json:"kind"`
+		probe.Payload
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	kind := strings.TrimSpace(req.Kind)
+	if err := probe.Validate(kind, req.Payload); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	body, _ := json.Marshal(req.Payload)
+	jobID, enqueued, err := a.store.EnqueueNodeJob(r.Context(), nodeID, kind, "", string(body), probeTimeoutSec(req.Payload.TimeoutMS), "")
+	if err != nil {
+		http.Error(w, "enqueue probe failed", http.StatusBadRequest)
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "job_id": jobID, "enqueued": enqueued})
+}
+
+func probeTimeoutSec(timeoutMS int) int {
+	if timeoutMS <= 0 {
+		timeoutMS = 3000
+	}
+	sec := timeoutMS / 1000
+	if timeoutMS%1000 != 0 {
+		sec++
+	}
+	if sec < 1 {
+		sec = 1
+	}
+	if sec > 35 {
+		sec = 35
+	}
+	return sec
 }
 
 func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +448,75 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"count": len(items), "items": items})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "metadata" {
+		a.handleAPINodeMetadata(w, r, nodeID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "probes" {
+		a.handleAPINodeProbes(w, r, nodeID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "probe-results" && r.Method == http.MethodGet {
+		items, err := a.store.ListNodeProbeResults(r.Context(), nodeID, 100)
+		if err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "count": len(items), "items": items})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "metrics" && r.Method == http.MethodGet {
+		rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
+		step := strings.TrimSpace(r.URL.Query().Get("step"))
+		items, err := a.store.ListNodeMetricSeries(r.Context(), nodeID, rangeName, step, time.Now().UTC())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{
+			"node_id": nodeID,
+			"range":   defaultString(rangeName, "1h"),
+			"step":    defaultString(step, "raw"),
+			"count":   len(items),
+			"items":   items,
+		})
+		return
+	}
+	if len(parts) == 3 && parts[1] == "metric-details" && parts[2] == "latest" && r.Method == http.MethodGet {
+		item, ok, err := a.store.GetLatestNodeMetricDetails(r.Context(), nodeID)
+		if err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": nil})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": item})
+		return
+	}
+	if len(parts) == 3 && parts[1] == "static-facts" && parts[2] == "latest" && r.Method == http.MethodGet {
+		item, ok, err := a.store.GetLatestNodeStaticFacts(r.Context(), nodeID)
+		if err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": nil})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": item})
+		return
+	}
+	if len(parts) == 3 && parts[1] == "static-facts" && parts[2] == "history" && r.Method == http.MethodGet {
+		items, err := a.store.ListNodeStaticFacts(r.Context(), nodeID, 100)
+		if err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "count": len(items), "items": items})
 		return
 	}
 	if len(parts) >= 2 && parts[1] == "agent" {

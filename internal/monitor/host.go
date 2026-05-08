@@ -73,7 +73,7 @@ func NewHostMonitor(maxItems int, hostProcPath string) *HostMonitor {
 
 func (m *HostMonitor) Start(ctx context.Context, interval time.Duration, fetch TrafficFetcher) {
 	if interval < time.Second {
-		interval = 5 * time.Second
+		interval = time.Second
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

@@ -5,4 +5,5 @@ neutrino.db
 neutrino.db-shm
 neutrino.db-wal
 data
-
+frontend/ops-demo/node_modules
+frontend/ops-demo/dist

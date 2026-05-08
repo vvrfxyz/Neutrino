@@ -62,8 +62,10 @@ type Config struct {
 	PushBatchMaxEvents int
 
 	// polling
-	StatsPollSec  int
-	AccessPollSec int
+	StatsPollSec         int
+	AccessPollSec        int
+	RuntimeReportSec     int
+	StaticFactsReportSec int
 
 	// access 0-byte sampling
 	AccessZeroByteMaxPerMinPerUser     int
@@ -104,8 +106,10 @@ func ConfigFromEnv() Config {
 		CertRenewMinRetrySec:     getEnvInt("CERT_RENEW_MIN_RETRY_SEC", 30),
 		CertRenewMaxRetrySec:     getEnvInt("CERT_RENEW_MAX_RETRY_SEC", 1800),
 
-		StatsPollSec:  getEnvInt("STATS_POLL_SEC", 5),
-		AccessPollSec: getEnvInt("ACCESS_POLL_SEC", 2),
+		StatsPollSec:         getEnvInt("STATS_POLL_SEC", 5),
+		AccessPollSec:        getEnvInt("ACCESS_POLL_SEC", 2),
+		RuntimeReportSec:     getEnvInt("AGENT_RUNTIME_REPORT_SEC", 2),
+		StaticFactsReportSec: getEnvInt("AGENT_STATIC_FACTS_REPORT_SEC", 1800),
 
 		AccessZeroByteMaxPerMinPerUser:     getEnvInt("ACCESS_ZERO_BYTE_MAX_PER_MIN_PER_USER", 30),
 		AccessZeroByteMaxPerMinPerUserDest: getEnvInt("ACCESS_ZERO_BYTE_MAX_PER_MIN_PER_USER_DEST", 5),

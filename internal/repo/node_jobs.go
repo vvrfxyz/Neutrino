@@ -28,6 +28,15 @@ type NodeJob struct {
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 }
 
+type NodeJobSummary struct {
+	NodeID             int64
+	Pending            int
+	RunningKind        string
+	RunningDesired     string
+	RunningStartedAt   string
+	RunningCorrelation string
+}
+
 // EnqueueNodeJob upserts a pending job for a node+kind (latest desired_version wins).
 // If there is a running job of the same kind with the same desired_version, it returns it without enqueueing.
 func (s *Store) EnqueueNodeJob(ctx context.Context, nodeID int64, kind string, desiredVersion string, payloadJSON string, timeoutSec int, correlationID string) (jobID int64, enqueued bool, err error) {
@@ -523,6 +532,74 @@ LIMIT 1;
 		return pending, "", "", "", "", nil
 	}
 	return pending, "", "", "", "", err2
+}
+
+func (s *Store) ListNodeJobSummaries(ctx context.Context) (map[int64]NodeJobSummary, error) {
+	out := make(map[int64]NodeJobSummary)
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT node_id, COUNT(1)
+FROM node_jobs
+WHERE status = 'pending'
+GROUP BY node_id;
+`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var nodeID int64
+		var pending int
+		if err := rows.Scan(&nodeID, &pending); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[nodeID] = NodeJobSummary{NodeID: nodeID, Pending: pending}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	rows, err = s.db.QueryContext(ctx, `
+SELECT j.node_id, j.kind, j.desired_version, j.started_at, j.correlation_id
+FROM node_jobs AS j
+JOIN (
+	SELECT node_id, MAX(id) AS id
+	FROM node_jobs
+	WHERE status = 'running'
+	GROUP BY node_id
+) AS latest ON latest.id = j.id
+ORDER BY j.node_id ASC;
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID int64
+		var kind string
+		var desired sql.NullString
+		var startedAt sql.NullString
+		var corr sql.NullString
+		if err := rows.Scan(&nodeID, &kind, &desired, &startedAt, &corr); err != nil {
+			return nil, err
+		}
+		summary := out[nodeID]
+		summary.NodeID = nodeID
+		summary.RunningKind = kind
+		if desired.Valid {
+			summary.RunningDesired = desired.String
+		}
+		if startedAt.Valid {
+			summary.RunningStartedAt = startedAt.String
+		}
+		if corr.Valid {
+			summary.RunningCorrelation = corr.String
+		}
+		out[nodeID] = summary
+	}
+	return out, rows.Err()
 }
 
 // SweepTimedOutRunningJobs marks timed-out jobs as failed and optionally requeues them.

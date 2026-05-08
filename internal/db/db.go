@@ -51,7 +51,10 @@ func sqliteDSN(path string) string {
 	values.Del("_fk")
 	values.Set("_foreign_keys", "on")
 	if strings.TrimSpace(values.Get("_busy_timeout")) == "" {
-		values.Set("_busy_timeout", "5000")
+		values.Set("_busy_timeout", "15000")
+	}
+	if strings.TrimSpace(values.Get("_txlock")) == "" {
+		values.Set("_txlock", "immediate")
 	}
 	return base + "?" + values.Encode()
 }
@@ -214,7 +217,7 @@ func Migrate(conn *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS node_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-			kind TEXT NOT NULL CHECK(kind IN ('users_sync','xray_apply','xray_rollback')),
+			kind TEXT NOT NULL CHECK(kind IN ('users_sync','xray_apply','xray_rollback','probe_ping','probe_tcp','probe_http')),
 			desired_version TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','canceled')),
@@ -232,18 +235,93 @@ func Migrate(conn *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS node_runtime_metrics (
 			node_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
 			cpu_percent REAL NOT NULL DEFAULT 0,
+			load1 REAL NOT NULL DEFAULT 0,
+			load5 REAL NOT NULL DEFAULT 0,
+			load15 REAL NOT NULL DEFAULT 0,
 			memory_bytes INTEGER NOT NULL DEFAULT 0,
+			memory_total_bytes INTEGER NOT NULL DEFAULT 0,
+			memory_available_bytes INTEGER NOT NULL DEFAULT 0,
+			swap_used_bytes INTEGER NOT NULL DEFAULT 0,
+			swap_total_bytes INTEGER NOT NULL DEFAULT 0,
 			inbound_bps REAL NOT NULL DEFAULT 0,
 			outbound_bps REAL NOT NULL DEFAULT 0,
 			disk_total_bytes INTEGER NOT NULL DEFAULT 0,
 			disk_used_bytes INTEGER NOT NULL DEFAULT 0,
 			disk_free_bytes INTEGER NOT NULL DEFAULT 0,
 			disk_used_percent REAL NOT NULL DEFAULT 0,
+			disk_read_bps REAL NOT NULL DEFAULT 0,
+			disk_write_bps REAL NOT NULL DEFAULT 0,
+			tcp_connections INTEGER NOT NULL DEFAULT 0,
+			udp_connections INTEGER NOT NULL DEFAULT 0,
+			process_count INTEGER NOT NULL DEFAULT 0,
 			uptime_sec INTEGER NOT NULL DEFAULT 0,
+			system_uptime_sec INTEGER NOT NULL DEFAULT 0,
+			agent_uptime_sec INTEGER NOT NULL DEFAULT 0,
+			boot_time TEXT,
 			queue_bytes INTEGER NOT NULL DEFAULT 0,
 			queue_batches INTEGER NOT NULL DEFAULT 0,
 			goroutines INTEGER NOT NULL DEFAULT 0,
+			agent_version TEXT NOT NULL DEFAULT '',
+			xray_version TEXT NOT NULL DEFAULT '',
+			xray_config_version TEXT NOT NULL DEFAULT '',
 			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS node_metric_samples (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			sampled_at TEXT NOT NULL,
+			cpu_percent REAL NOT NULL DEFAULT 0,
+			load1 REAL NOT NULL DEFAULT 0,
+			load5 REAL NOT NULL DEFAULT 0,
+			load15 REAL NOT NULL DEFAULT 0,
+			memory_used_bytes INTEGER NOT NULL DEFAULT 0,
+			memory_total_bytes INTEGER NOT NULL DEFAULT 0,
+			memory_available_bytes INTEGER NOT NULL DEFAULT 0,
+			swap_used_bytes INTEGER NOT NULL DEFAULT 0,
+			swap_total_bytes INTEGER NOT NULL DEFAULT 0,
+			disk_total_bytes INTEGER NOT NULL DEFAULT 0,
+			disk_used_bytes INTEGER NOT NULL DEFAULT 0,
+			disk_free_bytes INTEGER NOT NULL DEFAULT 0,
+			disk_used_percent REAL NOT NULL DEFAULT 0,
+			disk_read_bps REAL NOT NULL DEFAULT 0,
+			disk_write_bps REAL NOT NULL DEFAULT 0,
+			inbound_bps REAL NOT NULL DEFAULT 0,
+			outbound_bps REAL NOT NULL DEFAULT 0,
+			tcp_connections INTEGER NOT NULL DEFAULT 0,
+			udp_connections INTEGER NOT NULL DEFAULT 0,
+			process_count INTEGER NOT NULL DEFAULT 0,
+			system_uptime_sec INTEGER NOT NULL DEFAULT 0,
+			agent_uptime_sec INTEGER NOT NULL DEFAULT 0,
+			boot_time TEXT,
+			queue_bytes INTEGER NOT NULL DEFAULT 0,
+			queue_batches INTEGER NOT NULL DEFAULT 0,
+			goroutines INTEGER NOT NULL DEFAULT 0
+		);`,
+		`CREATE TABLE IF NOT EXISTS node_metric_details (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			sampled_at TEXT NOT NULL,
+			data_json TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS node_static_facts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			reported_at TEXT NOT NULL,
+			data_hash TEXT NOT NULL,
+			os_name TEXT NOT NULL DEFAULT '',
+			os_version TEXT NOT NULL DEFAULT '',
+			kernel TEXT NOT NULL DEFAULT '',
+			kernel_version TEXT NOT NULL DEFAULT '',
+			arch TEXT NOT NULL DEFAULT '',
+			hostname TEXT NOT NULL DEFAULT '',
+			virtualization TEXT NOT NULL DEFAULT '',
+			cpu_model TEXT NOT NULL DEFAULT '',
+			cpu_physical_cores INTEGER NOT NULL DEFAULT 0,
+			cpu_logical_cores INTEGER NOT NULL DEFAULT 0,
+			agent_version TEXT NOT NULL DEFAULT '',
+			xray_version TEXT NOT NULL DEFAULT '',
+			facts_json TEXT NOT NULL DEFAULT '{}',
+			UNIQUE(node_id, data_hash)
 		);`,
 		`CREATE TABLE IF NOT EXISTS node_monthly_usage (
 			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -377,6 +455,46 @@ func Migrate(conn *sql.DB) error {
 			tx_bytes INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS node_probe_results (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL,
+			target TEXT NOT NULL,
+			success INTEGER NOT NULL DEFAULT 0,
+			latency_ms REAL NOT NULL DEFAULT 0,
+			status_code INTEGER,
+			error TEXT NOT NULL DEFAULT '',
+			checked_at TEXT NOT NULL,
+			source_job_id INTEGER REFERENCES node_jobs(id) ON DELETE SET NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS node_metadata (
+			node_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+			provider TEXT NOT NULL DEFAULT '',
+			region TEXT NOT NULL DEFAULT '',
+			country TEXT NOT NULL DEFAULT '',
+			city TEXT NOT NULL DEFAULT '',
+			latitude REAL,
+			longitude REAL,
+			tags_json TEXT NOT NULL DEFAULT '[]',
+			monthly_cost_cents INTEGER NOT NULL DEFAULT 0,
+			currency TEXT NOT NULL DEFAULT 'USD',
+			renew_cycle TEXT NOT NULL DEFAULT '',
+			renew_at TEXT,
+			note TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS ops_alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id INTEGER REFERENCES nodes(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL,
+			severity TEXT NOT NULL,
+			status TEXT NOT NULL CHECK(status IN ('active','resolved')),
+			message TEXT NOT NULL DEFAULT '',
+			dedupe_key TEXT NOT NULL,
+			first_seen_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			resolved_at TEXT
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_proxy_links_user_id ON proxy_links(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_events_user_id ON traffic_events(user_id);`,
@@ -397,6 +515,15 @@ func Migrate(conn *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_node_jobs_node_kind_status ON node_jobs(node_id, kind, status, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_node_jobs_node_status ON node_jobs(node_id, status, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_node_monthly_usage_node_reported ON node_monthly_usage(node_id, last_reported_at DESC, month_key DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_samples_node_time ON node_metric_samples(node_id, sampled_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_samples_time ON node_metric_samples(sampled_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_details_node_time ON node_metric_details(node_id, sampled_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_details_time ON node_metric_details(sampled_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_static_facts_node_reported ON node_static_facts(node_id, reported_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_probe_results_node_time ON node_probe_results(node_id, checked_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_probe_results_time ON node_probe_results(checked_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_ops_alerts_status_seen ON ops_alerts(status, last_seen_at DESC);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_ops_alerts_active_dedupe ON ops_alerts(dedupe_key) WHERE status = 'active';`,
 		`CREATE INDEX IF NOT EXISTS idx_node_enroll_codes_expires ON node_enroll_codes(expires_at, used_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_node_cert_pins_node_purpose ON node_cert_pins(node_id, purpose, revoked_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_logs_time ON audit_logs(created_at DESC);`,
@@ -462,14 +589,32 @@ func Migrate(conn *sql.DB) error {
 		{"node_jobs", "timeout_sec", "INTEGER"},
 		{"node_jobs", "correlation_id", "TEXT"},
 		{"node_runtime_metrics", "cpu_percent", "REAL NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "load1", "REAL NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "load5", "REAL NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "load15", "REAL NOT NULL DEFAULT 0"},
 		{"node_runtime_metrics", "memory_bytes", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "memory_total_bytes", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "memory_available_bytes", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "swap_used_bytes", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "swap_total_bytes", "INTEGER NOT NULL DEFAULT 0"},
 		{"node_runtime_metrics", "inbound_bps", "REAL NOT NULL DEFAULT 0"},
 		{"node_runtime_metrics", "outbound_bps", "REAL NOT NULL DEFAULT 0"},
 		{"node_runtime_metrics", "disk_total_bytes", "INTEGER NOT NULL DEFAULT 0"},
 		{"node_runtime_metrics", "disk_used_bytes", "INTEGER NOT NULL DEFAULT 0"},
 		{"node_runtime_metrics", "disk_free_bytes", "INTEGER NOT NULL DEFAULT 0"},
 		{"node_runtime_metrics", "disk_used_percent", "REAL NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "disk_read_bps", "REAL NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "disk_write_bps", "REAL NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "tcp_connections", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "udp_connections", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "process_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "system_uptime_sec", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "agent_uptime_sec", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "boot_time", "TEXT"},
 		{"node_runtime_metrics", "queue_batches", "INTEGER NOT NULL DEFAULT 0"},
+		{"node_runtime_metrics", "agent_version", "TEXT NOT NULL DEFAULT ''"},
+		{"node_runtime_metrics", "xray_version", "TEXT NOT NULL DEFAULT ''"},
+		{"node_runtime_metrics", "xray_config_version", "TEXT NOT NULL DEFAULT ''"},
 		{"node_monthly_usage", "baseline_rx_total", "INTEGER NOT NULL DEFAULT 0"},
 		{"node_monthly_usage", "baseline_tx_total", "INTEGER NOT NULL DEFAULT 0"},
 		{"node_monthly_usage", "last_rx_total", "INTEGER NOT NULL DEFAULT 0"},
@@ -494,6 +639,17 @@ ON CONFLICT(source, source_event_id) DO NOTHING;
 		return err
 	}
 
+	if err := ensureOpsAlertsActiveDedupe(conn); err != nil {
+		return err
+	}
+
+	if err := ensureNodeJobsProbeKinds(conn); err != nil {
+		return err
+	}
+	if err := ensureNodeProbeResultsJobReference(conn); err != nil {
+		return err
+	}
+
 	postCompatIndexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_traffic_events_target_host ON traffic_events(target_host);`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_events_source_at ON traffic_events(source, event_at);`,
@@ -503,6 +659,15 @@ ON CONFLICT(source, source_event_id) DO NOTHING;
 		`CREATE INDEX IF NOT EXISTS idx_traffic_events_node_at ON traffic_events(node_id, event_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_events_user_at ON traffic_events(user_id, event_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_online_sessions_node ON online_sessions(node_id, last_seen_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_samples_node_time ON node_metric_samples(node_id, sampled_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_samples_time ON node_metric_samples(sampled_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_details_node_time ON node_metric_details(node_id, sampled_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_details_time ON node_metric_details(sampled_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_static_facts_node_reported ON node_static_facts(node_id, reported_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_probe_results_node_time ON node_probe_results(node_id, checked_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_probe_results_time ON node_probe_results(checked_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_ops_alerts_status_seen ON ops_alerts(status, last_seen_at DESC);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_ops_alerts_active_dedupe ON ops_alerts(dedupe_key) WHERE status = 'active';`,
 	}
 	for _, stmt := range postCompatIndexes {
 		if _, err := conn.Exec(stmt); err != nil {
@@ -511,6 +676,177 @@ ON CONFLICT(source, source_event_id) DO NOTHING;
 	}
 
 	return nil
+}
+
+func ensureNodeJobsProbeKinds(conn *sql.DB) error {
+	var ddl string
+	if err := conn.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'node_jobs';`).Scan(&ddl); err != nil {
+		return err
+	}
+	if strings.Contains(ddl, "probe_ping") && strings.Contains(ddl, "probe_tcp") && strings.Contains(ddl, "probe_http") {
+		return nil
+	}
+	if _, err := conn.Exec(`PRAGMA foreign_keys = OFF;`); err != nil {
+		return err
+	}
+	defer conn.Exec(`PRAGMA foreign_keys = ON;`)
+	if _, err := conn.Exec(`PRAGMA legacy_alter_table = ON;`); err != nil {
+		return err
+	}
+	defer conn.Exec(`PRAGMA legacy_alter_table = OFF;`)
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`ALTER TABLE node_jobs RENAME TO node_jobs_old_probe_migration;`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE node_jobs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL CHECK(kind IN ('users_sync','xray_apply','xray_rollback','probe_ping','probe_tcp','probe_http')),
+		desired_version TEXT NOT NULL DEFAULT '',
+		payload_json TEXT NOT NULL DEFAULT '{}',
+		status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','canceled')),
+		attempts INTEGER NOT NULL DEFAULT 0,
+		retryable INTEGER NOT NULL DEFAULT 1,
+		http_status INTEGER,
+		timeout_sec INTEGER,
+		correlation_id TEXT,
+		last_error TEXT,
+		result_json TEXT,
+		created_at TEXT NOT NULL,
+		started_at TEXT,
+		finished_at TEXT
+	);`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+INSERT INTO node_jobs(id, node_id, kind, desired_version, payload_json, status, attempts, retryable, http_status, timeout_sec, correlation_id, last_error, result_json, created_at, started_at, finished_at)
+SELECT id, node_id, kind, desired_version, payload_json, status, attempts, retryable, http_status, timeout_sec, correlation_id, last_error, result_json, created_at, started_at, finished_at
+FROM node_jobs_old_probe_migration;
+`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE node_jobs_old_probe_migration;`); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_node_jobs_pending ON node_jobs(status, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_jobs_node_kind_status ON node_jobs(node_id, kind, status, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_jobs_node_status ON node_jobs(node_id, status, created_at);`,
+	}
+	for _, stmt := range indexes {
+		if _, err := conn.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureNodeProbeResultsJobReference(conn *sql.DB) error {
+	var ddl string
+	if err := conn.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'node_probe_results';`).Scan(&ddl); err != nil {
+		return err
+	}
+	if !strings.Contains(ddl, "node_jobs_old_probe_migration") {
+		return nil
+	}
+	if _, err := conn.Exec(`PRAGMA foreign_keys = OFF;`); err != nil {
+		return err
+	}
+	defer conn.Exec(`PRAGMA foreign_keys = ON;`)
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`ALTER TABLE node_probe_results RENAME TO node_probe_results_old_job_ref_migration;`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE node_probe_results (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL,
+		target TEXT NOT NULL,
+		success INTEGER NOT NULL DEFAULT 0,
+		latency_ms REAL NOT NULL DEFAULT 0,
+		status_code INTEGER,
+		error TEXT NOT NULL DEFAULT '',
+		checked_at TEXT NOT NULL,
+		source_job_id INTEGER REFERENCES node_jobs(id) ON DELETE SET NULL
+	);`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+INSERT INTO node_probe_results(id, node_id, kind, target, success, latency_ms, status_code, error, checked_at, source_job_id)
+SELECT id, node_id, kind, target, success, latency_ms, status_code, error, checked_at, source_job_id
+FROM node_probe_results_old_job_ref_migration;
+`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE node_probe_results_old_job_ref_migration;`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func ensureOpsAlertsActiveDedupe(conn *sql.DB) error {
+	var ddl string
+	if err := conn.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ops_alerts';`).Scan(&ddl); err != nil {
+		return err
+	}
+	if !strings.Contains(ddl, "UNIQUE(dedupe_key, status)") {
+		return nil
+	}
+	if _, err := conn.Exec(`PRAGMA foreign_keys = OFF;`); err != nil {
+		return err
+	}
+	defer conn.Exec(`PRAGMA foreign_keys = ON;`)
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`ALTER TABLE ops_alerts RENAME TO ops_alerts_old_active_dedupe_migration;`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE ops_alerts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id INTEGER REFERENCES nodes(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL,
+		severity TEXT NOT NULL,
+		status TEXT NOT NULL CHECK(status IN ('active','resolved')),
+		message TEXT NOT NULL DEFAULT '',
+		dedupe_key TEXT NOT NULL,
+		first_seen_at TEXT NOT NULL,
+		last_seen_at TEXT NOT NULL,
+		resolved_at TEXT
+	);`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+INSERT INTO ops_alerts(id, node_id, kind, severity, status, message, dedupe_key, first_seen_at, last_seen_at, resolved_at)
+SELECT id, node_id, kind, severity, status, message, dedupe_key, first_seen_at, last_seen_at, resolved_at
+FROM ops_alerts_old_active_dedupe_migration;
+`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE ops_alerts_old_active_dedupe_migration;`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func addColumnIfMissing(conn *sql.DB, table, col, def string) error {

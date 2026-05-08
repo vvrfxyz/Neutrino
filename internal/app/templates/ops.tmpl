@@ -7,7 +7,7 @@
   </div>
   <div class="flex items-center gap-2 text-xs text-slate-500">
     <span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>
-    每 5 秒刷新
+    每 {{opsPollIntervalSec}} 秒刷新
   </div>
 </div>
 
@@ -437,7 +437,7 @@ function opsPage() {
       this._ws = null;
       // Fall back to polling so the page keeps updating, and try to reconnect with backoff.
       if (!this._pollTimer) {
-        this._pollTimer = setInterval(() => this.refresh(), 5000);
+        this._pollTimer = setInterval(() => this.refresh(), {{opsPollIntervalMS}});
       }
       const delay = this._wsBackoffMs;
       this._wsBackoffMs = Math.min(delay * 2, 30000);

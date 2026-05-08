@@ -9,13 +9,11 @@ import (
 	"neutrino/internal/repo"
 )
 
-const opsSnapshotInterval = 5 * time.Second
-
 // startOpsSnapshotPublisher emits an "ops_snapshot" event over the wsHub on
 // a fixed cadence. It only runs the (potentially expensive) DB queries when
 // at least one subscriber is connected, so an idle panel pays nothing.
 func (a *App) startOpsSnapshotPublisher(ctx context.Context) {
-	t := time.NewTicker(opsSnapshotInterval)
+	t := time.NewTicker(a.cfg.OpsSnapshotInterval())
 	defer t.Stop()
 	for {
 		select {
@@ -48,7 +46,7 @@ func (a *App) startOpsSnapshotPublisher(ctx context.Context) {
 //
 // IMPORTANT: each sub-shape must stay in lock-step with the corresponding
 // polling endpoint so the /ops dashboard renders identical fields whether
-// it's reading from WebSocket pushes or its 5s polling fallback:
+// it's reading from WebSocket pushes or its polling fallback:
 //
 //	host    → /api/v1/metrics/host (latest item + month)
 //	online  → /api/v1/online-users (items)

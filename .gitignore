@@ -19,3 +19,12 @@ mtls-out-*/
 .tmp-release/
 .tmp-release-livefix/
 /server
+frontend/ops-demo/node_modules/
+frontend/ops-demo/dist/
+frontend/ops-demo/*.tsbuildinfo
+frontend/ops-demo/vite.config.js
+frontend/ops-demo/vite.config.d.ts
+.playwright-mcp/
+ops-console.txt
+ops-demo-*.png
+ops-v2-*.png
