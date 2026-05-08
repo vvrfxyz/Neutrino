@@ -173,13 +173,21 @@ func isPreferredIface(name string) bool {
 		return false
 	case strings.Contains(lower, "docker"):
 		return false
-	case strings.Contains(lower, "br-"):
+	case strings.HasPrefix(lower, "br"):
 		return false
 	case strings.Contains(lower, "veth"):
 		return false
 	case strings.Contains(lower, "virbr"):
 		return false
+	case strings.HasPrefix(lower, "podman"):
+		return false
+	case strings.HasPrefix(lower, "flannel"):
+		return false
 	case strings.HasPrefix(lower, "ifb"):
+		return false
+	case strings.HasPrefix(lower, "fwbr"):
+		return false
+	case strings.HasPrefix(lower, "fwpr"):
 		return false
 	case strings.Contains(lower, "tun"):
 		return false
