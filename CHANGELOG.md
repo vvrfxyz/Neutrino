@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Cleaned the active documentation set by replacing outdated ops implementation plans with `docs/OPS_MONITORING_DESIGN.md`, removing completed handoff/refactor plans, updating backup/restore docs, and linking the Xboard-inspired upgrade roadmap.
 - Fixed `/ops` heartbeat presentation by keeping node `last_seen_at` tied to panel receive time, while separately rendering the probe's own runtime report time on the node card.
 - Added node natural-month RX/TX telemetry: node-agent now persists a local month accumulator, reports cumulative `month_rx_bytes` / `month_tx_bytes`, and panel stores the latest per-node month view for `/ops`.
 - Documented the new node monthly usage design and clarified the distinction between panel host traffic, node host traffic, and user accounting.

@@ -21,6 +21,7 @@ Neutrino 是一个基于 **Go + SQLite + SSR Templates + HTMX/Alpine.js** 的代
 - `/traffic`：按时间范围 / 用户 / 节点查看流量趋势、Top 用户、Top 目标、Top SNI
 - `/enforcements`：过期、超限、IP 超限等执行记录
 - `/ops`：主机指标、在线用户、节点运行态、队列状态、节点自然月 RX/TX 累计
+- `/ops-v2`：可选预览版运维前端（`ENABLE_OPS_V2=true` 且已构建 `frontend/ops-demo/dist` 时启用）
 
 ### 用户与配额
 
@@ -286,6 +287,7 @@ cp .env.node.example .env    # node-only
 
 - `.env.example` 与 `.env.node.example` 都包含 `REPLACE_WITH_*` 占位符，生产必须替换
 - `.env.node.example` 中如果 `XRAY_REALITY_PRIVATE_KEY` 仍是占位符，node-agent 会在节点本机生成并持久化到 `reality.json`
+- node-only 默认启用 host network：`xray` 直接监听宿主代理端口以保留真实客户端 IP，Xray API 与 agent health 只绑定 `127.0.0.1`
 - `scripts/release/deploy_panel_remote.sh` 与 `scripts/release/deploy_node_remote.sh` 会拒绝明显的占位符配置
 
 ## 发布与部署（强制策略）
@@ -319,9 +321,12 @@ scripts/release/release_stack.sh <TAG>
 - `docs/OPERATION_MANUAL.md`：后台日常操作手册
 - `docs/USAGE_PIPELINE_DESIGN.md`：node-agent usage pipeline 设计约束
 - `docs/NODE_MONTHLY_USAGE_DESIGN.md`：节点自然月 RX/TX 探针设计
+- `docs/OPS_MONITORING_DESIGN.md`：`/ops` 实时监控、历史指标、probe 与告警设计
+- `docs/XBOARD_LEARNINGS_UPGRADE_MODULES.md`：向 Xboard / Xboard-Node 学习后的升级模块拆分
+- `docs/ONLINE_STATUS_MODULE_PLAN.md`：在线状态模块的节点快照改造方案
 - `docs/POSTMORTEM_2026-03-28_NODE14_USAGE_DUPLICATION.md`：node 14 用量重复事故复盘
 
 ## 当前实现边界
 
-- 当前代码中存在 backup 相关存储与 service 基础代码，但**没有**对外暴露 `/api/v1/backups` / `/restore` 之类的 HTTP 路由。
-- 如果你需要新增面向运维的备份入口，请以当前代码实现为准，不要只根据旧文档假设这些接口已可用。
+- 当前仓库里**没有**暴露 API Key 生命周期的 UI 或 HTTP 管理接口；HTTP 层只实现了验证与 scope 校验。
+- `/ops-v2` 是可选预览入口，默认关闭；稳定运维入口仍是 `/ops`。

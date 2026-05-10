@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -22,6 +23,11 @@ type Client struct {
 	apiAddr    string
 	inboundTag string
 	flow       string
+}
+
+type OnlineIP struct {
+	IP         string
+	LastSeenAt time.Time
 }
 
 // NewRaw constructs a client without depending on config.Config.
@@ -102,6 +108,62 @@ func (c *Client) PullUserTraffic(ctx context.Context, email string) (uplink, dow
 		return 0, 0, err
 	}
 	return uplink, downlink, nil
+}
+
+func (c *Client) PullOnlineIPs(ctx context.Context, email string) ([]OnlineIP, error) {
+	if !c.Enabled() {
+		return nil, nil
+	}
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, errors.New("empty email")
+	}
+
+	conn, closeFn, err := c.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFn()
+
+	stats := statscmd.NewStatsServiceClient(conn)
+	resp, err := stats.GetStatsOnlineIpList(ctx, &statscmd.GetStatsRequest{
+		Name:   "user>>>" + email + ">>>online",
+		Reset_: false,
+	})
+	if err != nil {
+		if isNotFoundErr(err) {
+			return []OnlineIP{}, nil
+		}
+		return nil, err
+	}
+	ips := resp.GetIps()
+	out := make([]OnlineIP, 0, len(ips))
+	for rawIP, unixSec := range ips {
+		ip, ok := normalizeOnlineIP(rawIP)
+		if !ok {
+			return nil, fmt.Errorf("xray online ip for %s is invalid: %q", email, rawIP)
+		}
+		if unixSec <= 0 {
+			return nil, fmt.Errorf("xray online ip for %s has malformed timestamp: %d", email, unixSec)
+		}
+		out = append(out, OnlineIP{
+			IP:         ip,
+			LastSeenAt: time.Unix(unixSec, 0).UTC(),
+		})
+	}
+	return out, nil
+}
+
+func normalizeOnlineIP(raw string) (string, bool) {
+	ip := strings.TrimSpace(raw)
+	if strings.HasPrefix(ip, "[") && strings.HasSuffix(ip, "]") {
+		ip = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ip, "["), "]"))
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "", false
+	}
+	return parsed.String(), true
 }
 
 func (c *Client) addUser(ctx context.Context, email, uuid string) error {

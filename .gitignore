@@ -24,6 +24,10 @@ frontend/ops-demo/dist/
 frontend/ops-demo/*.tsbuildinfo
 frontend/ops-demo/vite.config.js
 frontend/ops-demo/vite.config.d.ts
+node_modules/
+playwright-report/
+test-results/
+.tmp-e2e/
 .playwright-mcp/
 ops-console.txt
 ops-demo-*.png

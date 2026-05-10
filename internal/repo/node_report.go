@@ -29,13 +29,14 @@ WHERE id = ?;
 }
 
 type NodeReportInput struct {
-	ReportedAt  string                  `json:"reported_at,omitempty"`
-	Port        *int                    `json:"port,omitempty"`
-	SNI         string                  `json:"sni,omitempty"`
-	PublicKey   string                  `json:"public_key,omitempty"`
-	ShortID     string                  `json:"short_id,omitempty"`
-	Metrics     *NodeReportMetricsInput `json:"metrics,omitempty"`
-	StaticFacts *NodeStaticFactsInput   `json:"static_facts,omitempty"`
+	ReportedAt     string                  `json:"reported_at,omitempty"`
+	Port           *int                    `json:"port,omitempty"`
+	SNI            string                  `json:"sni,omitempty"`
+	PublicKey      string                  `json:"public_key,omitempty"`
+	ShortID        string                  `json:"short_id,omitempty"`
+	Metrics        *NodeReportMetricsInput `json:"metrics,omitempty"`
+	StaticFacts    *NodeStaticFactsInput   `json:"static_facts,omitempty"`
+	OnlineSnapshot *OnlineSnapshotInput    `json:"online_snapshot,omitempty"`
 }
 
 type NodeReportMetricsInput struct {
@@ -114,6 +115,11 @@ func (s *Store) ApplyNodeReportLatest(ctx context.Context, nodeID int64, in Node
 	}
 	if in.StaticFacts != nil {
 		if err := s.UpsertNodeStaticFacts(ctx, nodeID, reportedAt, *in.StaticFacts); err != nil {
+			return time.Time{}, err
+		}
+	}
+	if in.OnlineSnapshot != nil {
+		if err := s.ApplyOnlineSnapshot(ctx, nodeID, *in.OnlineSnapshot); err != nil {
 			return time.Time{}, err
 		}
 	}

@@ -8,19 +8,19 @@ For authoritative constraints and runtime decisions, see `AGENTS.md`.
 
 ```bash
 # Run the panel locally
-go run ./cmd/server
+rtk go run ./cmd/server
 
 # Run the node-agent locally
-go run ./cmd/node-agent
+rtk go run ./cmd/node-agent
 
 # Run the full test suite
-go test ./...
+rtk go test ./...
 
 # Run a single package
-go test ./internal/app
+rtk go test ./internal/app
 
 # Run a single test
-go test ./internal/app -run TestName
+rtk go test ./internal/app -run TestName
 ```
 
 ## Architecture Overview
@@ -74,6 +74,8 @@ go test ./internal/app -run TestName
 - `docs/OPERATION_MANUAL.md`: admin/operator runbook for `/users`, `/nodes`, `/traffic`, `/enforcements`, `/ops`, and Telegram.
 - `docs/USAGE_PIPELINE_DESIGN.md`: invariants for the node-agent usage pipeline.
 - `docs/NODE_MONTHLY_USAGE_DESIGN.md`: semantics and failure model for node natural-month RX/TX telemetry.
+- `docs/OPS_MONITORING_DESIGN.md`: current `/ops` realtime monitoring, metric history, probe, and alert design.
+- `docs/XBOARD_LEARNINGS_UPGRADE_MODULES.md`: active upgrade module roadmap inspired by Xboard / Xboard-Node.
 
 ## Current Caveats
 

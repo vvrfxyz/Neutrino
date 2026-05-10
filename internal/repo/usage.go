@@ -402,11 +402,6 @@ ON CONFLICT(source, source_event_id) DO NOTHING;
 			return err
 		}
 	}
-	if in.Direction == "outbound" && in.ClientIP != "" {
-		if err := s.touchOnlineSessionTx(ctx, tx, in.UserID, in.NodeID, in.ClientIP, in.At); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

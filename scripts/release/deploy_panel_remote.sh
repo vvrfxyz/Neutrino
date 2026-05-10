@@ -10,6 +10,8 @@ TAG="$1"
 REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_DIR="${REMOTE_DIR:-/root/neutrino}"
 IMAGE_REPO="${IMAGE_REPO:-ghcr.io/neutrino-proxy/panel}"
+PANEL_STACK_COMPOSE="${PANEL_STACK_COMPOSE:-}"
+PANEL_STACK_SERVICE="${PANEL_STACK_SERVICE:-neutrino-panel}"
 
 if [[ -z "$REMOTE_HOST" ]]; then
   echo "[deploy] ERROR: REMOTE_HOST is required (e.g. root@<panel-host>)"
@@ -19,9 +21,29 @@ fi
 echo "[deploy] mode: panel-only"
 echo "[deploy] remote: $REMOTE_HOST"
 echo "[deploy] remote dir: $REMOTE_DIR"
+if [[ -n "$PANEL_STACK_COMPOSE" ]]; then
+  echo "[deploy] embedded stack compose: $PANEL_STACK_COMPOSE"
+  echo "[deploy] embedded stack service: $PANEL_STACK_SERVICE"
+fi
 echo "[deploy] set panel image: $IMAGE_REPO:$TAG"
 
-ssh -o StrictHostKeyChecking=no "$REMOTE_HOST" "REMOTE_DIR='$REMOTE_DIR' IMAGE_REPO='$IMAGE_REPO' TAG='$TAG' bash -s" <<'REMOTE_EOF'
+tmp_upload="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_upload"
+}
+trap cleanup EXIT
+cp docker-compose.panel-only.yml "$tmp_upload/docker-compose.panel-only.yml"
+cp docker-compose.panel-hostnet.yml "$tmp_upload/docker-compose.panel-hostnet.yml"
+
+ssh -o StrictHostKeyChecking=no "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR'"
+scp -o StrictHostKeyChecking=no \
+  "$tmp_upload/docker-compose.panel-only.yml" \
+  "$REMOTE_HOST:$REMOTE_DIR/docker-compose.panel-only.yml.tmp.$TAG"
+scp -o StrictHostKeyChecking=no \
+  "$tmp_upload/docker-compose.panel-hostnet.yml" \
+  "$REMOTE_HOST:$REMOTE_DIR/docker-compose.panel-hostnet.yml.tmp.$TAG"
+
+ssh -o StrictHostKeyChecking=no "$REMOTE_HOST" "REMOTE_DIR='$REMOTE_DIR' IMAGE_REPO='$IMAGE_REPO' TAG='$TAG' PANEL_STACK_COMPOSE='$PANEL_STACK_COMPOSE' PANEL_STACK_SERVICE='$PANEL_STACK_SERVICE' bash -s" <<'REMOTE_EOF'
 set -euo pipefail
 
 cd "$REMOTE_DIR"
@@ -31,6 +53,16 @@ if [[ ! -f .env ]]; then
   echo "[deploy] run: scripts/release/bootstrap_remote.sh (from your local machine) and then edit $REMOTE_DIR/.env"
   exit 1
 fi
+
+for compose_file in docker-compose.panel-only.yml docker-compose.panel-hostnet.yml; do
+  tmp_file="${compose_file}.tmp.${TAG}"
+  if [[ -f "$tmp_file" ]]; then
+    if [[ -f "$compose_file" ]]; then
+      cp "$compose_file" "${compose_file}.bak.${TAG}"
+    fi
+    mv "$tmp_file" "$compose_file"
+  fi
+done
 
 fail_env() {
   echo "[deploy] ERROR: $1"
@@ -107,6 +139,51 @@ check_env_file_exists PANEL_AGENT_MTLS_SERVER_CERT_PATH
 check_env_file_exists PANEL_AGENT_MTLS_SERVER_KEY_PATH
 check_env_file_exists PANEL_AGENT_MTLS_SIGNING_CA_CERT_PATH
 check_env_file_exists PANEL_AGENT_MTLS_SIGNING_CA_KEY_PATH
+
+if [[ -n "$PANEL_STACK_COMPOSE" ]]; then
+  if [[ ! -f "$PANEL_STACK_COMPOSE" ]]; then
+    fail_env "PANEL_STACK_COMPOSE not found: $PANEL_STACK_COMPOSE"
+  fi
+  stack_dir="$(dirname "$PANEL_STACK_COMPOSE")"
+  stack_file="$(basename "$PANEL_STACK_COMPOSE")"
+  cp "$PANEL_STACK_COMPOSE" "${PANEL_STACK_COMPOSE}.bak.${TAG}"
+  python3 - "$PANEL_STACK_COMPOSE" "$PANEL_STACK_SERVICE" "${IMAGE_REPO}:${TAG}" <<'PY'
+import re
+import sys
+
+path, service, image = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+service_re = re.compile(rf"^  {re.escape(service)}:\s*$")
+next_service_re = re.compile(r"^  [A-Za-z0-9_.-]+:\s*$")
+image_re = re.compile(r"^    image:\s*.*$")
+in_service = False
+changed = False
+for i, line in enumerate(lines):
+    if service_re.match(line):
+        in_service = True
+        continue
+    if in_service and next_service_re.match(line):
+        break
+    if in_service and image_re.match(line):
+        lines[i] = f"    image: {image}\n"
+        changed = True
+        break
+
+if not changed:
+    raise SystemExit(f"service {service!r} image line not found in {path}")
+
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+PY
+  cd "$stack_dir"
+  docker compose -f "$stack_file" pull "$PANEL_STACK_SERVICE"
+  docker compose -f "$stack_file" up -d --no-build "$PANEL_STACK_SERVICE"
+  docker compose -f "$stack_file" ps "$PANEL_STACK_SERVICE"
+  curl -fsS http://127.0.0.1:8080/healthz
+  exit 0
+fi
 
 if [[ -f docker-compose.release.yml ]]; then
   cp docker-compose.release.yml docker-compose.release.yml.bak.${TAG}

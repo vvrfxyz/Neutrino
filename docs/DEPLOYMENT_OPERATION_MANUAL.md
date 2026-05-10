@@ -7,7 +7,8 @@
 - 本地 buildx + 远端 pull 的发布流程
 - mTLS 证书、Enroll Code、节点部署页、托管 Xray
 
-> 说明：仓库中虽然存在 backup 相关基础代码，但当前**没有**公开 `/api/v1/backups` / `/restore` HTTP 接口，本文不再把它们作为上线前必做项。
+> 说明：SQLite backup / restore HTTP 接口已存在，但 restore 会 stage
+> `<DB_PATH>.pending-restore`，必须重启 panel 后才会应用。
 
 ## 1. 约束与部署原则
 
@@ -284,7 +285,11 @@ PANEL_URL=https://panel.example.com
 PANEL_MTLS_URL=https://mtls.example.com:8443
 ENROLL_CODE=REAL_ONE_TIME_CODE
 XRAY_VLESS_PORT=24443
-XRAY_API_ADDR=xray:10085
+HOSTNET_ENABLE=true
+XRAY_API_LISTEN=127.0.0.1
+XRAY_API_ADDR=127.0.0.1:10085
+AGENT_HTTP_ADDR=127.0.0.1:9090
+AGENT_ACCESS_LOG_TZ=UTC
 XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
 XRAY_RELOAD_ARGS_JSON=["docker","restart","neutrino-xray"]
 ```
@@ -327,21 +332,26 @@ scripts/release/deploy_node_remote.sh <TAG>
 `deploy_node_remote.sh` 会：
 
 - 校验 `PANEL_URL` / `PANEL_MTLS_URL` / `ENROLL_CODE`
+- 同步 `docker-compose.node-hostnet.yml`
 - 生成 `docker-compose.release.yml`
 - `pull` agent / xray 镜像
 - `up -d --no-build xray agent`
 
 ## 5.6 Host network 场景
 
-若节点开启 `HOSTNET_ENABLE=true`，部署脚本会自动叠加 `docker-compose.node-hostnet.yml`。
+节点推荐开启 `HOSTNET_ENABLE=true`。部署脚本会自动同步并叠加
+`docker-compose.node-hostnet.yml`，使 `xray` 直接使用宿主网络监听代理端口，
+避免 Docker bridge / userland-proxy 把真实客户端 IP 改写成 `172.x` 网关地址。
 
 此时请确保：
 
 ```env
+XRAY_API_LISTEN=127.0.0.1
 XRAY_API_ADDR=127.0.0.1:10085
+AGENT_HTTP_ADDR=127.0.0.1:9090
 ```
 
-否则部署脚本会直接拒绝继续。
+否则部署脚本会直接拒绝继续。不要把 Xray API 监听到 `0.0.0.0`。
 
 ## 6. 节点生命周期与托管 Xray
 
@@ -458,6 +468,8 @@ export all_proxy=socks5://127.0.0.1:6153
    - `/api/v1/usage` 成功入库
    - `/traffic` 和 `/users/{id}` 图表有数据
 8. 如果启用 managed Xray：deploy / rollback 至少演练一次
+9. 如需验证备份：创建一次 `/api/v1/backups`，下载备份文件；restore
+   演练应在测试环境执行，避免误替换生产 DB。
 
 ## 9. 常见问题
 

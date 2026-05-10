@@ -309,6 +309,19 @@ func createNodeViaBasicAuth(t *testing.T, e *testEnv, name string) int64 {
 	return int64(idNum)
 }
 
+func postOnlineSnapshot(t *testing.T, e *testEnv, nodeID int64, observedAt time.Time, items []map[string]any) {
+	t.Helper()
+	resp := e.requestMTLS(t, nodeID, http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/report", nodeID), map[string]any{
+		"reported_at": observedAt.Format(time.RFC3339),
+		"online_snapshot": map[string]any{
+			"observed_at": observedAt.Format(time.RFC3339),
+			"items":       items,
+		},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	_ = decodeBodyMap(t, resp)
+}
+
 func createUserDirect(t *testing.T, e *testEnv) repo.User {
 	t.Helper()
 	u, err := e.store.CreateUser(context.Background(), repo.CreateUserInput{
@@ -686,6 +699,20 @@ func TestFunctional_UserDetailTrafficAPIAndOnlineSessions(t *testing.T) {
 	})
 	mustStatus(t, resp, http.StatusOK)
 	_ = decodeBodyMap(t, resp)
+	postOnlineSnapshot(t, env, node1, now.Add(3*time.Second), []map[string]any{
+		{
+			"user_id":      userID,
+			"client_ip":    "10.0.0.1",
+			"last_seen_at": now.Add(3 * time.Second).Format(time.RFC3339),
+		},
+	})
+	postOnlineSnapshot(t, env, node2, now.Add(4*time.Second), []map[string]any{
+		{
+			"user_id":      userID,
+			"client_ip":    "10.0.0.1",
+			"last_seen_at": now.Add(4 * time.Second).Format(time.RFC3339),
+		},
+	})
 
 	resp = env.request(t, http.MethodGet, fmt.Sprintf("/api/v1/users/%d/traffic", userID), nil, true, "")
 	mustStatus(t, resp, http.StatusOK)
@@ -871,6 +898,30 @@ func TestFunctional_UsersPageShowsBatchedOnlineStats(t *testing.T) {
 	})
 	mustStatus(t, resp, http.StatusOK)
 	_ = decodeBodyMap(t, resp)
+	postOnlineSnapshot(t, env, node1, now.Add(3*time.Second), []map[string]any{
+		{
+			"user_id":      userID1,
+			"client_ip":    "10.8.0.1",
+			"last_seen_at": now.Format(time.RFC3339),
+		},
+		{
+			"user_id":      userID1,
+			"client_ip":    "10.8.0.2",
+			"last_seen_at": now.Add(2 * time.Second).Format(time.RFC3339),
+		},
+		{
+			"user_id":      userID2,
+			"client_ip":    "10.8.1.1",
+			"last_seen_at": now.Add(3 * time.Second).Format(time.RFC3339),
+		},
+	})
+	postOnlineSnapshot(t, env, node2, now.Add(3*time.Second), []map[string]any{
+		{
+			"user_id":      userID1,
+			"client_ip":    "10.8.0.1",
+			"last_seen_at": now.Add(time.Second).Format(time.RFC3339),
+		},
+	})
 
 	resp = env.request(t, http.MethodGet, "/users", nil, true, "")
 	mustStatus(t, resp, http.StatusOK)
@@ -939,6 +990,20 @@ func TestFunctional_OpsAndNodesCleanup(t *testing.T) {
 	})
 	mustStatus(t, resp, http.StatusOK)
 	_ = decodeBodyMap(t, resp)
+	postOnlineSnapshot(t, env, node1, now.Add(3*time.Second), []map[string]any{
+		{
+			"user_id":      userID,
+			"client_ip":    "10.9.0.1",
+			"last_seen_at": now.Format(time.RFC3339),
+		},
+	})
+	postOnlineSnapshot(t, env, node2, now.Add(3*time.Second), []map[string]any{
+		{
+			"user_id":      userID,
+			"client_ip":    "10.9.0.1",
+			"last_seen_at": now.Add(2 * time.Second).Format(time.RFC3339),
+		},
+	})
 
 	resp = env.requestMTLS(t, node1, http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/report", node1), map[string]any{
 		"reported_at": now.Add(3 * time.Second).Format(time.RFC3339),

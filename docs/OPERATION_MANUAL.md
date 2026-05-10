@@ -386,9 +386,48 @@ ops-v2 节点抽屉支持查看最近 probe 结果，并手动创建安全 probe
 - 如果“最近心跳”看起来比真实世界时间超前，优先检查 panel 主机系统时间，而不是先怀疑页面格式化。
 - 如果“最近上报”或“自然月累计最近上报”异常，优先检查对应节点主机系统时间。
 
-## 9. Telegram
+## 9. Backup / Restore
 
-## 9.1 需要的环境变量
+Backup / restore 目前通过 HTTP API 提供，适合发布前、迁移前、重大配置调整前使用。
+
+接口权限：
+
+- 管理员 session / Basic Auth
+- 或带 `backups:read` / `backups:write` scope 的 API Key
+
+常用操作：
+
+```bash
+# 创建 SQLite 备份
+curl -u "$ADMIN_USER:$ADMIN_PASS" -X POST http://127.0.0.1:8080/api/v1/backups
+
+# 列出备份
+curl -u "$ADMIN_USER:$ADMIN_PASS" http://127.0.0.1:8080/api/v1/backups
+
+# 下载备份
+curl -u "$ADMIN_USER:$ADMIN_PASS" -L -o neutrino.sqlite.gz \
+  http://127.0.0.1:8080/api/v1/backups/<BACKUP_ID>/download
+
+# 删除备份记录与本地文件
+curl -u "$ADMIN_USER:$ADMIN_PASS" -X DELETE \
+  http://127.0.0.1:8080/api/v1/backups/<BACKUP_ID>
+```
+
+Restore 接受 `.sqlite` 或 `.sqlite.gz`，会先做完整性和基础表校验，然后写入
+`<DB_PATH>.pending-restore`。真正替换当前 DB 发生在下一次 panel 启动时；启动前会把当前 DB 备份成
+`<DB_PATH>.pre-restore-<timestamp>.bak`。
+
+```bash
+curl -u "$ADMIN_USER:$ADMIN_PASS" -X POST \
+  -F "backup=@neutrino.sqlite.gz" \
+  http://127.0.0.1:8080/api/v1/backups/restore
+```
+
+Restore 建议只在维护窗口执行，并先在测试环境演练。
+
+## 10. Telegram
+
+## 10.1 需要的环境变量
 
 panel `.env` 中配置：
 
@@ -407,7 +446,7 @@ cd /root/neutrino && docker compose -f docker-compose.panel-only.yml restart neu
 cd /data && docker compose -f docker-compose.yml restart neutrino-panel || true
 ```
 
-## 9.2 获取管理员 chat_id
+## 10.2 获取管理员 chat_id
 
 1. 给 bot 发 `/start`
 2. 执行：
@@ -418,7 +457,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates" | jq
 
 3. 找到 `message.chat.id`
 
-## 9.3 用户命令
+## 10.3 用户命令
 
 - `/bind <code>`
 - `/me`
@@ -427,7 +466,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates" | jq
 
 > 这些自助命令要求当前 chat 已先成功完成 `/bind <code>`。
 
-## 9.4 管理员命令
+## 10.4 管理员命令
 
 - `/summary`
 - `/user <name>`
@@ -435,7 +474,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates" | jq
 - `/disable <name>`
 - `/quota_reset <name>`
 
-## 9.5 轮询模式说明
+## 10.5 轮询模式说明
 
 当前实现使用 `getUpdates` 轮询，不使用 webhook。
 
@@ -445,9 +484,9 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates" | jq
 curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 ```
 
-## 10. 常见排查
+## 11. 常见排查
 
-### 10.1 浏览器复制链接失败
+### 11.1 浏览器复制链接失败
 
 浏览器剪贴板 API 通常要求 HTTPS 安全上下文。
 
@@ -455,7 +494,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 建议通过 HTTPS 域名访问后台
 - 页面已经提供降级复制逻辑，但最稳妥仍是 HTTPS
 
-### 10.2 节点不在线 / Jobs 不推进
+### 11.2 节点不在线 / Jobs 不推进
 
 优先检查：
 
@@ -465,7 +504,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - `/nodes/{id}/deploy` 页面的 last error 和 job history
 - `/ops` 页面里最近心跳、最近上报、queue / runtime / 自然月累计是否正常刷新
 
-### 10.3 Managed Xray 发布失败
+### 11.3 Managed Xray 发布失败
 
 重点检查：
 
@@ -474,7 +513,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 是否挂载 `/var/run/docker.sock`
 - `extra_json` 是否少了必要变量
 
-### 10.4 订阅不可用
+### 11.4 订阅不可用
 
 常见错误与含义：
 
@@ -483,7 +522,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - `subscription unavailable: no enabled nodes`
   - 没有启用中的节点，且 panel fallback 代理参数也不可用
 
-### 10.5 怀疑节点流量重复 / 丢失
+### 11.5 怀疑节点流量重复 / 丢失
 
 优先参考：
 
@@ -496,7 +535,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 节点 `state.json` 里的 `acked_stats`
 - panel 侧相同 `source_event_id` 的入库情况
 
-### 10.6 节点自然月流量不更新 / 看起来不对
+### 11.6 节点自然月流量不更新 / 看起来不对
 
 先分清楚你在看的是什么：
 
@@ -517,7 +556,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 先确认是否发生过 panel DB 月累计状态丢失或计数源迁移
 - 当前实现会在计数源变化 / raw counter 重置时保留已累计值并重设基线，但无法回填迁移前缺失的宿主机流量历史
 
-### 10.7 `/ops` 时间看起来超前 / 落后真实时间
+### 11.7 `/ops` 时间看起来超前 / 落后真实时间
 
 先分清语义：
 
@@ -547,7 +586,7 @@ docker exec neutrino-panel date -u
 docker exec neutrino-agent date -u
 ```
 
-## 11. 常用 API（给运维 / 自动化）
+## 12. 常用 API（给运维 / 自动化）
 
 如果你需要用 curl 自动化，推荐先确保：
 

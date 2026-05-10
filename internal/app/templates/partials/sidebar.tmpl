@@ -4,7 +4,8 @@
        x-bind:style="sidebarStyle()"
        x-bind:class="isMobile ? (sidebarOpen ? 'translate-x-0' : '-translate-x-full') : 'translate-x-0'">
   <!-- Brand -->
-  <div class="flex items-center gap-3 border-b border-white/10 px-4 py-5">
+  <div class="flex items-center gap-3 border-b border-white/10 py-5"
+       x-bind:class="sidebarExpanded() ? 'justify-start px-4' : 'justify-center px-0'">
     <div class="w-8 h-8 rounded-lg bg-accent flex items-center justify-center flex-shrink-0">
       <i data-lucide="atom" class="w-5 h-5"></i>
     </div>
@@ -12,23 +13,15 @@
       <span class="block truncate text-lg font-semibold tracking-tight">Neutrino</span>
       <span class="block text-[11px] text-slate-400">Admin Panel</span>
     </div>
-    <button type="button"
-            x-on:click="toggleSidebar()"
-            class="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-white/10 hover:text-white">
-      <i data-lucide="menu" class="h-4 w-4" x-show="isMobile && !sidebarOpen" x-cloak></i>
-      <i data-lucide="x" class="h-4 w-4" x-show="isMobile && sidebarOpen" x-cloak></i>
-      <i data-lucide="panel-left-open" class="h-4 w-4" x-show="!isMobile && sidebarCollapsed" x-cloak></i>
-      <i data-lucide="panel-left-close" class="h-4 w-4" x-show="!isMobile && !sidebarCollapsed" x-cloak></i>
-    </button>
   </div>
 
   <!-- Navigation -->
   <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-    {{template "sidebar-item" dict "Page" "users" "Active" .ActivePage "Icon" "users" "Label" "用户"}}
-    {{template "sidebar-item" dict "Page" "nodes" "Active" .ActivePage "Icon" "server" "Label" "节点"}}
-    {{template "sidebar-item" dict "Page" "traffic" "Active" .ActivePage "Icon" "activity" "Label" "流量"}}
-    {{template "sidebar-item" dict "Page" "enforcements" "Active" .ActivePage "Icon" "scroll-text" "Label" "执行记录"}}
-    {{template "sidebar-item" dict "Page" "ops" "Active" .ActivePage "Icon" "gauge" "Label" "运维"}}
+    {{template "sidebar-item" dict "Page" "users" "Path" "/users" "Active" .ActivePage "Icon" "users" "Label" "用户"}}
+    {{template "sidebar-item" dict "Page" "nodes" "Path" "/nodes" "Active" .ActivePage "Icon" "server" "Label" "节点"}}
+    {{template "sidebar-item" dict "Page" "traffic" "Path" "/traffic" "Active" .ActivePage "Icon" "activity" "Label" "流量"}}
+    {{template "sidebar-item" dict "Page" "enforcements" "Path" "/enforcements" "Active" .ActivePage "Icon" "scroll-text" "Label" "执行记录"}}
+    {{template "sidebar-item" dict "Page" "ops" "Path" "/ops" "Active" .ActivePage "Icon" "gauge" "Label" "运维"}}
   </nav>
 
   <!-- User / Logout -->
@@ -53,10 +46,17 @@
 {{end}}
 
 {{define "sidebar-item"}}
-  <a href="{{if eq .Page "users"}}/users{{else if eq .Page "nodes"}}/nodes{{else if eq .Page "traffic"}}/traffic{{else if eq .Page "enforcements"}}/enforcements{{else if eq .Page "ops"}}/ops{{end}}"
+  <a href="{{.Path}}"
+     data-sidebar-page="{{.Page}}"
+     hx-get="{{.Path}}"
+     hx-target="#app-main"
+     hx-select="#app-main"
+     hx-swap="outerHTML show:window:top"
+     hx-push-url="true"
      x-on:click="closeSidebar()"
      class="flex items-center gap-3 rounded-lg py-2.5 text-sm transition-colors {{if eq .Page .Active}}bg-sidebar-active text-white font-medium{{else}}text-slate-300 hover:text-white hover:bg-sidebar-hover{{end}}"
      x-bind:class="sidebarExpanded() ? 'justify-start px-3' : 'justify-center px-0'"
+     {{if eq .Page .Active}}aria-current="page"{{end}}
      title="{{.Label}}">
     <i data-lucide="{{.Icon}}" class="w-4 h-4 flex-shrink-0"></i>
     <span x-show="sidebarExpanded()" x-cloak>{{.Label}}</span>

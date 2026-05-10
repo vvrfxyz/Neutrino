@@ -4,17 +4,24 @@
   {{template "head"}}
   <meta name="csrf-token" content="{{.CSRFToken}}">
   <title>Neutrino</title>
-  <style>[x-cloak]{display:none!important}</style>
+  <style>
+    [x-cloak]{display:none!important}
+    :root { --sidebar-width: 14rem; }
+    @media (min-width: 1024px) {
+      #app-main { padding-left: var(--sidebar-width); }
+    }
+  </style>
 </head>
 <body class="bg-slate-50 font-sans text-slate-900 antialiased" x-data="appShell()" x-init="init()">
   <div x-show="sidebarOpen && isMobile" x-transition.opacity class="fixed inset-0 z-30 bg-slate-950/40 lg:hidden" x-on:click="closeSidebar()" x-cloak></div>
   {{template "sidebar" .}}
 
-  <div class="min-h-screen transition-[padding-left] duration-300" x-bind:style="mainStyle()">
+  <div id="app-main" class="min-h-screen transition-[padding-left] duration-300">
     <header class="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/75">
       <div class="{{if eq .ActivePage "ops"}}max-w-[2100px]{{else}}max-w-7xl{{end}} mx-auto flex items-center justify-between gap-3 px-4 py-2.5 sm:px-6 sm:py-3">
         <div class="flex min-w-0 items-center gap-3">
           <button type="button"
+                  aria-label="切换侧边栏"
                   x-on:click="toggleSidebar()"
                   class="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition-colors hover:bg-slate-50 hover:text-slate-900">
             <i data-lucide="menu" class="h-4 w-4" x-show="isMobile && !sidebarOpen" x-cloak></i>
@@ -65,12 +72,14 @@
         init() {
           const saved = window.localStorage.getItem('neutrino:sidebar:collapsed');
           this.sidebarCollapsed = saved === '1';
+          this.syncShellLayout();
           this.mediaQuery = window.matchMedia('(max-width: 1023px)');
           const syncViewport = () => {
             this.isMobile = this.mediaQuery.matches;
             if (!this.isMobile) {
               this.sidebarOpen = false;
             }
+            this.syncShellLayout();
             this.syncBodyLock();
             this.$nextTick(() => lucide.createIcons());
           };
@@ -82,9 +91,16 @@
           }
           this.$watch('sidebarCollapsed', value => {
             window.localStorage.setItem('neutrino:sidebar:collapsed', value ? '1' : '0');
+            this.syncShellLayout();
           });
           this.$watch('sidebarOpen', () => this.syncBodyLock());
-          this.$watch('isMobile', () => this.syncBodyLock());
+          this.$watch('isMobile', () => {
+            this.syncShellLayout();
+            this.syncBodyLock();
+          });
+        },
+        syncShellLayout() {
+          document.documentElement.style.setProperty('--sidebar-width', this.sidebarCollapsed ? '5rem' : '14rem');
         },
         syncBodyLock() {
           document.body.classList.toggle('overflow-hidden', this.isMobile && this.sidebarOpen);
@@ -105,20 +121,56 @@
         sidebarExpanded() {
           return this.isMobile || !this.sidebarCollapsed;
         },
-        mainStyle() {
-          if (this.isMobile) return '';
-          return `padding-left: ${this.sidebarCollapsed ? '5rem' : '14rem'};`;
-        },
         sidebarStyle() {
-          return `width: ${this.isMobile ? '17rem' : (this.sidebarCollapsed ? '5rem' : '14rem')};`;
+          return `width: ${this.isMobile ? '17rem' : 'var(--sidebar-width)'};`;
         },
       }
     }
 
+    function sidebarPageFromPath(pathname) {
+      if (pathname === '/nodes' || pathname.startsWith('/nodes/')) return 'nodes';
+      if (pathname === '/traffic' || pathname.startsWith('/traffic/')) return 'traffic';
+      if (pathname === '/enforcements' || pathname.startsWith('/enforcements/')) return 'enforcements';
+      if (pathname === '/ops' || pathname.startsWith('/ops/')) return 'ops';
+      return 'users';
+    }
+
+    function setSidebarActivePage(page) {
+      document.querySelectorAll('[data-sidebar-page]').forEach((link) => {
+        const active = link.dataset.sidebarPage === page;
+        link.classList.toggle('bg-sidebar-active', active);
+        link.classList.toggle('text-white', active);
+        link.classList.toggle('font-medium', active);
+        link.classList.toggle('text-slate-300', !active);
+        link.classList.toggle('hover:text-white', !active);
+        link.classList.toggle('hover:bg-sidebar-hover', !active);
+        if (active) {
+          link.setAttribute('aria-current', 'page');
+        } else {
+          link.removeAttribute('aria-current');
+        }
+      });
+    }
+
+    function refreshShellChrome() {
+      lucide.createIcons();
+      setSidebarActivePage(sidebarPageFromPath(window.location.pathname));
+    }
+
     // Initialize Lucide icons after page load
-    document.addEventListener('DOMContentLoaded', () => lucide.createIcons());
+    document.addEventListener('DOMContentLoaded', refreshShellChrome);
     // Re-initialize after HTMX swaps
-    document.addEventListener('htmx:afterSwap', () => lucide.createIcons());
+    document.addEventListener('htmx:afterSwap', refreshShellChrome);
+    document.addEventListener('htmx:historyRestore', refreshShellChrome);
+    document.addEventListener('htmx:pushedIntoHistory', refreshShellChrome);
+    document.addEventListener('htmx:responseError', refreshShellChrome);
+    document.addEventListener('htmx:sendError', refreshShellChrome);
+    document.addEventListener('htmx:timeout', refreshShellChrome);
+
+    document.body.addEventListener('htmx:beforeRequest', (e) => {
+      const link = e.detail.elt && e.detail.elt.closest ? e.detail.elt.closest('[data-sidebar-page]') : null;
+      if (link) setSidebarActivePage(link.dataset.sidebarPage);
+    });
 
     document.body.addEventListener('htmx:configRequest', (e) => {
       const meta = document.querySelector('meta[name=csrf-token]');

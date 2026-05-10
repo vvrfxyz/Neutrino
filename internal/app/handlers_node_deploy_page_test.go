@@ -104,6 +104,12 @@ func TestBuildNodeDeployScriptIncludesDockerBootstrap(t *testing.T) {
 		"yum install -y docker-compose-plugin || true",
 		"apk add --no-cache docker-cli-compose || true",
 		"https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${compose_arch}",
+		"HOSTNET_ENABLE=true",
+		"XRAY_API_LISTEN=127.0.0.1",
+		"AGENT_HTTP_ADDR=127.0.0.1:9090",
+		"XRAY_API_ADDR=127.0.0.1:10085",
+		"AGENT_ACCESS_LOG_TZ=UTC",
+		"network_mode: host",
 		"compose_cmd up -d",
 	}
 

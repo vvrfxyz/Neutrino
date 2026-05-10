@@ -4,6 +4,7 @@ set -eu
 : "${XRAY_INBOUND_TAG:=vless-reality}"
 : "${XRAY_VLESS_PORT:=24443}"
 : "${XRAY_API_PORT:=10085}"
+: "${XRAY_API_LISTEN:=127.0.0.1}"
 : "${XRAY_REALITY_DEST:=www.microsoft.com:443}"
 : "${XRAY_REALITY_SERVER_NAME:=www.microsoft.com}"
 : "${XRAY_REALITY_PRIVATE_KEY:=REPLACE_WITH_REALITY_PRIVATE_KEY}"

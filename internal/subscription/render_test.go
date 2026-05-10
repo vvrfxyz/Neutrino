@@ -160,10 +160,39 @@ func TestRenderClashUsesActualProxyNamesInGroup(t *testing.T) {
 		"vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=example.com&fp=chrome&pbk=abc&sid=12#edge-a",
 		"vless://22222222-2222-2222-2222-222222222222@example.org:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=example.org&fp=chrome&pbk=def&sid=34#edge-b",
 	})
-	if !strings.Contains(out, "      - \"edge-a\"") || !strings.Contains(out, "      - \"edge-b\"") {
+	if !strings.Contains(out, "      - 'edge-a'") || !strings.Contains(out, "      - 'edge-b'") {
 		t.Fatalf("expected clash proxy group to reference actual proxy names, got:\n%s", out)
 	}
-	if strings.Contains(out, "      - \"node-1\"") || strings.Contains(out, "      - \"node-2\"") {
+	if strings.Contains(out, "      - 'node-1'") || strings.Contains(out, "      - 'node-2'") {
 		t.Fatalf("unexpected synthetic proxy names in clash proxy group:\n%s", out)
+	}
+}
+
+func TestRenderClashIncludesMihomoRules(t *testing.T) {
+	out := renderClashYAML([]string{
+		"vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=example.com&fp=chrome&pbk=abc&sid=12#edge-a",
+	})
+	for _, want := range []string{
+		"# Generated for Mihomo / Clash.Meta. Legacy Clash does not support VLESS REALITY.",
+		"mixed-port: 7890",
+		"global-client-fingerprint: chrome",
+		"  enhanced-mode: fake-ip",
+		"  - name: 'PROXY'",
+		"  - name: 'AUTO'",
+		"    type: url-test",
+		"  openai:",
+		"    url: 'https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/openai.yaml'",
+		"  geoip-cn:",
+		"    behavior: ipcidr",
+		"  - RULE-SET,openai,AI",
+		"  - RULE-SET,geolocation-!cn,PROXY",
+		"  - MATCH,Final",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected clash output to contain %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "  - MATCH,AUTO") {
+		t.Fatalf("unexpected legacy catch-all in clash output:\n%s", out)
 	}
 }

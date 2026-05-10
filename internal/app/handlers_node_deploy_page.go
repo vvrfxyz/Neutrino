@@ -522,9 +522,11 @@ cat > .env <<'EOF'
 TZ=Asia/Shanghai
 
 # xray (node)
+HOSTNET_ENABLE=true
 XRAY_INBOUND_TAG=vless-reality
 XRAY_VLESS_PORT=%d
 XRAY_API_PORT=10085
+XRAY_API_LISTEN=127.0.0.1
 XRAY_REALITY_DEST=www.microsoft.com:443
 XRAY_REALITY_SERVER_NAME=www.microsoft.com
 XRAY_REALITY_PRIVATE_KEY=REPLACE_WITH_REALITY_PRIVATE_KEY
@@ -540,9 +542,11 @@ PANEL_MTLS_CA_CERT_PATH=/data/mtls/ca-bundle.crt
 PANEL_MTLS_CLIENT_CERT_PATH=/data/mtls/node.crt
 PANEL_MTLS_CLIENT_KEY_PATH=/data/mtls/node.key
 
-XRAY_API_ADDR=xray:10085
+AGENT_HTTP_ADDR=127.0.0.1:9090
+XRAY_API_ADDR=127.0.0.1:10085
 XRAY_FLOW=xtls-rprx-vision
 XRAY_ACCESS_LOG_PATH=/var/log/xray/access.log
+AGENT_ACCESS_LOG_TZ=UTC
 XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
 XRAY_RELOAD_ARGS_JSON=["docker","restart","neutrino-xray"]
 HOST_PROC_PATH=/host/proc
@@ -573,8 +577,7 @@ services:
     env_file:
       - .env
     command: ["run","-c","/usr/local/etc/xray/config.json"]
-    ports:
-      - "\${XRAY_VLESS_PORT:-%d}:\${XRAY_VLESS_PORT:-%d}"
+    network_mode: host
     volumes:
       - xray-logs:/var/log/xray
       - xray-etc:/usr/local/etc/xray
@@ -585,6 +588,7 @@ services:
     container_name: neutrino-agent
     env_file:
       - .env
+    network_mode: host
     volumes:
       - ./data:/data
       - /proc:/host/proc:ro
@@ -606,5 +610,5 @@ echo "ok: node started; agent will auto-enroll and then long-poll jobs."
 `, deployDir, panelPublicURL, panelMTLSURL, nodeID, enrollCode, agentImage, xrayImage,
 		vlessPort,
 		nodeID, panelPublicURL, panelMTLSURL, enrollCode,
-		vlessPort, vlessPort)
+	)
 }

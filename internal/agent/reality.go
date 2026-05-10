@@ -230,6 +230,8 @@ func (a *Agent) lookupLocalTemplateVar(k string) string {
 			return v
 		}
 		return "443"
+	case "XRAY_API_LISTEN":
+		return "127.0.0.1"
 	}
 	return ""
 }

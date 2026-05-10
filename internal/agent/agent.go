@@ -45,7 +45,7 @@ import (
 
 type Agent struct {
 	cfg            Config
-	xray           *xrayapi.Client
+	xray           xrayRuntimeClient
 	panel          *PanelClient
 	panelMu        sync.RWMutex
 	state          *StateStore
@@ -112,6 +112,12 @@ type XrayRollbackRequest struct {
 type userSyncApplier interface {
 	UpsertUser(ctx context.Context, email, uuid string) error
 	RemoveUser(ctx context.Context, email string) error
+}
+
+type xrayRuntimeClient interface {
+	userSyncApplier
+	PullUserTraffic(ctx context.Context, email string) (uplink, downlink int64, err error)
+	PullOnlineIPs(ctx context.Context, email string) ([]xrayapi.OnlineIP, error)
 }
 
 type jobResult struct {
@@ -928,6 +934,11 @@ func (a *Agent) startHeartbeat(ctx context.Context) {
 		}
 		rp.ReportedAt = reportedAt.Format(time.RFC3339)
 		rp.Metrics = a.heartbeatMetrics(reportedAt)
+		if snapshot, err := a.buildOnlineSnapshot(ctx, reportedAt); err != nil {
+			log.Printf("online snapshot collection failed: %v", err)
+		} else {
+			rp.OnlineSnapshot = snapshot
+		}
 		if lastStaticAt.IsZero() || reportedAt.Sub(lastStaticAt) >= staticInterval {
 			rp.StaticFacts = a.staticFacts()
 			lastStaticAt = reportedAt
@@ -946,6 +957,53 @@ func (a *Agent) startHeartbeat(ctx context.Context) {
 			sendOnce()
 		}
 	}
+}
+
+func (a *Agent) buildOnlineSnapshot(ctx context.Context, observedAt time.Time) (*OnlineSnapshot, error) {
+	if a == nil || a.state == nil || a.xray == nil {
+		return nil, nil
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	} else {
+		observedAt = observedAt.UTC()
+	}
+
+	users := a.state.Snapshot().SyncedUsers
+	if len(users) == 0 {
+		return &OnlineSnapshot{
+			ObservedAt: observedAt.Format(time.RFC3339),
+			Items:      []OnlineSnapshotItem{},
+		}, nil
+	}
+
+	items := make([]OnlineSnapshotItem, 0, len(users))
+	for _, u := range users {
+		email := strings.TrimSpace(u.Email)
+		if u.UserID <= 0 || email == "" || u.Status != "active" {
+			continue
+		}
+		online, err := a.xray.PullOnlineIPs(ctx, email)
+		if err != nil {
+			return nil, fmt.Errorf("pull online ips user_id=%d email=%s: %w", u.UserID, email, err)
+		}
+		for _, ip := range online {
+			lastSeenAt := ip.LastSeenAt
+			if lastSeenAt.IsZero() {
+				lastSeenAt = observedAt
+			}
+			items = append(items, OnlineSnapshotItem{
+				UserID:     u.UserID,
+				Email:      email,
+				ClientIP:   strings.TrimSpace(ip.IP),
+				LastSeenAt: lastSeenAt.UTC().Format(time.RFC3339),
+			})
+		}
+	}
+	return &OnlineSnapshot{
+		ObservedAt: observedAt.Format(time.RFC3339),
+		Items:      items,
+	}, nil
 }
 
 func (a *Agent) heartbeatMetrics(reportedAt time.Time) *NodeReportMetrics {

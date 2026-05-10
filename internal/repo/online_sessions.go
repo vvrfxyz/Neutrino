@@ -16,20 +16,75 @@ type UserOnlineStats struct {
 	DeviceCount  int
 }
 
-func (s *Store) touchOnlineSessionTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID *int64, clientIP string, at time.Time) error {
-	clientIP = strings.TrimSpace(clientIP)
-	if clientIP == "" {
-		return nil
+type OnlineSnapshotInput struct {
+	ObservedAt time.Time                 `json:"observed_at,omitempty"`
+	Items      []OnlineSnapshotItemInput `json:"items,omitempty"`
+}
+
+type OnlineSnapshotItemInput struct {
+	UserID     int64     `json:"user_id"`
+	ClientIP   string    `json:"client_ip"`
+	LastSeenAt time.Time `json:"last_seen_at,omitempty"`
+}
+
+const onlineSnapshotReasonableWindow = 5 * time.Minute
+
+func (s *Store) ApplyOnlineSnapshot(ctx context.Context, nodeID int64, in OnlineSnapshotInput) error {
+	if nodeID <= 0 {
+		return fmt.Errorf("invalid node id")
 	}
-	if ip := net.ParseIP(clientIP); ip == nil {
-		return nil
+	observedAt := in.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	} else {
+		observedAt = observedAt.UTC()
 	}
-	nodeVal := sql.NullInt64{}
-	if nodeID != nil && *nodeID > 0 {
-		nodeVal = sql.NullInt64{Int64: *nodeID, Valid: true}
+
+	type normalizedItem struct {
+		userID     int64
+		clientIP   string
+		lastSeenAt time.Time
 	}
-	ts := at.UTC().Format(time.RFC3339)
-	_, err := tx.ExecContext(ctx, `
+	items := make([]normalizedItem, 0, len(in.Items))
+	keep := make(map[string]struct{}, len(in.Items))
+	for _, item := range in.Items {
+		if item.UserID <= 0 {
+			return fmt.Errorf("invalid user id")
+		}
+		rawIP := strings.TrimSpace(item.ClientIP)
+		ip := net.ParseIP(rawIP)
+		if ip == nil {
+			return fmt.Errorf("invalid client ip: %q", item.ClientIP)
+		}
+		lastSeenAt := item.LastSeenAt
+		if lastSeenAt.IsZero() {
+			lastSeenAt = observedAt
+		} else {
+			lastSeenAt = lastSeenAt.UTC()
+			minSeen := observedAt.Add(-onlineSnapshotReasonableWindow)
+			maxSeen := observedAt.Add(onlineSnapshotReasonableWindow)
+			if lastSeenAt.Before(minSeen) || lastSeenAt.After(maxSeen) {
+				lastSeenAt = observedAt
+			}
+		}
+		clientIP := ip.String()
+		items = append(items, normalizedItem{
+			userID:     item.UserID,
+			clientIP:   clientIP,
+			lastSeenAt: lastSeenAt,
+		})
+		keep[onlineSnapshotKey(item.UserID, clientIP)] = struct{}{}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, item := range items {
+		ts := item.lastSeenAt.Format(time.RFC3339)
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO online_sessions(user_id, client_ip, node_id, first_seen_at, last_seen_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(user_id, client_ip, node_id) DO UPDATE SET
@@ -41,8 +96,49 @@ ON CONFLICT(user_id, client_ip, node_id) DO UPDATE SET
 		WHEN excluded.last_seen_at > online_sessions.last_seen_at THEN excluded.last_seen_at
 		ELSE online_sessions.last_seen_at
 	END;
-`, userID, clientIP, nodeVal, ts, ts)
-	return err
+`, item.userID, item.clientIP, nodeID, ts, ts); err != nil {
+			return err
+		}
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, user_id, client_ip
+FROM online_sessions
+WHERE node_id = ?;
+`, nodeID)
+	if err != nil {
+		return err
+	}
+	var staleIDs []int64
+	for rows.Next() {
+		var id, userID int64
+		var clientIP string
+		if err := rows.Scan(&id, &userID, &clientIP); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if _, ok := keep[onlineSnapshotKey(userID, clientIP)]; !ok {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	for _, id := range staleIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM online_sessions WHERE id = ?;`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func onlineSnapshotKey(userID int64, clientIP string) string {
+	return fmt.Sprintf("%d\x00%s", userID, clientIP)
 }
 
 func (s *Store) ListOnlineUsers(ctx context.Context, windowSec int) ([]OnlineUser, error) {

@@ -97,7 +97,7 @@
       {{if $d.SubscriptionURL}}
       <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
         <code class="flex-1 text-xs bg-slate-50 rounded-lg px-3 py-2 font-mono break-all text-slate-700">{{$d.SubscriptionURL}}</code>
-        <button onclick="copyToClipboard('{{$d.SubscriptionURL}}')" class="inline-flex flex-shrink-0 items-center justify-center rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
+        <button aria-label="复制订阅 URL" onclick="copyToClipboard('{{$d.SubscriptionURL}}')" class="inline-flex flex-shrink-0 items-center justify-center rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
           <i data-lucide="copy" class="w-4 h-4"></i>
         </button>
       </div>
@@ -113,7 +113,7 @@
       {{if $d.TelegramBindCode}}
       <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
         <code class="text-xs bg-slate-50 rounded-lg px-3 py-2 font-mono text-slate-700">/bind {{$d.TelegramBindCode}}</code>
-        <button onclick="copyToClipboard('/bind {{$d.TelegramBindCode}}')" class="inline-flex flex-shrink-0 items-center justify-center rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
+        <button aria-label="复制 Telegram 绑定命令" onclick="copyToClipboard('/bind {{$d.TelegramBindCode}}')" class="inline-flex flex-shrink-0 items-center justify-center rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
           <i data-lucide="copy" class="w-4 h-4"></i>
         </button>
       </div>

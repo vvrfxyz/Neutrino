@@ -47,6 +47,8 @@ func (a *Agent) bootstrapXrayConfigIfMissing(ctx context.Context) {
 			return "vless-reality"
 		case "XRAY_API_PORT":
 			return "10085"
+		case "XRAY_API_LISTEN":
+			return "127.0.0.1"
 		case "XRAY_REALITY_DEST":
 			return "www.microsoft.com:443"
 		case "XRAY_REALITY_SERVER_NAME":

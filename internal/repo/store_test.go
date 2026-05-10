@@ -679,61 +679,23 @@ func TestListUserOnlineStats(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	for _, in := range []UsageInput{
-		{
-			UserID:        u1.ID,
-			NodeID:        &node1.ID,
-			Direction:     "outbound",
-			Bytes:         1,
-			Source:        "test",
-			SourceEventID: "u1-a",
-			ClientIP:      "10.0.0.1",
-			At:            now,
+	if err := s.ApplyOnlineSnapshot(ctx, node1.ID, OnlineSnapshotInput{
+		ObservedAt: now,
+		Items: []OnlineSnapshotItemInput{
+			{UserID: u1.ID, ClientIP: "10.0.0.1", LastSeenAt: now},
+			{UserID: u1.ID, ClientIP: "10.0.0.2", LastSeenAt: now.Add(2 * time.Second)},
+			{UserID: u2.ID, ClientIP: "10.0.1.1", LastSeenAt: now.Add(3 * time.Second)},
 		},
-		{
-			UserID:        u1.ID,
-			NodeID:        &node2.ID,
-			Direction:     "outbound",
-			Bytes:         1,
-			Source:        "test",
-			SourceEventID: "u1-b",
-			ClientIP:      "10.0.0.1",
-			At:            now.Add(time.Second),
-		},
-		{
-			UserID:        u1.ID,
-			NodeID:        &node1.ID,
-			Direction:     "outbound",
-			Bytes:         1,
-			Source:        "test",
-			SourceEventID: "u1-c",
-			ClientIP:      "10.0.0.2",
-			At:            now.Add(2 * time.Second),
-		},
-		{
-			UserID:        u2.ID,
-			Direction:     "outbound",
-			Bytes:         1,
-			Source:        "test",
-			SourceEventID: "u2-a",
-			ClientIP:      "10.0.1.1",
-			At:            now.Add(3 * time.Second),
-		},
-	} {
-		if _, err := s.RecordUsage(ctx, in); err != nil {
-			t.Fatalf("record usage %s: %v", in.SourceEventID, err)
-		}
-	}
-	if _, err := s.RecordUsage(ctx, UsageInput{
-		UserID:        u2.ID,
-		Direction:     "outbound",
-		Bytes:         1,
-		Source:        "test",
-		SourceEventID: "u2-old",
-		ClientIP:      "10.0.1.2",
-		At:            now.Add(-10 * time.Minute),
 	}); err != nil {
-		t.Fatalf("record old usage: %v", err)
+		t.Fatalf("apply node1 snapshot: %v", err)
+	}
+	if err := s.ApplyOnlineSnapshot(ctx, node2.ID, OnlineSnapshotInput{
+		ObservedAt: now,
+		Items: []OnlineSnapshotItemInput{
+			{UserID: u1.ID, ClientIP: "10.0.0.1", LastSeenAt: now.Add(time.Second)},
+		},
+	}); err != nil {
+		t.Fatalf("apply node2 snapshot: %v", err)
 	}
 
 	stats, err := s.ListUserOnlineStats(ctx, 120)
@@ -768,29 +730,26 @@ func TestEnforceIPLimit(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	_, err = s.RecordUsage(ctx, UsageInput{
-		UserID:        u.ID,
-		Direction:     "outbound",
-		Bytes:         1,
-		Source:        "test",
-		SourceEventID: "test-1",
-		ClientIP:      "10.0.0.1",
-		At:            time.Now().UTC(),
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "ip-limit-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
 	})
 	if err != nil {
-		t.Fatalf("record usage 1: %v", err)
+		t.Fatalf("create node: %v", err)
 	}
-	_, err = s.RecordUsage(ctx, UsageInput{
-		UserID:        u.ID,
-		Direction:     "outbound",
-		Bytes:         1,
-		Source:        "test",
-		SourceEventID: "test-2",
-		ClientIP:      "10.0.0.2",
-		At:            time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatalf("record usage 2: %v", err)
+	now := time.Now().UTC()
+	if err := s.ApplyOnlineSnapshot(ctx, node.ID, OnlineSnapshotInput{
+		ObservedAt: now,
+		Items: []OnlineSnapshotItemInput{
+			{UserID: u.ID, ClientIP: "10.0.0.1", LastSeenAt: now},
+			{UserID: u.ID, ClientIP: "10.0.0.2", LastSeenAt: now},
+		},
+	}); err != nil {
+		t.Fatalf("apply online snapshot: %v", err)
 	}
 
 	affected, err := s.EnforceIPLimit(ctx, 120, 1)
@@ -832,33 +791,23 @@ func TestOnlineSessionTimestampsDoNotRegressForLateEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	nodeID := node.ID
-
 	now := time.Now().UTC().Truncate(time.Second)
-	old := now.Add(-10 * time.Minute)
-	if _, err := s.RecordUsage(ctx, UsageInput{
-		UserID:        u.ID,
-		NodeID:        &nodeID,
-		Direction:     "outbound",
-		Bytes:         1,
-		Source:        "test",
-		SourceEventID: "online-current",
-		ClientIP:      "10.0.0.9",
-		At:            now,
+	old := now.Add(-time.Minute)
+	if err := s.ApplyOnlineSnapshot(ctx, node.ID, OnlineSnapshotInput{
+		ObservedAt: now,
+		Items: []OnlineSnapshotItemInput{
+			{UserID: u.ID, ClientIP: "10.0.0.9", LastSeenAt: now},
+		},
 	}); err != nil {
-		t.Fatalf("record current usage: %v", err)
+		t.Fatalf("apply current snapshot: %v", err)
 	}
-	if _, err := s.RecordUsage(ctx, UsageInput{
-		UserID:        u.ID,
-		NodeID:        &nodeID,
-		Direction:     "outbound",
-		Bytes:         1,
-		Source:        "test",
-		SourceEventID: "online-late-old",
-		ClientIP:      "10.0.0.9",
-		At:            old,
+	if err := s.ApplyOnlineSnapshot(ctx, node.ID, OnlineSnapshotInput{
+		ObservedAt: now,
+		Items: []OnlineSnapshotItemInput{
+			{UserID: u.ID, ClientIP: "10.0.0.9", LastSeenAt: old},
+		},
 	}); err != nil {
-		t.Fatalf("record old usage: %v", err)
+		t.Fatalf("apply old snapshot: %v", err)
 	}
 
 	sessions, err := s.ListUserOnlineSessions(ctx, u.ID, 120)

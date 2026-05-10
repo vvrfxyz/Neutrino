@@ -6,6 +6,13 @@
 - Production Xray should use installed release binaries.
 - This is a greenfield project: prioritize correctness and simplicity over backward compatibility. Breaking changes are allowed unless explicitly required.
 
+## Engineering Principles
+- Greenfield rule: prefer the correct target design over compatibility shims. When an existing local design is wrong or too limiting, change it directly and update the dependent code/tests in the same development slice.
+- Reject over-design: do not introduce broad abstractions, plugin systems, alternate kernels, or generalized protocols before the current feature needs them. Build the smallest end-to-end path that satisfies the intended production behavior, then extend only when a real second use case appears.
+- For cross-cutting upgrades, start from the authoritative source of truth whenever feasible, then work backward through storage, APIs, UI, and tests. Avoid building temporary observation layers if the authoritative data can be obtained simply and safely first.
+- For node-runtime features, prefer node-first implementation: make node-agent obtain the real runtime state first, then adapt panel storage, APIs, UI, and enforcement around that state in the same focused slice.
+- Reject fallback that hides logic errors: do not add fallback paths that make broken authoritative behavior appear healthy. If fallback is explicitly required for availability, it must expose degraded state clearly in logs, metrics, UI, or tests.
+
 ## Runtime Decisions
 - Primary protocol: `VLESS + REALITY + xtls-rprx-vision`.
 - Admin backend: Go SSR templates + HTMX/Alpine.js.
@@ -45,8 +52,8 @@
   - active proxy links are deactivated,
   - `quota_windows.over_limit_at` and enforcement log are written.
 - Quota threshold alerting is queued in `RecordUsage -> queueQuotaAlertsTx` (80%/90%); sending is handled by the app worker.
-- IP over-limit auto-disable is implemented by `RecordUsage -> touchOnlineSessionTx` + `EnforceIPLimit`:
-  - online sessions are tracked in `online_sessions` (distinct `client_ip`),
+- IP over-limit auto-disable is implemented by node report `online_snapshot` + `ApplyOnlineSnapshot` + `EnforceIPLimit`:
+  - authoritative online sessions are tracked in `online_sessions` (distinct `client_ip`),
   - streak-based enforcement flips `active` users to `over_ip_limit`, deactivates links, and writes enforcement log + alert.
 - Expiry/quota sweeps are called on request paths (before `ListUsers`, `CreateProxyLink`, `SetUserStatus`, `RecordUsage`) and periodically by the app worker loop.
 - Xray stats delta + access log parsing are done by node-agent (panel never polls node stats/logs).

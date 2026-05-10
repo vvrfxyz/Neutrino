@@ -181,13 +181,26 @@ func (c *PanelClient) Heartbeat(ctx context.Context) error {
 }
 
 type NodeReportPayload struct {
-	ReportedAt  string             `json:"reported_at,omitempty"`
-	Port        *int               `json:"port,omitempty"`
-	SNI         string             `json:"sni,omitempty"`
-	PublicKey   string             `json:"public_key,omitempty"`
-	ShortID     string             `json:"short_id,omitempty"`
-	Metrics     *NodeReportMetrics `json:"metrics,omitempty"`
-	StaticFacts *NodeStaticFacts   `json:"static_facts,omitempty"`
+	ReportedAt     string             `json:"reported_at,omitempty"`
+	Port           *int               `json:"port,omitempty"`
+	SNI            string             `json:"sni,omitempty"`
+	PublicKey      string             `json:"public_key,omitempty"`
+	ShortID        string             `json:"short_id,omitempty"`
+	Metrics        *NodeReportMetrics `json:"metrics,omitempty"`
+	StaticFacts    *NodeStaticFacts   `json:"static_facts,omitempty"`
+	OnlineSnapshot *OnlineSnapshot    `json:"online_snapshot,omitempty"`
+}
+
+type OnlineSnapshot struct {
+	ObservedAt string               `json:"observed_at"`
+	Items      []OnlineSnapshotItem `json:"items"`
+}
+
+type OnlineSnapshotItem struct {
+	UserID     int64  `json:"user_id"`
+	Email      string `json:"email,omitempty"`
+	ClientIP   string `json:"client_ip"`
+	LastSeenAt string `json:"last_seen_at"`
 }
 
 type NodeReportMetrics struct {

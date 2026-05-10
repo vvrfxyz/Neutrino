@@ -22,8 +22,9 @@ services:
     env_file:
       - .env
     environment:
-      AGENT_HTTP_ADDR: ":9090"
+      AGENT_HTTP_ADDR: "${AGENT_HTTP_ADDR:-127.0.0.1:9090}"
       XRAY_API_ADDR: "${XRAY_API_ADDR:-xray:10085}"
+      XRAY_API_LISTEN: "${XRAY_API_LISTEN:-0.0.0.0}"
       XRAY_INBOUND_TAG: "${XRAY_INBOUND_TAG:-vless-reality}"
       XRAY_FLOW: "${XRAY_FLOW:-xtls-rprx-vision}"
       XRAY_ACCESS_LOG_PATH: "${XRAY_ACCESS_LOG_PATH:-/var/log/xray/access.log}"

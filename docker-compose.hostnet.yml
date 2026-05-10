@@ -1,16 +1,16 @@
 services:
   # Optional production override:
   # - panel uses host network to see real host CPU/mem/net counters
+  # - xray uses host network to preserve real client source IPs
   # - agent uses host network to reach panel and xray via 127.0.0.1
   xray:
-    ports:
-      - "24443:24443"
-      - "127.0.0.1:10085:10085"
+    network_mode: host
+    ports: !reset []
 
   agent:
     network_mode: host
-    ports: []
+    ports: !reset []
 
   neutrino:
     network_mode: host
-    ports: []
+    ports: !reset []

@@ -74,7 +74,7 @@ type Config struct {
 
 func ConfigFromEnv() Config {
 	cfg := Config{
-		AgentHTTPAddr:     getEnv("AGENT_HTTP_ADDR", ":9090"),
+		AgentHTTPAddr:     getEnv("AGENT_HTTP_ADDR", "127.0.0.1:9090"),
 		HostProcPath:      getEnv("HOST_PROC_PATH", ""),
 		AccessLogTZ:       getEnv("AGENT_ACCESS_LOG_TZ", ""),
 		MonthTZ:           getEnv("AGENT_MONTH_TZ", ""),

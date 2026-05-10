@@ -1,5 +1,7 @@
 .git
 .gitignore
+.env
+.env.*
 Xray-core
 neutrino.db
 neutrino.db-shm

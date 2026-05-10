@@ -162,6 +162,138 @@ func TestHandleAPINodeAgentUsersRefreshesExpiredUsers(t *testing.T) {
 	}
 }
 
+func TestHandleAPINodeReportAcceptsOnlineSnapshot(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "app-test.db")
+	conn, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := repo.New(conn, config.Config{})
+	node, err := store.CreateNode(ctx, repo.CreateNodeInput{
+		Name:     "report-online-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	user, err := store.CreateUser(ctx, repo.CreateUserInput{
+		Username:       "report-online-user",
+		MonthlyLimitGB: 10,
+		CountingMode:   "double",
+		PlanDays:       30,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	observedAt := time.Now().UTC().Truncate(time.Second)
+	body, err := json.Marshal(map[string]any{
+		"reported_at": observedAt.Format(time.RFC3339),
+		"online_snapshot": map[string]any{
+			"observed_at": observedAt.Format(time.RFC3339),
+			"items": []map[string]any{
+				{
+					"user_id":      user.ID,
+					"client_ip":    "192.0.2.55",
+					"last_seen_at": observedAt.Format(time.RFC3339),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/report", node.ID), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{{
+			Subject: pkix.Name{CommonName: fmt.Sprintf("node-%d", node.ID)},
+		}},
+	}
+	rr := httptest.NewRecorder()
+
+	a := &App{cfg: config.Config{OnlineDisplayWindowSec: 120}, store: store}
+	a.handleAPINodeReport(rr, req, node.ID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	items, err := store.ListOnlineUsers(ctx, 120)
+	if err != nil {
+		t.Fatalf("list online users: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one online item, got %+v", items)
+	}
+	if items[0].UserID != user.ID || items[0].ClientIP != "192.0.2.55" || items[0].NodeID == nil || *items[0].NodeID != node.ID {
+		t.Fatalf("unexpected online item: %+v", items[0])
+	}
+}
+
+func TestHandleAPINodeReportReturnsErrorForInvalidOnlineSnapshot(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "app-test.db")
+	conn, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := repo.New(conn, config.Config{})
+	node, err := store.CreateNode(ctx, repo.CreateNodeInput{
+		Name:     "report-online-invalid-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	observedAt := time.Now().UTC().Truncate(time.Second)
+	body, err := json.Marshal(map[string]any{
+		"online_snapshot": map[string]any{
+			"observed_at": observedAt.Format(time.RFC3339),
+			"items": []map[string]any{
+				{"user_id": 1, "client_ip": "invalid-ip", "last_seen_at": observedAt.Format(time.RFC3339)},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/report", node.ID), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{{
+			Subject: pkix.Name{CommonName: fmt.Sprintf("node-%d", node.ID)},
+		}},
+	}
+	rr := httptest.NewRecorder()
+
+	a := &App{store: store}
+	a.handleAPINodeReport(rr, req, node.ID)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for invalid snapshot, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleAPINodeJobFinishRejectsWrongAttemptWithoutApplyingVersion(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "app-test.db")
 	conn, err := db.Open(dbPath)

@@ -183,11 +183,48 @@ func renderNodeURI(node repo.Node, user repo.User, activeLink *repo.ProxyLink) s
 
 func renderClashYAML(uris []string) string {
 	lines := []string{
-		"port: 7890",
-		"socks-port: 7891",
+		"# Generated for Mihomo / Clash.Meta. Legacy Clash does not support VLESS REALITY.",
+		"mixed-port: 7890",
 		"allow-lan: true",
 		"mode: rule",
 		"log-level: info",
+		"ipv6: true",
+		"unified-delay: true",
+		"tcp-concurrent: true",
+		"global-client-fingerprint: chrome",
+		"profile:",
+		"  store-selected: true",
+		"  store-fake-ip: true",
+		"dns:",
+		"  enable: true",
+		"  listen: 0.0.0.0:1053",
+		"  ipv6: true",
+		"  enhanced-mode: fake-ip",
+		"  fake-ip-range: 198.18.0.1/16",
+		"  default-nameserver:",
+		"    - 223.5.5.5",
+		"    - 119.29.29.29",
+		"    - 1.1.1.1",
+		"  nameserver:",
+		"    - https://dns.alidns.com/dns-query",
+		"    - https://doh.pub/dns-query",
+		"  fallback:",
+		"    - https://dns.google/dns-query",
+		"    - https://cloudflare-dns.com/dns-query",
+		"  fallback-filter:",
+		"    geoip: true",
+		"    geoip-code: CN",
+		"    ipcidr:",
+		"      - 240.0.0.0/4",
+		"  fake-ip-filter:",
+		"    - '*.lan'",
+		"    - '*.local'",
+		"    - '*.localhost'",
+		"    - time.*.com",
+		"    - ntp.*.com",
+		"    - '*.msftconnecttest.com'",
+		"    - '*.msftncsi.com'",
+		"    - localhost.ptlogin2.qq.com",
 		"proxies:",
 	}
 	proxyNames := make([]string, 0, len(uris))
@@ -201,65 +238,172 @@ func renderClashYAML(uris []string) string {
 		switch p.Scheme {
 		case "vless":
 			lines = append(lines,
-				"  - name: "+strconv.Quote(name),
+				"  - name: "+quoteClashYAML(name),
 				"    type: vless",
-				"    server: "+p.Host,
+				"    server: "+quoteClashYAML(p.Host),
 				"    port: "+strconv.Itoa(p.Port),
-				"    uuid: "+p.User,
-				"    network: "+firstNonEmpty(p.Query.Get("type"), "tcp"),
+				"    uuid: "+quoteClashYAML(p.User),
+				"    encryption: none",
+				"    network: "+quoteClashYAML(firstNonEmpty(p.Query.Get("type"), "tcp")),
 				"    tls: true",
-				"    servername: "+p.Query.Get("sni"),
-				"    flow: "+p.Query.Get("flow"),
-				"    client-fingerprint: "+p.Query.Get("fp"),
+				"    udp: true",
+				"    servername: "+quoteClashYAML(p.Query.Get("sni")),
+				"    flow: "+quoteClashYAML(p.Query.Get("flow")),
+				"    client-fingerprint: "+quoteClashYAML(p.Query.Get("fp")),
 			)
 			if p.Query.Get("security") == "reality" {
 				lines = append(lines,
 					"    reality-opts:",
-					"      public-key: "+p.Query.Get("pbk"),
-					"      short-id: "+p.Query.Get("sid"),
+					"      public-key: "+quoteClashYAML(p.Query.Get("pbk")),
+					"      short-id: "+quoteClashYAML(p.Query.Get("sid")),
 				)
 			}
 		case "hysteria2":
 			lines = append(lines,
-				"  - name: "+strconv.Quote(name),
+				"  - name: "+quoteClashYAML(name),
 				"    type: hysteria2",
-				"    server: "+p.Host,
+				"    server: "+quoteClashYAML(p.Host),
 				"    port: "+strconv.Itoa(p.Port),
-				"    password: "+p.User,
-				"    sni: "+p.Query.Get("sni"),
+				"    password: "+quoteClashYAML(p.User),
+				"    sni: "+quoteClashYAML(p.Query.Get("sni")),
 			)
 		case "tuic":
 			lines = append(lines,
-				"  - name: "+strconv.Quote(name),
+				"  - name: "+quoteClashYAML(name),
 				"    type: tuic",
-				"    server: "+p.Host,
+				"    server: "+quoteClashYAML(p.Host),
 				"    port: "+strconv.Itoa(p.Port),
-				"    uuid: "+p.User,
-				"    password: "+firstNonEmpty(p.Password, p.User),
-				"    sni: "+p.Query.Get("sni"),
+				"    uuid: "+quoteClashYAML(p.User),
+				"    password: "+quoteClashYAML(firstNonEmpty(p.Password, p.User)),
+				"    sni: "+quoteClashYAML(p.Query.Get("sni")),
 			)
 		default:
 			lines = append(lines,
-				"  - name: "+strconv.Quote(name),
+				"  - name: "+quoteClashYAML(name),
 				"    type: vless",
-				"    server: "+uri,
+				"    server: "+quoteClashYAML(uri),
 			)
 		}
 	}
+	lines = appendClashProxyGroups(lines, proxyNames)
+	lines = appendClashRuleProviders(lines)
+	lines = append(lines, "rules:")
+	for _, rule := range clashDefaultRules {
+		lines = append(lines, "  - "+rule)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func appendClashProxyGroups(lines []string, proxyNames []string) []string {
+	lines = append(lines, "proxy-groups:")
+	lines = appendClashProxyGroup(lines, "PROXY", "select", append([]string{"AUTO", "DIRECT"}, proxyNames...), "", 0, 0)
+	lines = appendClashProxyGroup(lines, "AUTO", "url-test", proxyNames, "https://www.gstatic.com/generate_204", 300, 50)
+	selectProxyOptions := append([]string{"PROXY", "AUTO"}, proxyNames...)
+	selectProxyOptions = append(selectProxyOptions, "DIRECT")
+	for _, name := range []string{"AI", "Streaming", "Telegram", "Google"} {
+		lines = appendClashProxyGroup(lines, name, "select", selectProxyOptions, "", 0, 0)
+	}
+	directFirstOptions := append([]string{"DIRECT", "PROXY", "AUTO"}, proxyNames...)
+	lines = appendClashProxyGroup(lines, "Apple", "select", directFirstOptions, "", 0, 0)
+	lines = appendClashProxyGroup(lines, "Microsoft", "select", directFirstOptions, "", 0, 0)
+	finalOptions := append([]string{"PROXY", "DIRECT", "AUTO"}, proxyNames...)
+	lines = appendClashProxyGroup(lines, "Final", "select", finalOptions, "", 0, 0)
+	lines = appendClashProxyGroup(lines, "GLOBAL", "select", []string{
+		"PROXY", "AUTO", "AI", "Streaming", "Telegram", "Google", "Apple", "Microsoft", "Final", "DIRECT",
+	}, "", 0, 0)
+	return lines
+}
+
+func appendClashProxyGroup(lines []string, name, groupType string, proxies []string, testURL string, interval int, tolerance int) []string {
 	lines = append(lines,
-		"proxy-groups:",
-		"  - name: \"AUTO\"",
-		"    type: select",
+		"  - name: "+quoteClashYAML(name),
+		"    type: "+groupType,
 		"    proxies:",
 	)
-	for _, name := range proxyNames {
-		lines = append(lines, "      - "+strconv.Quote(name))
+	for _, proxy := range proxies {
+		lines = append(lines, "      - "+quoteClashYAML(proxy))
 	}
-	lines = append(lines,
-		"rules:",
-		"  - MATCH,AUTO",
-	)
-	return strings.Join(lines, "\n")
+	if testURL != "" {
+		lines = append(lines,
+			"    url: "+quoteClashYAML(testURL),
+			"    interval: "+strconv.Itoa(interval),
+			"    tolerance: "+strconv.Itoa(tolerance),
+		)
+	}
+	return lines
+}
+
+type clashRuleProvider struct {
+	Name     string
+	Behavior string
+	Path     string
+	URL      string
+}
+
+var clashDefaultRuleProviders = []clashRuleProvider{
+	{Name: "reject", Behavior: "domain", Path: "./ruleset/reject.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ads-all.yaml"},
+	{Name: "private", Behavior: "domain", Path: "./ruleset/private.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.yaml"},
+	{Name: "openai", Behavior: "domain", Path: "./ruleset/openai.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/openai.yaml"},
+	{Name: "telegram", Behavior: "domain", Path: "./ruleset/telegram.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/telegram.yaml"},
+	{Name: "youtube", Behavior: "domain", Path: "./ruleset/youtube.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/youtube.yaml"},
+	{Name: "netflix", Behavior: "domain", Path: "./ruleset/netflix.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/netflix.yaml"},
+	{Name: "tiktok", Behavior: "domain", Path: "./ruleset/tiktok.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/tiktok.yaml"},
+	{Name: "spotify", Behavior: "domain", Path: "./ruleset/spotify.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/spotify.yaml"},
+	{Name: "google", Behavior: "domain", Path: "./ruleset/google.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.yaml"},
+	{Name: "apple", Behavior: "domain", Path: "./ruleset/apple.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple.yaml"},
+	{Name: "microsoft", Behavior: "domain", Path: "./ruleset/microsoft.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/microsoft.yaml"},
+	{Name: "geolocation-!cn", Behavior: "domain", Path: "./ruleset/geolocation-!cn.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/geolocation-!cn.yaml"},
+	{Name: "cn", Behavior: "domain", Path: "./ruleset/cn.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.yaml"},
+	{Name: "geoip-cn", Behavior: "ipcidr", Path: "./ruleset/geoip-cn.yaml", URL: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.yaml"},
+}
+
+func appendClashRuleProviders(lines []string) []string {
+	lines = append(lines, "rule-providers:")
+	for _, provider := range clashDefaultRuleProviders {
+		lines = append(lines,
+			"  "+provider.Name+":",
+			"    type: http",
+			"    behavior: "+provider.Behavior,
+			"    format: yaml",
+			"    path: "+quoteClashYAML(provider.Path),
+			"    url: "+quoteClashYAML(provider.URL),
+			"    interval: 86400",
+		)
+	}
+	return lines
+}
+
+var clashDefaultRules = []string{
+	"RULE-SET,reject,REJECT",
+	"DOMAIN-SUFFIX,local,DIRECT",
+	"DOMAIN-SUFFIX,lan,DIRECT",
+	"DOMAIN-SUFFIX,localhost,DIRECT",
+	"IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+	"IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+	"IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+	"IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+	"IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
+	"IP-CIDR6,::1/128,DIRECT,no-resolve",
+	"IP-CIDR6,fc00::/7,DIRECT,no-resolve",
+	"IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+	"RULE-SET,private,DIRECT",
+	"RULE-SET,openai,AI",
+	"RULE-SET,telegram,Telegram",
+	"RULE-SET,youtube,Streaming",
+	"RULE-SET,netflix,Streaming",
+	"RULE-SET,tiktok,Streaming",
+	"RULE-SET,spotify,Streaming",
+	"RULE-SET,google,Google",
+	"RULE-SET,apple,Apple",
+	"RULE-SET,microsoft,Microsoft",
+	"RULE-SET,geolocation-!cn,PROXY",
+	"RULE-SET,cn,DIRECT",
+	"RULE-SET,geoip-cn,DIRECT,no-resolve",
+	"MATCH,Final",
+}
+
+func quoteClashYAML(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "''") + "'"
 }
 
 func renderSingBoxJSON(uris []string) (string, error) {
