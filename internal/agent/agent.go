@@ -706,10 +706,11 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 	if old, err := os.ReadFile(a.xrayConfigPath); err == nil {
 		if configEqualCanonical(old, renderedBytes) {
 			return map[string]any{
-				"ok":          true,
-				"skipped":     true,
-				"reason":      "config unchanged",
-				"config_path": a.xrayConfigPath,
+				"ok":               true,
+				"skipped":          true,
+				"reason":           "config unchanged",
+				"config_path":      a.xrayConfigPath,
+				"runtime_reloaded": false,
 			}, nil
 		}
 	}
@@ -740,14 +741,28 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 
 	if err := runArgs(ctx, expandArgs(a.xrayReloadArgs, a.xrayConfigPath, a.xrayConfigPath), a.xrayConfigPath, a.xrayConfigPath); err != nil {
 		rolledBack := false
+		rollbackRestored := false
 		rollbackErr := ""
+		result := map[string]any{
+			"ok":                       false,
+			"runtime_reload_attempted": true,
+			"runtime_state_unknown":    true,
+		}
 		if req.RollbackOnFail && backupPath != "" {
 			if rbErr := restoreBackupFile(a.xrayConfigPath, backupPath); rbErr != nil {
 				rollbackErr = rbErr.Error()
+				result["rollback_error"] = rollbackErr
 			} else if rbReloadErr := runArgs(ctx, expandArgs(a.xrayReloadArgs, a.xrayConfigPath, a.xrayConfigPath), a.xrayConfigPath, a.xrayConfigPath); rbReloadErr != nil {
+				rollbackRestored = true
 				rollbackErr = rbReloadErr.Error()
+				result["rollback_restore_applied"] = true
+				result["rollback_reload_error"] = rollbackErr
 			} else {
+				rollbackRestored = true
 				rolledBack = true
+				delete(result, "runtime_state_unknown")
+				result["runtime_reloaded"] = true
+				result["rollback_applied"] = true
 			}
 		}
 		msg := "xray reload failed: " + err.Error()
@@ -756,10 +771,13 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 		} else if rollbackErr != "" {
 			msg = msg + " (rollback failed: " + rollbackErr + ")"
 		}
-		return nil, JobError{Retryable: true, Msg: msg}
+		if rollbackRestored {
+			result["rollback_restore_applied"] = true
+		}
+		return nil, JobError{Retryable: true, Msg: msg, ResultJSON: result}
 	}
 
-	out := map[string]any{"ok": true, "config_path": a.xrayConfigPath}
+	out := map[string]any{"ok": true, "config_path": a.xrayConfigPath, "runtime_reloaded": true}
 	if strings.TrimSpace(backupPath) != "" {
 		out["backup_name"] = filepath.Base(backupPath)
 	}
@@ -784,9 +802,25 @@ func (a *Agent) execXrayRollback(ctx context.Context, req XrayRollbackRequest) (
 		return nil, JobError{Retryable: true, Msg: "restore failed: " + err.Error()}
 	}
 	if err := runArgs(ctx, expandArgs(a.xrayReloadArgs, a.xrayConfigPath, a.xrayConfigPath), a.xrayConfigPath, a.xrayConfigPath); err != nil {
-		return nil, JobError{Retryable: true, Msg: "reload failed: " + err.Error()}
+		return nil, JobError{
+			Retryable: true,
+			Msg:       "reload failed: " + err.Error(),
+			ResultJSON: map[string]any{
+				"ok":                       false,
+				"backup_name":              filepath.Base(backupPath),
+				"rollback_restore_applied": true,
+				"runtime_reload_attempted": true,
+				"runtime_state_unknown":    true,
+			},
+		}
 	}
-	return map[string]any{"ok": true, "config_path": a.xrayConfigPath, "backup_name": filepath.Base(backupPath)}, nil
+	return map[string]any{
+		"ok":               true,
+		"config_path":      a.xrayConfigPath,
+		"backup_name":      filepath.Base(backupPath),
+		"runtime_reloaded": true,
+		"rollback_applied": true,
+	}, nil
 }
 
 func parseArgsJSON(raw string) ([]string, error) {

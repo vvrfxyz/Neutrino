@@ -315,6 +315,18 @@ func (s *NodeService) EnqueueUsersSyncForEnabledNodes(ctx context.Context) error
 }
 
 func (s *NodeService) EnqueueUsersSyncForNode(ctx context.Context, nodeID int64) error {
+	return s.enqueueUsersSyncForNode(ctx, nodeID, false, "users_sync")
+}
+
+func (s *NodeService) EnqueueFullUsersSyncForNode(ctx context.Context, nodeID int64, reason string) error {
+	return s.enqueueUsersSyncForNode(ctx, nodeID, true, reason)
+}
+
+func (s *NodeService) enqueueUsersSyncForNode(ctx context.Context, nodeID int64, force bool, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "users_sync"
+	}
 	node, err := s.Get(ctx, nodeID)
 	if err != nil {
 		return err
@@ -330,14 +342,14 @@ func (s *NodeService) EnqueueUsersSyncForNode(ctx context.Context, nodeID int64)
 	if err := s.store.SetNodeDesiredUsersVersion(ctx, nodeID, desiredVersion); err != nil {
 		return err
 	}
-	if node.Enabled && strings.TrimSpace(node.AppliedUsersVersion) == strings.TrimSpace(desiredVersion) {
+	if !force && node.Enabled && strings.TrimSpace(node.AppliedUsersVersion) == strings.TrimSpace(desiredVersion) {
 		return nil
 	}
-	jobID, enqueued, err := s.store.EnqueueNodeJob(ctx, nodeID, "users_sync", desiredVersion, "{}", 20, "users_sync")
+	jobID, enqueued, err := s.store.EnqueueNodeJob(ctx, nodeID, "users_sync", desiredVersion, "{}", 20, reason)
 	if err != nil {
 		return err
 	}
-	log.Printf("users_sync reconcile node=%d desired=%s job_id=%d enqueued=%t", nodeID, desiredVersion, jobID, enqueued)
+	log.Printf("users_sync reconcile node=%d desired=%s job_id=%d enqueued=%t force=%t reason=%s", nodeID, desiredVersion, jobID, enqueued, force, reason)
 	return nil
 }
 

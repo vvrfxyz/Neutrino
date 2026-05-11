@@ -21,6 +21,50 @@ import (
 	"neutrino/internal/service"
 )
 
+func newManagedNodeFinishTest(t *testing.T, name string) (*App, *repo.Store, repo.Node) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "app-test.db")
+	conn, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := db.Migrate(conn); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	store := repo.New(conn, config.Config{})
+	node, err := store.CreateNode(context.Background(), repo.CreateNodeInput{
+		Name:     name,
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+		Managed:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	return &App{store: store, cfg: config.Config{NodeJobMaxAttempts: 5}}, store, node
+}
+
+func finishNodeJobMTLS(t *testing.T, a *App, nodeID, jobID int64, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/jobs/%d/finish", nodeID, jobID), bytes.NewReader(raw))
+	req.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{{
+			Subject: pkix.Name{CommonName: fmt.Sprintf("node-%d", nodeID)},
+		}},
+	}
+	rr := httptest.NewRecorder()
+	a.handleAPINodeJobFinish(rr, req, nodeID, jobID)
+	return rr
+}
+
 func TestHandleAPINodeAgentUsersReturns500WhenNodeLookupFails(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "app-test.db")
 	conn, err := db.Open(dbPath)
@@ -357,6 +401,112 @@ func TestHandleAPINodeJobFinishRejectsWrongAttemptWithoutApplyingVersion(t *test
 	}
 	if after.AppliedXrayVersion != "" {
 		t.Fatalf("wrong attempt should not update applied xray version, got %q", after.AppliedXrayVersion)
+	}
+}
+
+func TestHandleAPINodeJobFinishXrayApplyForcesUsersSyncWhenVersionsMatch(t *testing.T) {
+	a, store, node := newManagedNodeFinishTest(t, "finish-apply-force-users")
+	emptyVersion := service.UsersDesiredVersion([]repo.User{})
+	if err := store.SetNodeDesiredUsersVersion(context.Background(), node.ID, emptyVersion); err != nil {
+		t.Fatalf("set desired users version: %v", err)
+	}
+	if err := store.SetNodeAppliedUsersVersion(context.Background(), node.ID, emptyVersion); err != nil {
+		t.Fatalf("set applied users version: %v", err)
+	}
+	jobID, _, err := store.EnqueueNodeJob(context.Background(), node.ID, "xray_apply", "ver-1", `{}`, 120, "test")
+	if err != nil {
+		t.Fatalf("enqueue xray_apply: %v", err)
+	}
+	claimed, ok, err := store.ClaimNextNodeJobForNode(context.Background(), node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim xray_apply ok=%v err=%v", ok, err)
+	}
+
+	rr := finishNodeJobMTLS(t, a, node.ID, jobID, map[string]any{
+		"status":          "succeeded",
+		"retryable":       false,
+		"applied_version": "ver-1",
+		"attempt":         claimed.Attempts,
+		"result_json":     map[string]any{"ok": true, "runtime_reloaded": true},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("finish got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	jobs, err := store.ListNodeJobs(context.Background(), node.ID, 10)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 2 || jobs[0].Kind != "users_sync" || jobs[0].Status != "pending" {
+		t.Fatalf("expected forced users_sync despite matching versions, got %+v", jobs)
+	}
+}
+
+func TestHandleAPINodeJobFinishRuntimeReloadedFailureClaimsUsersRepairFirst(t *testing.T) {
+	a, store, node := newManagedNodeFinishTest(t, "finish-apply-repair-first")
+	jobID, _, err := store.EnqueueNodeJob(context.Background(), node.ID, "xray_apply", "ver-1", `{}`, 120, "test")
+	if err != nil {
+		t.Fatalf("enqueue xray_apply: %v", err)
+	}
+	claimed, ok, err := store.ClaimNextNodeJobForNode(context.Background(), node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim xray_apply ok=%v err=%v", ok, err)
+	}
+
+	rr := finishNodeJobMTLS(t, a, node.ID, jobID, map[string]any{
+		"status":    "failed",
+		"retryable": true,
+		"attempt":   claimed.Attempts,
+		"error":     "xray reload failed: rolled back",
+		"result_json": map[string]any{
+			"runtime_reloaded": true,
+			"rollback_applied": true,
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("finish got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	next, ok, err := store.ClaimNextNodeJobForNode(context.Background(), node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim next ok=%v err=%v", ok, err)
+	}
+	if next.Kind != "users_sync" {
+		t.Fatalf("expected users_sync repair before requeued xray_apply, got %+v", next)
+	}
+}
+
+func TestHandleAPINodeJobFinishRollbackRuntimeUnknownClaimsUsersRepairFirst(t *testing.T) {
+	a, store, node := newManagedNodeFinishTest(t, "finish-rollback-repair-first")
+	jobID, _, err := store.EnqueueNodeJob(context.Background(), node.ID, "xray_rollback", "rollback-v1", `{}`, 60, "test")
+	if err != nil {
+		t.Fatalf("enqueue xray_rollback: %v", err)
+	}
+	claimed, ok, err := store.ClaimNextNodeJobForNode(context.Background(), node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim xray_rollback ok=%v err=%v", ok, err)
+	}
+
+	rr := finishNodeJobMTLS(t, a, node.ID, jobID, map[string]any{
+		"status":    "failed",
+		"retryable": true,
+		"attempt":   claimed.Attempts,
+		"error":     "reload failed",
+		"result_json": map[string]any{
+			"runtime_state_unknown":    true,
+			"rollback_restore_applied": true,
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("finish got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	next, ok, err := store.ClaimNextNodeJobForNode(context.Background(), node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim next ok=%v err=%v", ok, err)
+	}
+	if next.Kind != "users_sync" {
+		t.Fatalf("expected users_sync repair before requeued xray_rollback, got %+v", next)
 	}
 }
 

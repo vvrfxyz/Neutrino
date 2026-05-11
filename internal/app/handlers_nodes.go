@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -192,6 +193,62 @@ func summarizeNodeJobFailure(errMsg string, result any) string {
 	return strings.Join(parts, " | ")
 }
 
+func resultBool(result any, key string) (bool, bool) {
+	m, ok := result.(map[string]any)
+	if !ok || m == nil {
+		return false, false
+	}
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+	b, ok := v.(bool)
+	return b, ok
+}
+
+func managedXraySuccessNeedsUsersRepair(kind string, result any) bool {
+	switch strings.TrimSpace(kind) {
+	case "xray_apply":
+		if skipped, ok := resultBool(result, "skipped"); ok && skipped {
+			return false
+		}
+		if reloaded, ok := resultBool(result, "runtime_reloaded"); ok && !reloaded {
+			return false
+		}
+		return true
+	case "xray_rollback":
+		return true
+	default:
+		return false
+	}
+}
+
+func managedXrayFailureUsersRepairReason(kind string, result any) (string, bool) {
+	switch strings.TrimSpace(kind) {
+	case "xray_apply":
+		if rollbackApplied, ok := resultBool(result, "rollback_applied"); ok && rollbackApplied {
+			return "xray_apply_rollback_followup", true
+		}
+		if runtimeUnknown, ok := resultBool(result, "runtime_state_unknown"); ok && runtimeUnknown {
+			return "xray_runtime_unknown_followup", true
+		}
+		if runtimeReloaded, ok := resultBool(result, "runtime_reloaded"); ok && runtimeReloaded {
+			return "xray_runtime_unknown_followup", true
+		}
+	case "xray_rollback":
+		if runtimeUnknown, ok := resultBool(result, "runtime_state_unknown"); ok && runtimeUnknown {
+			return "xray_runtime_unknown_followup", true
+		}
+		if runtimeReloaded, ok := resultBool(result, "runtime_reloaded"); ok && runtimeReloaded {
+			return "xray_runtime_unknown_followup", true
+		}
+		if restored, ok := resultBool(result, "rollback_restore_applied"); ok && restored {
+			return "xray_runtime_unknown_followup", true
+		}
+	}
+	return "", false
+}
+
 func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nodeID int64, jobID int64) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -300,9 +357,25 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 				_ = a.store.SetNodeAppliedUsersVersion(r.Context(), nodeID, req.AppliedVersion)
 			case "xray_apply":
 				_ = a.store.SetNodeAppliedXrayVersion(r.Context(), nodeID, req.AppliedVersion)
-				a.requestUsersSyncForNodeNow(r.Context(), nodeID)
+				if managedXraySuccessNeedsUsersRepair(job.Kind, req.ResultJSON) {
+					if err := a.nodes().EnqueueFullUsersSyncForNode(r.Context(), nodeID, "xray_apply_followup"); err != nil {
+						log.Printf("enqueue users_sync xray_apply follow-up node=%d: %v", nodeID, err)
+					}
+				}
 			case "xray_rollback":
 				_ = a.store.MarkNodeXrayRolledBack(r.Context(), nodeID, req.AppliedVersion)
+				if managedXraySuccessNeedsUsersRepair(job.Kind, req.ResultJSON) {
+					if err := a.nodes().EnqueueFullUsersSyncForNode(r.Context(), nodeID, "xray_rollback_followup"); err != nil {
+						log.Printf("enqueue users_sync xray_rollback follow-up node=%d: %v", nodeID, err)
+					}
+				}
+			}
+		}
+		if status != "succeeded" {
+			if reason, ok := managedXrayFailureUsersRepairReason(job.Kind, req.ResultJSON); ok {
+				if err := a.nodes().EnqueueFullUsersSyncForNode(r.Context(), nodeID, reason); err != nil {
+					log.Printf("enqueue users_sync managed xray repair node=%d kind=%s reason=%s: %v", nodeID, job.Kind, reason, err)
+				}
 			}
 		}
 		if status == "succeeded" {

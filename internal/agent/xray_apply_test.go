@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -129,5 +130,54 @@ func TestExecXrayApplyAppliesWhenExistingConfigCorrupt(t *testing.T) {
 	}
 	if c := count(); c != 1 {
 		t.Fatalf("counter should be 1; got %d", c)
+	}
+}
+
+func TestExecXrayApplyReportsRollbackReloadForRepair(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	countPath := filepath.Join(dir, "reload.count")
+	scriptPath := filepath.Join(dir, "reload.sh")
+	script := `#!/bin/sh
+countfile=` + strconv.Quote(countPath) + `
+n=0
+if [ -f "$countfile" ]; then n=$(cat "$countfile"); fi
+n=$((n + 1))
+echo "$n" > "$countfile"
+if [ "$n" -eq 1 ]; then exit 1; fi
+exit 0
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write reload script: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"old":true}`), 0600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	a := &Agent{xrayConfigPath: configPath, xrayReloadArgs: []string{"sh", scriptPath}}
+	_, err := a.execXrayApply(context.Background(), XrayApplyRequest{
+		Template:       `{"old":false}`,
+		RollbackOnFail: true,
+	})
+	if err == nil {
+		t.Fatalf("expected apply failure")
+	}
+	je, ok := err.(JobError)
+	if !ok {
+		t.Fatalf("expected JobError, got %T: %v", err, err)
+	}
+	result, ok := je.ResultJSON.(map[string]any)
+	if !ok {
+		t.Fatalf("expected result json map, got %#v", je.ResultJSON)
+	}
+	if result["rollback_applied"] != true || result["runtime_reloaded"] != true {
+		t.Fatalf("expected rollback_applied/runtime_reloaded markers, got %#v", result)
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != `{"old":true}` {
+		t.Fatalf("expected config restored after rollback, got %s", string(got))
 	}
 }

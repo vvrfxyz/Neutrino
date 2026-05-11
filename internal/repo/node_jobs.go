@@ -234,9 +234,13 @@ func (s *Store) ClaimNextNodeJobForNodeKinds(ctx context.Context, nodeID int64, 
 		query += " AND kind IN (" + strings.Join(placeholders, ", ") + ")"
 	}
 	query += `
-	ORDER BY CASE WHEN kind IN ('users_sync','xray_apply','xray_rollback') THEN 0 ELSE 1 END, created_at ASC, id ASC
+	ORDER BY CASE
+		WHEN kind = 'users_sync' THEN 0
+		WHEN kind IN ('xray_apply','xray_rollback') THEN 1
+		ELSE 2
+	END, created_at ASC, id ASC
 	LIMIT 1;
-`
+	`
 	err = tx.QueryRowContext(ctx, query, queryArgs...).Scan(&j.ID, &j.NodeID, &j.Kind, &desiredVersion, &j.PayloadJSON, &j.Status, &j.Attempts, &retryableInt, &httpStatus, &timeoutSec, &correlationID, &lastErr, &resultJSON, &createdAt, &startedAt, &finishedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
