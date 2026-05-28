@@ -8,8 +8,7 @@ TAG="${1:-$(date -u +%Y%m%d-%H%M%S)}"
 
 cat >&2 <<EOF
 [release] deploying panel/API tag: $TAG
-[release] note: canonical panel/API images are published by GitHub Actions workflow "Docker Image".
-[release]       use scripts/release/push_panel.sh only as a local fallback publisher.
+[release] image must already be published by GitHub Actions workflow "Docker Image".
 EOF
 
 scripts/release/deploy_panel_remote.sh "$TAG"

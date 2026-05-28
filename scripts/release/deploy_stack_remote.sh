@@ -122,9 +122,7 @@ fi
 cat > docker-compose.release.yml <<EOF
 services:
   neutrino:
-    image: ${IMAGE_REPO}:${TAG}
-    build: "."
-EOF
+    image: ${IMAGE_REPO}:${TAG}EOF
 
 extra_args=()
 if [[ -f docker-compose.panel-hostnet.yml ]] && grep -qE '^\s*HOSTNET_ENABLE\s*=\s*(1|true|yes)\s*$' .env; then

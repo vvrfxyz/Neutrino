@@ -89,5 +89,5 @@ fi
 echo "[bootstrap] done in $REMOTE_DIR"
 echo "[bootstrap] next:"
 echo "  1) edit $REMOTE_DIR/.env (ADMIN_PASS / REALITY keys / domains etc.)"
-echo "  2) run local deploy script: scripts/release/release_panel.sh"
+echo "  2) deploy a GitHub Actions published tag: scripts/release/release_panel.sh <TAG>"
 REMOTE_EOF

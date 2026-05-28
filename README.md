@@ -310,13 +310,7 @@ scripts/release/deploy_stack_remote.sh <TAG>
 
 # 使用 GitHub Actions 已发布的 node-agent tag
 scripts/release/deploy_node_remote.sh <TAG>
-
-# 本地 fallback：构建并推送 panel/API 或 node-agent 镜像
-scripts/release/push_panel.sh <TAG>
-scripts/release/push_agent.sh <TAG>
 ```
-
-本地发布脚本会在 registry 操作前自动取消代理环境变量，避免推送流程被本地代理污染。
 
 ## 分支保护
 

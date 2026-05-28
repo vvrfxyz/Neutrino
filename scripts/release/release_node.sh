@@ -6,5 +6,9 @@ cd "$ROOT_DIR"
 
 TAG="${1:-$(date -u +%Y%m%d-%H%M%S)}"
 
-scripts/release/push_agent.sh "$TAG"
+cat >&2 <<EOF
+[release] deploying node-agent tag: $TAG
+[release] image must already be published by GitHub Actions workflow "Docker Image".
+EOF
+
 scripts/release/deploy_node_remote.sh "$TAG"

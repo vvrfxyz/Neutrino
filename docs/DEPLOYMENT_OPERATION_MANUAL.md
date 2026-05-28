@@ -200,12 +200,6 @@ Panel/API 镜像由 GitHub Actions `Docker Image` workflow 发布：
 scripts/release/deploy_panel_remote.sh <TAG>
 ```
 
-如果需要本地 fallback 构建并推送 panel/API 镜像：
-
-```bash
-scripts/release/push_panel.sh <TAG>
-```
-
 远端不会构建镜像，只会：
 
 - 校验 `.env` 是否仍存在占位符
@@ -326,18 +320,17 @@ XRAY_RELOAD_ARGS_JSON=["docker","restart","neutrino-xray"]
 
 ## 5.5 发布节点镜像
 
-node-agent 镜像由 GitHub Actions `Docker Image` workflow 发布到 `ghcr.io/<owner>/neutrino-node`。本地 `push_agent.sh` / `release_node.sh` 仅作为 fallback 流程。
+node-agent 镜像由 GitHub Actions `Docker Image` workflow 发布到 `ghcr.io/<owner>/neutrino-node`。部署脚本只拉取并启动已发布 tag。
 
-### 一键发布
+### 一键部署
 
 ```bash
 scripts/release/release_node.sh <TAG>
 ```
 
-### 分步发布
+### 分步部署
 
 ```bash
-scripts/release/push_agent.sh <TAG>
 scripts/release/deploy_node_remote.sh <TAG>
 ```
 
@@ -456,10 +449,6 @@ scripts/release/deploy_stack_remote.sh <TAG>
 
 # 部署 GitHub Actions 已发布的 node-agent tag
 scripts/release/deploy_node_remote.sh <TAG>
-
-# 本地 fallback：构建并推送 panel/API 或 node-agent 镜像
-scripts/release/push_panel.sh <TAG>
-scripts/release/push_agent.sh <TAG>
 ```
 
 ### 代理变量说明

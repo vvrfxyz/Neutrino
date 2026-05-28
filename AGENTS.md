@@ -37,7 +37,7 @@
 - Non-PR workflow runs publish multi-arch `linux/amd64,linux/arm64` images to `ghcr.io/<owner>/neutrino-panel` and `ghcr.io/<owner>/neutrino-node`.
 - If `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are configured, the workflow also publishes to Docker Hub. `DOCKERHUB_PANEL_IMAGE` and `DOCKERHUB_NODE_IMAGE` repo variables override the Docker Hub image names. `DOCKERHUB_IMAGE` remains a backward-compatible panel override. Defaults are `<DOCKERHUB_USERNAME>/neutrino-panel` and `<DOCKERHUB_USERNAME>/neutrino-node`.
 - Deploy servers by pulling pinned tags produced by the workflow; remote servers must not build release images directly.
-- Local release scripts are fallback tools only; prefer direct registry operations without proxy vars unless explicitly requested.
+- Release scripts deploy published tags only; do not build release images outside GitHub Actions unless explicitly requested.
 - Current production panel server: `<panel-host>` (`root@<panel-ip>`), using the embedded `/data/docker-compose.yml` stack with app files in `/data/neutrino`.
 - `main` is protected: required status checks are `build` and `docker` with strict branch freshness, linear history, required conversation resolution, no force pushes, and no branch deletion.
 - `main` has PR review rules enabled with `required_approving_review_count=0`; admins are not subject to branch protection (`enforce_admins=false`).
