@@ -296,8 +296,8 @@ cp .env.node.example .env    # node-only
 
 - Panel/API 镜像由 GitHub Actions `Docker Image` workflow 构建。
 - PR 只 build 镜像，不 push。
-- 非 PR 会 push 多架构镜像到 `ghcr.io/<owner>/neutrino-panel`。
-- 如果配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，还会 push Docker Hub。Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_IMAGE`，否则默认 `<DOCKERHUB_USERNAME>/neutrino-panel`。
+- 非 PR 会 push 多架构镜像到 `ghcr.io/<owner>/neutrino-panel` 和 `ghcr.io/<owner>/neutrino-node`。
+- 如果配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，还会 push Docker Hub。Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_PANEL_IMAGE` / `DOCKERHUB_NODE_IMAGE`；`DOCKERHUB_IMAGE` 仍作为 panel 的兼容覆盖；默认分别为 `<DOCKERHUB_USERNAME>/neutrino-panel` 和 `<DOCKERHUB_USERNAME>/neutrino-node`。
 - 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag。
 - 远程服务器只允许 `pull + up`，不允许直接构建 release 镜像。
 
@@ -308,11 +308,12 @@ cp .env.node.example .env    # node-only
 scripts/release/deploy_panel_remote.sh <TAG>
 scripts/release/deploy_stack_remote.sh <TAG>
 
-# node-agent 仍使用独立节点镜像流程
+# 使用 GitHub Actions 已发布的 node-agent tag
 scripts/release/deploy_node_remote.sh <TAG>
 
-# 本地 fallback：构建并推送 panel/API 镜像
+# 本地 fallback：构建并推送 panel/API 或 node-agent 镜像
 scripts/release/push_panel.sh <TAG>
+scripts/release/push_agent.sh <TAG>
 ```
 
 本地发布脚本会在 registry 操作前自动取消代理环境变量，避免推送流程被本地代理污染。

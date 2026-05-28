@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-AGENT_IMAGE_REPO="${AGENT_IMAGE_REPO:-ghcr.io/neutrino-proxy/agent}"
+AGENT_IMAGE_REPO="${AGENT_IMAGE_REPO:-ghcr.io/vvrfxyz/neutrino-node}"
 TAG="${1:-$(date -u +%Y%m%d-%H%M%S)}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 CACHE_BASE="${BUILD_CACHE_DIR:-$ROOT_DIR/.buildx-cache}"

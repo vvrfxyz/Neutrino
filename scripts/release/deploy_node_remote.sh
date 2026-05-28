@@ -13,7 +13,7 @@ fi
 TAG="$1"
 REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_DIR="${REMOTE_DIR:-/root/neutrino-node}"
-AGENT_IMAGE_REPO="${AGENT_IMAGE_REPO:-ghcr.io/neutrino-proxy/agent}"
+AGENT_IMAGE_REPO="${AGENT_IMAGE_REPO:-ghcr.io/vvrfxyz/neutrino-node}"
 XRAY_IMAGE="${XRAY_IMAGE:-ghcr.io/xtls/xray-core:26.2.6}"
 
 if [[ -z "$REMOTE_HOST" ]]; then

@@ -99,7 +99,7 @@ func (a *App) handleNodeDeployPage(w http.ResponseWriter, r *http.Request, nodeI
 	}
 	agentImage := strings.TrimSpace(a.cfg.NodeDefaultAgentImage)
 	if agentImage == "" {
-		agentImage = "ghcr.io/neutrino-proxy/agent:latest"
+		agentImage = "ghcr.io/vvrfxyz/neutrino-node:latest"
 	}
 	xrayImage := strings.TrimSpace(a.cfg.NodeDefaultXrayImage)
 	if xrayImage == "" {

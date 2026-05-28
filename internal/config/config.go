@@ -139,7 +139,7 @@ func Load() Config {
 		NodeReconcileBackoffSec: envInt("NODE_RECONCILE_BACKOFF_SEC", 300),
 		NodeJobMaxAttempts:      envInt("NODE_JOB_MAX_ATTEMPTS", 5),
 		NodeStaleDeleteAfterSec: envInt("NODE_STALE_DELETE_AFTER_SEC", 0),
-		NodeDefaultAgentImage:   env("NODE_DEFAULT_AGENT_IMAGE", "ghcr.io/neutrino-proxy/agent:latest"),
+		NodeDefaultAgentImage:   env("NODE_DEFAULT_AGENT_IMAGE", "ghcr.io/vvrfxyz/neutrino-node:latest"),
 		// Prefer upstream official image with pinned tag (greenfield; breaking changes allowed).
 		NodeDefaultXrayImage:    env("NODE_DEFAULT_XRAY_IMAGE", "ghcr.io/xtls/xray-core:26.2.6"),
 		NodeDefaultDeployDir:    env("NODE_DEFAULT_DEPLOY_DIR", "/root/neutrino-node"),

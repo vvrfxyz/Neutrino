@@ -19,8 +19,8 @@
 - Panel <-> node-agent 不使用 bearer token
 - Panel/API 发布流程必须是：
   1. GitHub Actions `Docker Image` workflow 构建镜像
-  2. PR 只 build 不 push；非 PR push 多架构 `linux/amd64,linux/arm64` 镜像到 `ghcr.io/<owner>/neutrino-panel`
-  3. 如配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同时 push Docker Hub；`DOCKERHUB_IMAGE` repo variable 可覆盖 Docker Hub 镜像名
+  2. PR 只 build 不 push；非 PR push 多架构 `linux/amd64,linux/arm64` 镜像到 `ghcr.io/<owner>/neutrino-panel` 和 `ghcr.io/<owner>/neutrino-node`
+  3. 如配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同时 push Docker Hub；`DOCKERHUB_PANEL_IMAGE` / `DOCKERHUB_NODE_IMAGE` repo variable 可覆盖 Docker Hub 镜像名，`DOCKERHUB_IMAGE` 仍作为 panel 的兼容覆盖
   4. 远端服务器只做 `docker compose pull && up -d --no-build`
 - 节点托管操作只允许 agent 执行本地预配置 argv，panel 不下发 shell 命令和任意路径
 
@@ -190,7 +190,7 @@ scripts/release/bootstrap_remote.sh
 Panel/API 镜像由 GitHub Actions `Docker Image` workflow 发布：
 
 - PR：只 build，不 push
-- 非 PR：push `ghcr.io/<owner>/neutrino-panel:<TAG>`
+- 非 PR：push `ghcr.io/<owner>/neutrino-panel:<TAG>` 和 `ghcr.io/<owner>/neutrino-node:<TAG>`
 - 如配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，额外 push Docker Hub
 - 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag
 
@@ -326,7 +326,7 @@ XRAY_RELOAD_ARGS_JSON=["docker","restart","neutrino-xray"]
 
 ## 5.5 发布节点镜像
 
-node-agent 仍是独立节点镜像，不由 `Docker Image` workflow 发布；节点镜像继续使用本地 `push_agent.sh` / `release_node.sh` 流程。
+node-agent 镜像由 GitHub Actions `Docker Image` workflow 发布到 `ghcr.io/<owner>/neutrino-node`。本地 `push_agent.sh` / `release_node.sh` 仅作为 fallback 流程。
 
 ### 一键发布
 
@@ -435,12 +435,12 @@ curl -u "$ADMIN_USER:$ADMIN_PASS" \
 
 ### GitHub Actions 镜像发布
 
-`Docker Image` workflow 负责 panel/API 镜像：
+`Docker Image` workflow 负责 panel/API 与 node-agent 镜像：
 
 - PR 只 build，不 push。
-- 非 PR push `ghcr.io/<owner>/neutrino-panel`。
+- 非 PR push `ghcr.io/<owner>/neutrino-panel` 和 `ghcr.io/<owner>/neutrino-node`。
 - 如果配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同时 push Docker Hub。
-- Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_IMAGE`，否则为 `<DOCKERHUB_USERNAME>/neutrino-panel`。
+- Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_PANEL_IMAGE` / `DOCKERHUB_NODE_IMAGE`；`DOCKERHUB_IMAGE` 仍作为 panel 的兼容覆盖；默认分别为 `<DOCKERHUB_USERNAME>/neutrino-panel` 和 `<DOCKERHUB_USERNAME>/neutrino-node`。
 - 多架构：`linux/amd64,linux/arm64`。
 - 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag。
 
@@ -454,11 +454,12 @@ scripts/release/bootstrap_node_remote.sh
 scripts/release/deploy_panel_remote.sh <TAG>
 scripts/release/deploy_stack_remote.sh <TAG>
 
-# node-agent 仍使用独立节点镜像流程
+# 部署 GitHub Actions 已发布的 node-agent tag
 scripts/release/deploy_node_remote.sh <TAG>
 
-# 本地 fallback：构建并推送 panel/API 镜像
+# 本地 fallback：构建并推送 panel/API 或 node-agent 镜像
 scripts/release/push_panel.sh <TAG>
+scripts/release/push_agent.sh <TAG>
 ```
 
 ### 代理变量说明
