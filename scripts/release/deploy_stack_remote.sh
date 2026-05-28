@@ -9,7 +9,7 @@ fi
 TAG="$1"
 REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_DIR="${REMOTE_DIR:-/root/neutrino}"
-IMAGE_REPO="${IMAGE_REPO:-ghcr.io/neutrino-proxy/panel}"
+IMAGE_REPO="${IMAGE_REPO:-ghcr.io/vvrfxyz/cli-proxy-api}"
 
 if [[ -z "$REMOTE_HOST" ]]; then
   echo "[deploy] ERROR: REMOTE_HOST is required (e.g. root@<host>)"

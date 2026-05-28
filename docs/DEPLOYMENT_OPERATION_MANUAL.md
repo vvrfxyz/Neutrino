@@ -4,7 +4,7 @@
 
 - panel-only（集中式控制面）
 - node-only（每台节点运行 `agent + xray`）
-- 本地 buildx + 远端 pull 的发布流程
+- GitHub Actions 构建发布 + 远端 pull 的发布流程
 - mTLS 证书、Enroll Code、节点部署页、托管 Xray
 
 > 说明：SQLite backup / restore HTTP 接口已存在，但 restore 会 stage
@@ -17,9 +17,11 @@
 - panel 不直连节点 Xray gRPC
 - node-agent 只通过 panel 的 **mTLS listener** 与 panel 交互
 - Panel <-> node-agent 不使用 bearer token
-- 发布流程必须是：
-  1. 本地构建并 push `linux/amd64` 镜像
-  2. 远端服务器只做 `docker compose pull && up -d --no-build`
+- Panel/API 发布流程必须是：
+  1. GitHub Actions `Docker Image` workflow 构建镜像
+  2. PR 只 build 不 push；非 PR push 多架构 `linux/amd64,linux/arm64` 镜像到 `ghcr.io/<owner>/cli-proxy-api`
+  3. 如配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同时 push Docker Hub；`DOCKERHUB_IMAGE` repo variable 可覆盖 Docker Hub 镜像名
+  4. 远端服务器只做 `docker compose pull && up -d --no-build`
 - 节点托管操作只允许 agent 执行本地预配置 argv，panel 不下发 shell 命令和任意路径
 
 关键默认值：
@@ -183,17 +185,25 @@ scripts/release/bootstrap_remote.sh
 
 ## 4.3 构建与部署
 
-### 一键发布
+### 发布镜像
+
+Panel/API 镜像由 GitHub Actions `Docker Image` workflow 发布：
+
+- PR：只 build，不 push
+- 非 PR：push `ghcr.io/<owner>/cli-proxy-api:<TAG>`
+- 如配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，额外 push Docker Hub
+- 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag
+
+### 部署已发布 tag
 
 ```bash
-scripts/release/release_panel.sh <TAG>
+scripts/release/deploy_panel_remote.sh <TAG>
 ```
 
-### 分步发布
+如果需要本地 fallback 构建并推送 panel/API 镜像：
 
 ```bash
 scripts/release/push_panel.sh <TAG>
-scripts/release/deploy_panel_remote.sh <TAG>
 ```
 
 远端不会构建镜像，只会：
@@ -231,7 +241,7 @@ ssh root@<panel-host> '
 
 ```yaml
   neutrino-panel:
-    image: ghcr.io/neutrino-proxy/panel:<TAG>
+    image: ghcr.io/vvrfxyz/cli-proxy-api:<TAG>
     container_name: neutrino-panel
     restart: unless-stopped
     env_file:
@@ -315,6 +325,8 @@ XRAY_RELOAD_ARGS_JSON=["docker","restart","neutrino-xray"]
 另外，若 REALITY 私钥使用自动生成模式，还会在 agent state 目录旁生成 `reality.json`。
 
 ## 5.5 发布节点镜像
+
+node-agent 仍是独立节点镜像，不由 `Docker Image` workflow 发布；节点镜像继续使用本地 `push_agent.sh` / `release_node.sh` 流程。
 
 ### 一键发布
 
@@ -421,22 +433,32 @@ curl -u "$ADMIN_USER:$ADMIN_PASS" \
 
 ## 7. 发布流程总览
 
-### 常用脚本
+### GitHub Actions 镜像发布
+
+`Docker Image` workflow 负责 panel/API 镜像：
+
+- PR 只 build，不 push。
+- 非 PR push `ghcr.io/<owner>/cli-proxy-api`。
+- 如果配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同时 push Docker Hub。
+- Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_IMAGE`，否则为 `<DOCKERHUB_USERNAME>/cli-proxy-api`。
+- 多架构：`linux/amd64,linux/arm64`。
+- 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag。
+
+### 常用部署脚本
 
 ```bash
 scripts/release/bootstrap_remote.sh
 scripts/release/bootstrap_node_remote.sh
 
-scripts/release/push_panel.sh <TAG>
-scripts/release/push_agent.sh <TAG>
-
+# 部署 GitHub Actions 已发布的 panel/API tag
 scripts/release/deploy_panel_remote.sh <TAG>
-scripts/release/deploy_node_remote.sh <TAG>
 scripts/release/deploy_stack_remote.sh <TAG>
 
-scripts/release/release_panel.sh <TAG>
-scripts/release/release_node.sh <TAG>
-scripts/release/release_stack.sh <TAG>
+# node-agent 仍使用独立节点镜像流程
+scripts/release/deploy_node_remote.sh <TAG>
+
+# 本地 fallback：构建并推送 panel/API 镜像
+scripts/release/push_panel.sh <TAG>
 ```
 
 ### 代理变量说明
@@ -449,7 +471,7 @@ export http_proxy=http://127.0.0.1:6152
 export all_proxy=socks5://127.0.0.1:6153
 ```
 
-但发布脚本会在 Docker Hub 操作前主动 `unset` 这些代理变量，避免推送被代理环境污染。
+但本地发布脚本会在 registry 操作前主动 `unset` 这些代理变量，避免推送被代理环境污染。
 
 ## 8. 验证与验收
 

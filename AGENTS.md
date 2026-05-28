@@ -32,9 +32,12 @@
 
 ## Deployment Policy
 - For container verification and release acceptance, skip local Docker startup.
-- Release workflow is mandatory: build and push `linux/amd64` images to Docker Hub from local machine first, then deploy on server by pulling pinned tags.
-- Remote server must not build release images directly.
-- Prefer disabling proxy vars during Docker Hub operations unless explicitly requested.
+- Canonical panel/API image publication is GitHub Actions workflow `Docker Image`.
+- Pull requests build the Docker image only; they must not push registry images.
+- Non-PR workflow runs publish multi-arch `linux/amd64,linux/arm64` panel/API images to `ghcr.io/<owner>/cli-proxy-api`.
+- If `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are configured, the workflow also publishes to Docker Hub. `DOCKERHUB_IMAGE` repo variable overrides the Docker Hub image name; otherwise it defaults to `<DOCKERHUB_USERNAME>/cli-proxy-api`.
+- Deploy servers by pulling pinned tags produced by the workflow; remote servers must not build release images directly.
+- Local release scripts are fallback tools only; prefer direct registry operations without proxy vars unless explicitly requested.
 - Current production panel server: `<panel-host>` (`root@<panel-ip>`), using the embedded `/data/docker-compose.yml` stack with app files in `/data/neutrino`.
 
 ## Data Rules
