@@ -1,0 +1,132 @@
+name: Docker Hub Images
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Docker image tag. Defaults to YYYYMMDD-HHMMSS-<short-sha>."
+        required: false
+        type: string
+      panel_image:
+        description: "Panel image repository."
+        required: true
+        default: "vvrf/neutrino-panel"
+        type: string
+      agent_image:
+        description: "Agent image repository."
+        required: true
+        default: "vvrf/neutrino-agent"
+        type: string
+      push_latest:
+        description: "Also push the latest tag."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  publish:
+    name: Build and push linux/amd64 images
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare image metadata
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          PANEL_IMAGE: ${{ inputs.panel_image }}
+          AGENT_IMAGE: ${{ inputs.agent_image }}
+          PUSH_LATEST: ${{ inputs.push_latest }}
+        run: |
+          set -euo pipefail
+
+          tag="${INPUT_TAG}"
+          if [ -z "$tag" ]; then
+            tag="$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
+          fi
+          if [[ ! "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker tag: $tag" >&2
+            exit 1
+          fi
+
+          panel_image="${PANEL_IMAGE:-vvrf/neutrino-panel}"
+          agent_image="${AGENT_IMAGE:-vvrf/neutrino-agent}"
+
+          panel_tags="${panel_image}:${tag}"
+          agent_tags="${agent_image}:${tag}"
+          if [ "${PUSH_LATEST}" = "true" ]; then
+            panel_tags="${panel_tags}"$'\n'"${panel_image}:latest"
+            agent_tags="${agent_tags}"$'\n'"${agent_image}:latest"
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "panel_image=${panel_image}" >> "$GITHUB_OUTPUT"
+          echo "agent_image=${agent_image}" >> "$GITHUB_OUTPUT"
+          {
+            echo "panel_tags<<EOF"
+            echo "$panel_tags"
+            echo "EOF"
+            echo "agent_tags<<EOF"
+            echo "$agent_tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$DOCKERHUB_USERNAME" || { echo "Missing secret: DOCKERHUB_USERNAME" >&2; exit 1; }
+          test -n "$DOCKERHUB_TOKEN" || { echo "Missing secret: DOCKERHUB_TOKEN" >&2; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push panel image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.panel_tags }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=panel-linux-amd64
+          cache-to: type=gha,mode=max,scope=panel-linux-amd64
+
+      - name: Build and push agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/node-agent/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.agent_tags }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=agent-linux-amd64
+          cache-to: type=gha,mode=max,scope=agent-linux-amd64
+
+      - name: Summary
+        run: |
+          {
+            echo "Published Docker Hub images:"
+            echo
+            echo "- ${{ steps.meta.outputs.panel_image }}:${{ steps.meta.outputs.tag }}"
+            echo "- ${{ steps.meta.outputs.agent_image }}:${{ steps.meta.outputs.tag }}"
+          } >> "$GITHUB_STEP_SUMMARY"
