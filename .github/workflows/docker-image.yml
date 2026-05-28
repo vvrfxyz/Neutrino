@@ -20,7 +20,7 @@ env:
 
 jobs:
   image:
-    name: Build Docker image
+    name: docker
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
