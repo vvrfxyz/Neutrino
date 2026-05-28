@@ -15,7 +15,7 @@ permissions:
   actions: write
 
 env:
-  IMAGE_NAME: cli-proxy-api
+  IMAGE_NAME: neutrino-panel
   PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
@@ -110,7 +110,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=cli-proxy-api
+          cache-from: type=gha,scope=neutrino-panel
 
       - name: Build and push image
         if: ${{ github.event_name != 'pull_request' }}
@@ -124,8 +124,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=cli-proxy-api
-          cache-to: type=gha,mode=max,scope=cli-proxy-api
+          cache-from: type=gha,scope=neutrino-panel
+          cache-to: type=gha,mode=max,scope=neutrino-panel
 
       - name: Summary
         env:

@@ -9,7 +9,7 @@ fi
 TAG="$1"
 REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_DIR="${REMOTE_DIR:-/root/neutrino}"
-IMAGE_REPO="${IMAGE_REPO:-ghcr.io/vvrfxyz/cli-proxy-api}"
+IMAGE_REPO="${IMAGE_REPO:-ghcr.io/vvrfxyz/neutrino-panel}"
 PANEL_STACK_COMPOSE="${PANEL_STACK_COMPOSE:-}"
 PANEL_STACK_SERVICE="${PANEL_STACK_SERVICE:-neutrino-panel}"
 

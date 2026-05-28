@@ -19,7 +19,7 @@
 - Panel <-> node-agent 不使用 bearer token
 - Panel/API 发布流程必须是：
   1. GitHub Actions `Docker Image` workflow 构建镜像
-  2. PR 只 build 不 push；非 PR push 多架构 `linux/amd64,linux/arm64` 镜像到 `ghcr.io/<owner>/cli-proxy-api`
+  2. PR 只 build 不 push；非 PR push 多架构 `linux/amd64,linux/arm64` 镜像到 `ghcr.io/<owner>/neutrino-panel`
   3. 如配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同时 push Docker Hub；`DOCKERHUB_IMAGE` repo variable 可覆盖 Docker Hub 镜像名
   4. 远端服务器只做 `docker compose pull && up -d --no-build`
 - 节点托管操作只允许 agent 执行本地预配置 argv，panel 不下发 shell 命令和任意路径
@@ -190,7 +190,7 @@ scripts/release/bootstrap_remote.sh
 Panel/API 镜像由 GitHub Actions `Docker Image` workflow 发布：
 
 - PR：只 build，不 push
-- 非 PR：push `ghcr.io/<owner>/cli-proxy-api:<TAG>`
+- 非 PR：push `ghcr.io/<owner>/neutrino-panel:<TAG>`
 - 如配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`，额外 push Docker Hub
 - 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag
 
@@ -241,7 +241,7 @@ ssh root@<panel-host> '
 
 ```yaml
   neutrino-panel:
-    image: ghcr.io/vvrfxyz/cli-proxy-api:<TAG>
+    image: ghcr.io/vvrfxyz/neutrino-panel:<TAG>
     container_name: neutrino-panel
     restart: unless-stopped
     env_file:
@@ -438,9 +438,9 @@ curl -u "$ADMIN_USER:$ADMIN_PASS" \
 `Docker Image` workflow 负责 panel/API 镜像：
 
 - PR 只 build，不 push。
-- 非 PR push `ghcr.io/<owner>/cli-proxy-api`。
+- 非 PR push `ghcr.io/<owner>/neutrino-panel`。
 - 如果配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同时 push Docker Hub。
-- Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_IMAGE`，否则为 `<DOCKERHUB_USERNAME>/cli-proxy-api`。
+- Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_IMAGE`，否则为 `<DOCKERHUB_USERNAME>/neutrino-panel`。
 - 多架构：`linux/amd64,linux/arm64`。
 - 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag。
 

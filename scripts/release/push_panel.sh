@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-IMAGE_REPO="${IMAGE_REPO:-ghcr.io/vvrfxyz/cli-proxy-api}"
+IMAGE_REPO="${IMAGE_REPO:-ghcr.io/vvrfxyz/neutrino-panel}"
 TAG="${1:-$(date -u +%Y%m%d-%H%M%S)}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 CACHE_BASE="${BUILD_CACHE_DIR:-$ROOT_DIR/.buildx-cache}"

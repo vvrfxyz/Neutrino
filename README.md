@@ -296,8 +296,8 @@ cp .env.node.example .env    # node-only
 
 - Panel/API 镜像由 GitHub Actions `Docker Image` workflow 构建。
 - PR 只 build 镜像，不 push。
-- 非 PR 会 push 多架构镜像到 `ghcr.io/<owner>/cli-proxy-api`。
-- 如果配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，还会 push Docker Hub。Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_IMAGE`，否则默认 `<DOCKERHUB_USERNAME>/cli-proxy-api`。
+- 非 PR 会 push 多架构镜像到 `ghcr.io/<owner>/neutrino-panel`。
+- 如果配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，还会 push Docker Hub。Docker Hub 镜像名优先使用 repo variable `DOCKERHUB_IMAGE`，否则默认 `<DOCKERHUB_USERNAME>/neutrino-panel`。
 - 默认分支会打 `latest`，分支/tag/sha 都会生成对应镜像 tag。
 - 远程服务器只允许 `pull + up`，不允许直接构建 release 镜像。
 
