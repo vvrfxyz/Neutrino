@@ -1,35 +1,26 @@
-name: Docker Hub Images
+name: Docker Image
 
 "on":
+  pull_request:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Docker image tag. Defaults to YYYYMMDD-HHMMSS-<short-sha>."
-        required: false
-        type: string
-      panel_image:
-        description: "Panel image repository."
-        required: true
-        default: "vvrf/neutrino-panel"
-        type: string
-      agent_image:
-        description: "Agent image repository."
-        required: true
-        default: "vvrf/neutrino-agent"
-        type: string
-      push_latest:
-        description: "Also push the latest tag."
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
+  packages: write
   actions: write
 
+env:
+  IMAGE_NAME: cli-proxy-api
+  PLATFORMS: linux/amd64,linux/arm64
+
 jobs:
-  publish:
-    name: Build and push linux/amd64 images
+  image:
+    name: Build Docker image
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -37,96 +28,126 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare image metadata
-        id: meta
+      - name: Resolve image destinations
+        id: images
         env:
-          INPUT_TAG: ${{ inputs.tag }}
-          PANEL_IMAGE: ${{ inputs.panel_image }}
-          AGENT_IMAGE: ${{ inputs.agent_image }}
-          PUSH_LATEST: ${{ inputs.push_latest }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_IMAGE_VAR: ${{ vars.DOCKERHUB_IMAGE }}
         run: |
           set -euo pipefail
 
-          tag="${INPUT_TAG}"
-          if [ -z "$tag" ]; then
-            tag="$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
-          fi
-          if [[ ! "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "Invalid Docker tag: $tag" >&2
-            exit 1
-          fi
+          owner="$(printf '%s' "$GHCR_OWNER" | tr '[:upper:]' '[:lower:]')"
+          ghcr_image="ghcr.io/${owner}/${IMAGE_NAME}"
+          images="$ghcr_image"
+          dockerhub_enabled="false"
+          dockerhub_image=""
 
-          panel_image="${PANEL_IMAGE:-vvrf/neutrino-panel}"
-          agent_image="${AGENT_IMAGE:-vvrf/neutrino-agent}"
-
-          panel_tags="${panel_image}:${tag}"
-          agent_tags="${agent_image}:${tag}"
-          if [ "${PUSH_LATEST}" = "true" ]; then
-            panel_tags="${panel_tags}"$'\n'"${panel_image}:latest"
-            agent_tags="${agent_tags}"$'\n'"${agent_image}:latest"
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            dockerhub_enabled="true"
+            if [ -n "$DOCKERHUB_IMAGE_VAR" ]; then
+              dockerhub_image="$DOCKERHUB_IMAGE_VAR"
+            else
+              dockerhub_owner="$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
+              dockerhub_image="${dockerhub_owner}/${IMAGE_NAME}"
+            fi
+            images="${images}"$'\n'"${dockerhub_image}"
           fi
 
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "panel_image=${panel_image}" >> "$GITHUB_OUTPUT"
-          echo "agent_image=${agent_image}" >> "$GITHUB_OUTPUT"
+          echo "ghcr_image=${ghcr_image}" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_enabled=${dockerhub_enabled}" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_image=${dockerhub_image}" >> "$GITHUB_OUTPUT"
           {
-            echo "panel_tags<<EOF"
-            echo "$panel_tags"
-            echo "EOF"
-            echo "agent_tags<<EOF"
-            echo "$agent_tags"
+            echo "images<<EOF"
+            echo "$images"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Validate Docker Hub secrets
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$DOCKERHUB_USERNAME" || { echo "Missing secret: DOCKERHUB_USERNAME" >&2; exit 1; }
-          test -n "$DOCKERHUB_TOKEN" || { echo "Missing secret: DOCKERHUB_TOKEN" >&2; exit 1; }
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.images.outputs.images }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Login to GHCR
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Login to Docker Hub
+        if: ${{ github.event_name != 'pull_request' && steps.images.outputs.dockerhub_enabled == 'true' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push panel image
+      - name: Build image (PR)
+        if: ${{ github.event_name == 'pull_request' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.panel_tags }}
+          platforms: ${{ env.PLATFORMS }}
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=panel-linux-amd64
-          cache-to: type=gha,mode=max,scope=panel-linux-amd64
+          cache-from: type=gha,scope=cli-proxy-api
 
-      - name: Build and push agent image
+      - name: Build and push image
+        if: ${{ github.event_name != 'pull_request' }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/node-agent/Dockerfile
-          platforms: linux/amd64
+          file: Dockerfile
+          platforms: ${{ env.PLATFORMS }}
           push: true
-          tags: ${{ steps.meta.outputs.agent_tags }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=agent-linux-amd64
-          cache-to: type=gha,mode=max,scope=agent-linux-amd64
+          cache-from: type=gha,scope=cli-proxy-api
+          cache-to: type=gha,mode=max,scope=cli-proxy-api
 
       - name: Summary
+        env:
+          GHCR_IMAGE: ${{ steps.images.outputs.ghcr_image }}
+          DOCKERHUB_IMAGE: ${{ steps.images.outputs.dockerhub_image }}
+          META_TAGS: ${{ steps.meta.outputs.tags }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           {
-            echo "Published Docker Hub images:"
+            echo "Image destinations:"
             echo
-            echo "- ${{ steps.meta.outputs.panel_image }}:${{ steps.meta.outputs.tag }}"
-            echo "- ${{ steps.meta.outputs.agent_image }}:${{ steps.meta.outputs.tag }}"
+            echo "- ${GHCR_IMAGE}"
+            if [ -n "$DOCKERHUB_IMAGE" ]; then
+              echo "- ${DOCKERHUB_IMAGE}"
+            fi
+            echo
+            echo "Tags:"
+            echo "$META_TAGS"
+            echo
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              echo "PR build only; images were not pushed."
+            else
+              echo "Images were pushed."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
