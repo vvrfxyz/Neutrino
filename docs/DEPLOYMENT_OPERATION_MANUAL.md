@@ -473,6 +473,22 @@ export all_proxy=socks5://127.0.0.1:6153
 
 但本地发布脚本会在 registry 操作前主动 `unset` 这些代理变量，避免推送被代理环境污染。
 
+### `main` 分支保护基线
+
+当前 `main` 分支保护规则：
+
+- required status checks：`build`、`docker`
+- `strict=true`，合入前必须与最新 `main` 同步
+- required linear history：开启
+- required conversation resolution：开启
+- allow force pushes：关闭
+- allow deletions：关闭
+- required pull request reviews：开启
+- required approving review count：`0`
+- enforce admins：`false`
+
+如果调整 GitHub Actions job 名称，必须同步更新分支保护里的 required status checks。
+
 ## 8. 验证与验收
 
 至少检查：

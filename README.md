@@ -317,6 +317,18 @@ scripts/release/push_panel.sh <TAG>
 
 本地发布脚本会在 registry 操作前自动取消代理环境变量，避免推送流程被本地代理污染。
 
+## 分支保护
+
+`main` 分支保护规则：
+
+- 必须通过状态检查：`build`、`docker`
+- 合入前必须与最新 `main` 同步（strict）
+- 要求线性历史
+- 要求 conversation resolved
+- 禁止 force push 和删除分支
+- PR review 规则开启，批准数为 `0`
+- 管理员不强制执行：`enforce_admins=false`
+
 ## 文档索引
 
 - `AGENTS.md`：项目硬约束、运行决策、部署政策
