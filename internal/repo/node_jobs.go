@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -206,6 +207,34 @@ func (s *Store) ClaimNextNodeJobForNodeKinds(ctx context.Context, nodeID int64, 
 			filteredKinds = append(filteredKinds, kind)
 		}
 	}
+
+	// Cheap read-only precheck before the write transaction: the agent
+	// long-poll calls this every ~400ms per node, and with _txlock=immediate
+	// every BeginTx takes SQLite's write lock even when there is nothing to
+	// claim. A pending row appearing right after this check is only delayed
+	// by one poll iteration.
+	precheckArgs := []any{nodeID}
+	precheck := `
+SELECT 1 FROM node_jobs
+WHERE node_id = ? AND status = 'pending'
+`
+	if len(filteredKinds) > 0 {
+		placeholders := make([]string, 0, len(filteredKinds))
+		for _, kind := range filteredKinds {
+			placeholders = append(placeholders, "?")
+			precheckArgs = append(precheckArgs, kind)
+		}
+		precheck += " AND kind IN (" + strings.Join(placeholders, ", ") + ")"
+	}
+	precheck += " LIMIT 1;"
+	var hasPending int
+	if err := s.db.QueryRowContext(ctx, precheck, precheckArgs...).Scan(&hasPending); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return NodeJob{}, false, nil
+		}
+		return NodeJob{}, false, err
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return NodeJob{}, false, err
@@ -700,11 +729,12 @@ func nodeJobSweepTimeout(timeoutSec int, kindDefault time.Duration) time.Duratio
 // they fence the subsequent UPDATE so that an attempt the agent finished
 // and/or re-claimed between scan and update is never clobbered.
 type nodeJobSweepCandidate struct {
-	jobID     int64
-	nodeID    int64
-	kind      string
-	attempts  int
-	startedAt string
+	jobID       int64
+	nodeID      int64
+	kind        string
+	payloadJSON string
+	attempts    int
+	startedAt   string
 }
 
 // SweepTimedOutRunningJobs marks timed-out running jobs as failed (or requeues
@@ -718,7 +748,7 @@ func (s *Store) SweepTimedOutRunningJobs(ctx context.Context, timeoutByKind map[
 	now := time.Now().UTC()
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, node_id, kind, attempts, started_at, timeout_sec
+SELECT id, node_id, kind, payload_json, attempts, started_at, timeout_sec
 FROM node_jobs
 WHERE status = 'running' AND started_at IS NOT NULL;
 `)
@@ -728,11 +758,11 @@ WHERE status = 'running' AND started_at IS NOT NULL;
 	candidates := make([]nodeJobSweepCandidate, 0, 8)
 	for rows.Next() {
 		var jobID, nodeID int64
-		var kind string
+		var kind, payloadJSON string
 		var attempts int
 		var startedAtStr string
 		var timeoutSec sql.NullInt64
-		if err := rows.Scan(&jobID, &nodeID, &kind, &attempts, &startedAtStr, &timeoutSec); err != nil {
+		if err := rows.Scan(&jobID, &nodeID, &kind, &payloadJSON, &attempts, &startedAtStr, &timeoutSec); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -748,7 +778,7 @@ WHERE status = 'running' AND started_at IS NOT NULL;
 		if now.Sub(startedAt) < to {
 			continue
 		}
-		candidates = append(candidates, nodeJobSweepCandidate{jobID: jobID, nodeID: nodeID, kind: kind, attempts: attempts, startedAt: startedAtStr})
+		candidates = append(candidates, nodeJobSweepCandidate{jobID: jobID, nodeID: nodeID, kind: kind, payloadJSON: payloadJSON, attempts: attempts, startedAt: startedAtStr})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -758,16 +788,24 @@ WHERE status = 'running' AND started_at IS NOT NULL;
 
 	affected := int64(0)
 	nowStr := now.Format(time.RFC3339)
+	var firstErr error
 	for _, c := range candidates {
 		swept, err := s.sweepTimedOutJobCandidate(ctx, c, maxAttempts, nowStr)
 		if err != nil {
-			return affected, err
+			// One bad candidate must not abort the pass: later candidates
+			// (other nodes) would never be swept and their pipelines would
+			// stay wedged. Log, remember the first error, keep going.
+			log.Printf("sweep timed-out job=%d node=%d kind=%s: %v", c.jobID, c.nodeID, c.kind, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		if swept {
 			affected++
 		}
 	}
-	return affected, nil
+	return affected, firstErr
 }
 
 // sweepTimedOutJobCandidate times out a single scanned candidate. The job
@@ -824,6 +862,22 @@ WHERE id = ?;
 	if c.kind == "xray_apply" || c.kind == "xray_rollback" {
 		if _, err := s.prepareUsersSyncTx(ctx, tx, c.nodeID, true, "xray_runtime_unknown_followup"); err != nil {
 			return false, err
+		}
+	}
+	// users_sync needs the same kind-specific follow-ups as an agent-reported
+	// finish: a requeue can land behind a newer pending row (single-slot
+	// invariant), and a terminal timeout must clear the backfill marker /
+	// re-enqueue a protected repair instead of silently dropping it.
+	if c.kind == "users_sync" {
+		if final == "pending" {
+			if err := reconcileUsersSyncPendingSlotExec(ctx, tx, c.nodeID, nowStr); err != nil {
+				return false, err
+			}
+		} else {
+			payload, class := classifyUsersSyncPayload(c.payloadJSON)
+			if _, err := s.handleUsersSyncTerminalFailureExec(ctx, tx, c.nodeID, payload, class); err != nil {
+				return false, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

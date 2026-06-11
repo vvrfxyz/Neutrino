@@ -593,3 +593,297 @@ func TestPrepareUsersSyncDisabledNodeConvergesToEmptyOnce(t *testing.T) {
 		t.Fatalf("disabled node re-enqueued cleanup: %+v", res2)
 	}
 }
+
+// A pending delta whose base still matches applied but whose target was
+// superseded (users changed and then changed back) must be canceled by the
+// no-drift prepare: its payload carries outdated changes the agent would
+// apply and the panel would accept.
+func TestNoDriftPrepareCancelsStaleTargetDelta(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-stale-target")
+	for i := 0; i < 3; i++ {
+		newActiveUser(t, s)
+	}
+
+	res, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	job := claimUsersSync(t, s, node.ID)
+	finishUsersSyncOK(t, s, node.ID, job, res.TargetVersion) // delta-ready at V1
+
+	// Drift to V2: pending delta V1->V2 (disable a user).
+	u := newActiveUser(t, s)
+	res2, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	if res2.Mode != "delta" {
+		t.Fatalf("expected delta, got %+v", res2)
+	}
+
+	// Drift back to V1 before the agent claims: remove the user again.
+	if _, err := s.DeleteUser(ctx, u.ID); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	res3, err := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	if err != nil {
+		t.Fatalf("prepare 3: %v", err)
+	}
+	if res3.Enqueued || res3.TargetVersion != res.TargetVersion {
+		t.Fatalf("no-drift prepare: %+v", res3)
+	}
+	if _, has := pendingUsersSyncPayload(t, s, node.ID); has {
+		t.Fatalf("stale-target delta must be canceled, not left claimable")
+	}
+	if _, ok, err := s.ClaimNextNodeJobForNode(ctx, node.ID); err != nil || ok {
+		t.Fatalf("nothing should be claimable: ok=%v err=%v", ok, err)
+	}
+}
+
+// A corrupt snapshot row must degrade the prepare to full (and delete the bad
+// row), not fail the prepare forever.
+func TestPrepareUsersSyncCorruptSnapshotFallsBackToFull(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-corrupt-snap")
+	newActiveUser(t, s)
+
+	res, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	job := claimUsersSync(t, s, node.ID)
+	finishUsersSyncOK(t, s, node.ID, job, res.TargetVersion) // delta-ready
+
+	if _, err := s.RawDB().ExecContext(ctx, `
+UPDATE node_user_sync_snapshots SET users_json = 'not-json' WHERE node_id = ? AND version = ?;
+`, node.ID, res.TargetVersion); err != nil {
+		t.Fatalf("corrupt snapshot: %v", err)
+	}
+
+	newActiveUser(t, s)
+	res2, err := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	if err != nil {
+		t.Fatalf("prepare with corrupt snapshot must not fail: %v", err)
+	}
+	if !res2.Enqueued || res2.Mode != "full" {
+		t.Fatalf("expected full fallback, got %+v", res2)
+	}
+	var n int
+	if err := s.RawDB().QueryRowContext(ctx, `
+SELECT COUNT(1) FROM node_user_sync_snapshots WHERE node_id = ? AND version = ?;
+`, node.ID, res.TargetVersion).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("corrupt snapshot row must be deleted: n=%d err=%v", n, err)
+	}
+}
+
+// A retryable users_sync failure that requeues behind a newer pending job
+// (enqueued while the old one ran) must not leave two claimable pending rows
+// with the stale one first.
+func TestRetryableFinishReconcilesPendingSlot(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-requeue-slot")
+	for i := 0; i < 3; i++ {
+		newActiveUser(t, s)
+	}
+
+	res, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	job := claimUsersSync(t, s, node.ID) // running V1 full
+
+	// Users drift while the job runs: a second pending row appears.
+	newActiveUser(t, s)
+	res2, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	if res2.TargetVersion == res.TargetVersion {
+		t.Fatalf("expected drift")
+	}
+
+	// The running job fails retryably and is requeued.
+	fin, err := s.FinishUsersSyncJobForNode(ctx, node.ID, job.ID, FinishNodeJobInput{
+		Status: "failed", Retryable: true, MaxAttempts: 5, Attempt: job.Attempts,
+		ErrorMsg: "transient",
+	}, "")
+	if err != nil || fin.FinalStatus != "pending" {
+		t.Fatalf("finish: %+v err=%v", fin, err)
+	}
+
+	var pendingCount int
+	if err := s.RawDB().QueryRowContext(ctx, `
+SELECT COUNT(1) FROM node_jobs WHERE node_id = ? AND kind = 'users_sync' AND status = 'pending';
+`, node.ID).Scan(&pendingCount); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pendingCount != 1 {
+		t.Fatalf("single pending slot violated: %d pending users_sync jobs", pendingCount)
+	}
+	next := claimUsersSync(t, s, node.ID)
+	if next.DesiredVersion != res2.TargetVersion {
+		t.Fatalf("survivor must target the newest version: got %s want %s", next.DesiredVersion, res2.TargetVersion)
+	}
+}
+
+// The timeout sweeper requeueing a users_sync job must restore the single
+// pending slot too, and keep the protected/newer payload.
+func TestSweepRequeueReconcilesPendingSlot(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-sweep-slot")
+	for i := 0; i < 3; i++ {
+		newActiveUser(t, s)
+	}
+
+	res, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	job := claimUsersSync(t, s, node.ID) // running V1
+
+	// Forced repair lands pending behind the running job.
+	if _, err := s.PrepareUsersSync(ctx, node.ID, true, "xray_apply_followup"); err != nil {
+		t.Fatalf("forced prepare: %v", err)
+	}
+
+	// Time the running job out so the sweeper requeues it.
+	oldStart := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if _, err := s.RawDB().ExecContext(ctx, `UPDATE node_jobs SET started_at = ? WHERE id = ?;`, oldStart, job.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	if _, err := s.SweepTimedOutRunningJobs(ctx, map[string]time.Duration{"users_sync": time.Second}, 5); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var pendingCount int
+	if err := s.RawDB().QueryRowContext(ctx, `
+SELECT COUNT(1) FROM node_jobs WHERE node_id = ? AND kind = 'users_sync' AND status = 'pending';
+`, node.ID).Scan(&pendingCount); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pendingCount != 1 {
+		t.Fatalf("single pending slot violated after sweep requeue: %d", pendingCount)
+	}
+	payload, has := pendingUsersSyncPayload(t, s, node.ID)
+	if !has || payload.Reason != "xray_apply_followup" {
+		t.Fatalf("protected repair must be the survivor: %+v has=%v", payload, has)
+	}
+	_ = res
+}
+
+// A users_sync protected repair that terminally times out via the sweeper
+// must be re-enqueued, not dropped (runtime may still be missing users while
+// applied == desired).
+func TestSweepTerminalUsersSyncFailureReenqueuesProtectedRepair(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-sweep-terminal")
+	newActiveUser(t, s)
+
+	res, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	job := claimUsersSync(t, s, node.ID)
+	finishUsersSyncOK(t, s, node.ID, job, res.TargetVersion) // applied == desired
+
+	// Protected runtime repair pending, then claimed.
+	if _, err := s.PrepareUsersSync(ctx, node.ID, true, "xray_runtime_unknown_followup"); err != nil {
+		t.Fatalf("forced prepare: %v", err)
+	}
+	repair := claimUsersSync(t, s, node.ID)
+
+	// Exhaust attempts: set attempts to max and time it out.
+	oldStart := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if _, err := s.RawDB().ExecContext(ctx, `UPDATE node_jobs SET started_at = ?, attempts = 5 WHERE id = ?;`, oldStart, repair.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	if _, err := s.SweepTimedOutRunningJobs(ctx, map[string]time.Duration{"users_sync": time.Second}, 5); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	payload, has := pendingUsersSyncPayload(t, s, node.ID)
+	if !has || payload.Mode != "full" || payload.Reason != "xray_runtime_unknown_followup" {
+		t.Fatalf("terminal sweep must re-enqueue the protected repair: %+v has=%v", payload, has)
+	}
+}
+
+// A baseline_backfill that terminally times out via the sweeper must clear
+// the backfill marker so the startup pass can retry (same contract as an
+// agent-reported terminal failure).
+func TestSweepTerminalBackfillClearsBackfillMarker(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-sweep-backfill")
+	newActiveUser(t, s)
+
+	if _, err := s.PrepareUsersSync(ctx, node.ID, true, "baseline_backfill"); err != nil {
+		t.Fatalf("backfill prepare: %v", err)
+	}
+	if err := s.SetNodeUsersSyncBackfillAt(ctx, node.ID, time.Now()); err != nil {
+		t.Fatalf("set backfill at: %v", err)
+	}
+	job := claimUsersSync(t, s, node.ID)
+	oldStart := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if _, err := s.RawDB().ExecContext(ctx, `UPDATE node_jobs SET started_at = ?, attempts = 5 WHERE id = ?;`, oldStart, job.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	if _, err := s.SweepTimedOutRunningJobs(ctx, map[string]time.Duration{"users_sync": time.Second}, 5); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	rollout, _ := s.GetNodeUsersSyncRollout(ctx, node.ID)
+	if rollout.BackfillAt != nil {
+		t.Fatalf("terminally swept backfill must clear the marker: %+v", rollout)
+	}
+}
+
+// An ordinary full overwrite of a pending protected repair must preserve the
+// protected reason so cancellation protection and marker lifecycles survive.
+func TestOrdinaryFullOverwritePreservesProtectedReason(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-protect-overwrite")
+	newActiveUser(t, s)
+
+	res, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	job := claimUsersSync(t, s, node.ID)
+	finishUsersSyncOK(t, s, node.ID, job, res.TargetVersion)
+
+	// Protected repair pending.
+	if _, err := s.PrepareUsersSync(ctx, node.ID, true, "xray_runtime_unknown_followup"); err != nil {
+		t.Fatalf("forced prepare: %v", err)
+	}
+	// Drift: ordinary prepare rewrites the pending slot to the new target.
+	// (Node is delta-ready but the pending full blocks delta; the overwrite is
+	// a full toward the new target.)
+	newActiveUser(t, s)
+	if _, err := s.PrepareUsersSync(ctx, node.ID, false, "reconcile"); err != nil {
+		t.Fatalf("ordinary prepare: %v", err)
+	}
+	payload, has := pendingUsersSyncPayload(t, s, node.ID)
+	if !has || payload.Mode != "full" {
+		t.Fatalf("pending must stay full: %+v has=%v", payload, has)
+	}
+	if payload.Reason != "xray_runtime_unknown_followup" {
+		t.Fatalf("ordinary overwrite dropped the protected reason: got %q", payload.Reason)
+	}
+}
+
+// GET /agent/users moving the desired version must cancel a pending delta
+// whose target it superseded.
+func TestMaterializeForAgentCancelsStaleTargetDelta(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node := newSyncNode(t, s, "sync-materialize-stale")
+	for i := 0; i < 3; i++ {
+		newActiveUser(t, s)
+	}
+
+	res, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	job := claimUsersSync(t, s, node.ID)
+	finishUsersSyncOK(t, s, node.ID, job, res.TargetVersion) // delta-ready at V1
+
+	newActiveUser(t, s)
+	res2, _ := s.PrepareUsersSync(ctx, node.ID, false, "reconcile")
+	if res2.Mode != "delta" {
+		t.Fatalf("expected delta, got %+v", res2)
+	}
+
+	// More drift, then the agent fetches the full list (e.g. for a full
+	// repair): desired moves past the pending delta's target.
+	newActiveUser(t, s)
+	version, _, err := s.MaterializeUsersSnapshotForAgent(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if version == res2.TargetVersion {
+		t.Fatalf("expected desired to move past the delta target")
+	}
+	if p, has := pendingUsersSyncPayload(t, s, node.ID); has && p.Mode == "delta" && p.TargetVersion != version {
+		t.Fatalf("stale-target delta survived materialize: %+v", p)
+	}
+}
