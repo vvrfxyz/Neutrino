@@ -896,6 +896,57 @@ func (a *App) pruneOnce(ctx context.Context, now time.Time) error {
 	if counts.MetricSamples > 0 || counts.MetricDetails > 0 || counts.ProbeResults > 0 || counts.OpsAlerts > 0 {
 		log.Printf("pruned ops data metric_samples=%d metric_details=%d probe_results=%d ops_alerts=%d", counts.MetricSamples, counts.MetricDetails, counts.ProbeResults, counts.OpsAlerts)
 	}
+	if a.cfg.NodeJobTerminalRetentionDays > 0 {
+		cutoff := now.AddDate(0, 0, -a.cfg.NodeJobTerminalRetentionDays)
+		if n, err := a.store.PruneTerminalNodeJobs(ctx, cutoff, 2000); err != nil {
+			return err
+		} else if n > 0 {
+			log.Printf("pruned node_jobs deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
+		}
+	}
+	if a.cfg.AuditLogRetentionDays > 0 {
+		cutoff := now.AddDate(0, 0, -a.cfg.AuditLogRetentionDays)
+		if n, err := a.store.PruneAuditLogs(ctx, cutoff, 2000); err != nil {
+			return err
+		} else if n > 0 {
+			log.Printf("pruned audit_logs deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
+		}
+	}
+	if a.cfg.AlertSentRetentionDays > 0 {
+		cutoff := now.AddDate(0, 0, -a.cfg.AlertSentRetentionDays)
+		if n, err := a.store.PruneSentAlerts(ctx, cutoff, 2000); err != nil {
+			return err
+		} else if n > 0 {
+			log.Printf("pruned alerts deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
+		}
+	}
+	if a.cfg.EnforcementLogRetentionDays > 0 {
+		cutoff := now.AddDate(0, 0, -a.cfg.EnforcementLogRetentionDays)
+		if n, err := a.store.PruneEnforcementLogs(ctx, cutoff, 2000); err != nil {
+			return err
+		} else if n > 0 {
+			log.Printf("pruned enforcement_logs deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
+		}
+	}
+	if a.cfg.QuotaWindowRetentionDays > 0 {
+		// Floor at 35 days so the current month-cycle window can never be
+		// pruned out from under quota enforcement.
+		days := a.cfg.QuotaWindowRetentionDays
+		if days < 35 {
+			days = 35
+		}
+		cutoff := now.AddDate(0, 0, -days)
+		if n, err := a.store.PruneQuotaWindows(ctx, cutoff, 2000); err != nil {
+			return err
+		} else if n > 0 {
+			log.Printf("pruned quota_windows deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
+		}
+	}
+	if n, err := a.store.DeleteExpiredAdminSessions(ctx, now); err != nil {
+		return err
+	} else if n > 0 {
+		log.Printf("pruned admin_sessions deleted=%d", n)
+	}
 	return nil
 }
 

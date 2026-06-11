@@ -332,6 +332,11 @@ FROM ops_alerts
 	return out, rows.Err()
 }
 
+// opsCleanupMaxBatches bounds how many LIMIT-batchSize delete batches a single
+// CleanupOpsData call runs per table, so a large backlog drains across prune
+// ticks without one tick monopolizing the write lock.
+const opsCleanupMaxBatches = 20
+
 func (s *Store) CleanupOpsData(ctx context.Context, now time.Time, sampleDays int, detailHours int, probeDays int, alertResolvedDays int, batchSize int) (OpsCleanupCounts, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -342,30 +347,48 @@ func (s *Store) CleanupOpsData(ctx context.Context, now time.Time, sampleDays in
 	var out OpsCleanupCounts
 	var err error
 	if sampleDays > 0 {
-		out.MetricSamples, err = deleteOlderThan(ctx, s.db, "node_metric_samples", "sampled_at", now.AddDate(0, 0, -sampleDays), batchSize, "")
+		out.MetricSamples, err = deleteOlderThanBatched(ctx, s.db, "node_metric_samples", "sampled_at", now.AddDate(0, 0, -sampleDays), batchSize, "")
 		if err != nil {
 			return out, err
 		}
 	}
 	if detailHours > 0 {
-		out.MetricDetails, err = deleteOlderThan(ctx, s.db, "node_metric_details", "sampled_at", now.Add(-time.Duration(detailHours)*time.Hour), batchSize, "")
+		out.MetricDetails, err = deleteOlderThanBatched(ctx, s.db, "node_metric_details", "sampled_at", now.Add(-time.Duration(detailHours)*time.Hour), batchSize, "")
 		if err != nil {
 			return out, err
 		}
 	}
 	if probeDays > 0 {
-		out.ProbeResults, err = deleteOlderThan(ctx, s.db, "node_probe_results", "checked_at", now.AddDate(0, 0, -probeDays), batchSize, "")
+		out.ProbeResults, err = deleteOlderThanBatched(ctx, s.db, "node_probe_results", "checked_at", now.AddDate(0, 0, -probeDays), batchSize, "")
 		if err != nil {
 			return out, err
 		}
 	}
 	if alertResolvedDays > 0 {
-		out.OpsAlerts, err = deleteOlderThan(ctx, s.db, "ops_alerts", "resolved_at", now.AddDate(0, 0, -alertResolvedDays), batchSize, "status = 'resolved' AND resolved_at IS NOT NULL")
+		out.OpsAlerts, err = deleteOlderThanBatched(ctx, s.db, "ops_alerts", "resolved_at", now.AddDate(0, 0, -alertResolvedDays), batchSize, "status = 'resolved' AND resolved_at IS NOT NULL")
 		if err != nil {
 			return out, err
 		}
 	}
 	return out, nil
+}
+
+// deleteOlderThanBatched repeats the single-batch delete until a batch comes
+// back smaller than batchSize (backlog drained) or opsCleanupMaxBatches is
+// reached (latency bound; the remainder drains on subsequent prune ticks).
+func deleteOlderThanBatched(ctx context.Context, db *sql.DB, table, column string, cutoff time.Time, batchSize int, extraWhere string) (int64, error) {
+	var total int64
+	for i := 0; i < opsCleanupMaxBatches; i++ {
+		n, err := deleteOlderThan(ctx, db, table, column, cutoff, batchSize, extraWhere)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n < int64(batchSize) {
+			break
+		}
+	}
+	return total, nil
 }
 
 func deleteOlderThan(ctx context.Context, db *sql.DB, table, column string, cutoff time.Time, limit int, extraWhere string) (int64, error) {

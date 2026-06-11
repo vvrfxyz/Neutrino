@@ -510,8 +510,10 @@ func Migrate(conn *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_events_user_id ON traffic_events(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_events_event_at ON traffic_events(event_at);`,
-		`CREATE INDEX IF NOT EXISTS idx_traffic_events_source_at ON traffic_events(source, event_at);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_traffic_events_source_event ON traffic_events(source, source_event_id);`,
+		// idx_traffic_events_source_at / uniq_traffic_events_source_event reference
+		// the compat-added source/source_event_id columns, so they are created in
+		// postCompatIndexes below — old databases do not have those columns yet
+		// when this batch runs.
 		`CREATE INDEX IF NOT EXISTS idx_usage_event_keys_created_at ON usage_event_keys(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_event_keys_user_id ON usage_event_keys(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_rollups_hourly_bucket ON traffic_rollups_hourly(bucket_start);`,
