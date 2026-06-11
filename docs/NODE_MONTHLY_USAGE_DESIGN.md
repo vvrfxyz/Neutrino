@@ -14,12 +14,12 @@ It exists alongside, not instead of:
 - panel host monthly traffic, and
 - user quota / usage accounting from `POST /api/v1/usage`.
 
-Node-side month keys are computed in the agent-local timezone (see
-`AGENT_ACCESS_LOG_TZ` is **not** reused here; the agent month uses
-`time.Local` on the agent host). Panel-side month keys (host-net rollup in
-`host_net_monthly_usage` and `/ops` display) are computed using `PANEL_TZ`
-(default `UTC`). The two pipelines are independent and may use different
-timezones without affecting each other.
+Node-side month keys are computed in the agent's month timezone:
+`AGENT_MONTH_TZ` when set, otherwise `time.Local`, otherwise UTC (with a
+one-time warning). `AGENT_ACCESS_LOG_TZ` is **not** reused here. Panel-side
+month keys (host-net rollup in `host_net_monthly_usage` and `/ops` display)
+are computed using `PANEL_TZ` (default `UTC`). The two pipelines are
+independent and may use different timezones without affecting each other.
 
 ## Semantics
 

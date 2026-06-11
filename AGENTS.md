@@ -2,8 +2,7 @@
 
 ## Project Scope
 - This repository is the source of truth for the Neutrino panel and backend.
-- `Xray-core/` in this repo is **reference only**. Do not run or modify it for production behavior.
-- Production Xray should use installed release binaries.
+- Production Xray uses the pinned upstream container image; this repo never vendors or builds Xray itself.
 - This is a greenfield project: prioritize correctness and simplicity over backward compatibility. Breaking changes are allowed unless explicitly required.
 
 ## Engineering Principles
@@ -29,6 +28,7 @@
   - `export all_proxy=socks5://127.0.0.1:6153`
 - `PANEL_TZ` (panel-only, default `UTC`) drives panel-side natural-month host-net rollup and display. Do not rely on process `TZ` / `time.Local` for month keys.
 - `AGENT_ACCESS_LOG_TZ` (node-agent only, default empty = `time.Local`) is the timezone used to parse Xray access-log timestamps (which carry no offset).
+- `AGENT_MONTH_TZ` (node-agent only) sets the timezone for the node natural-month RX/TX rollup key; fallback order is `AGENT_MONTH_TZ` → `time.Local` → UTC (with a one-time warning).
 
 ## Deployment Policy
 - For container verification and release acceptance, skip local Docker startup.
@@ -52,11 +52,11 @@
   - it changes expired `active` users to `expired`,
   - deactivates active proxy links,
   - records enforcement log with reason `expired`.
-- Over-limit auto-disable is implemented by `RecordUsage -> enforceLimit`:
+- Over-limit auto-disable is implemented by the usage ingest path `UsageService.RecordBatch → RecordUsageBatchIdempotent → applyUsageEventTx → enforceLimit`:
   - when `effective_bytes > monthly_limit_bytes + credit_bytes`, user status becomes `over_limit`,
   - active proxy links are deactivated,
   - `quota_windows.over_limit_at` and enforcement log are written.
-- Quota threshold alerting is queued in `RecordUsage -> queueQuotaAlertsTx` (80%/90%); sending is handled by the app worker.
+- Quota threshold alerting is queued in the same ingest path via `queueQuotaAlertsTx` (80%/90%); sending is handled by the app worker.
 - IP over-limit auto-disable is implemented by node report `online_snapshot` + `ApplyOnlineSnapshot` + `EnforceIPLimit`:
   - authoritative online sessions are tracked in `online_sessions` (distinct `client_ip`),
   - streak-based enforcement flips `active` users to `over_ip_limit`, deactivates links, and writes enforcement log + alert.
@@ -64,8 +64,9 @@
 - Xray stats delta + access log parsing are done by node-agent (panel never polls node stats/logs).
 - Access log parsing should store destination metadata with zero-byte outbound events.
 - Panel triggers managed operations via durable jobs:
-  - `node_jobs.kind=users_sync|xray_apply|xray_rollback`
+  - `node_jobs.kind=users_sync|xray_apply|xray_rollback|probe_dns|probe_tcp|probe_http` (`probe_ping` is a legacy alias for `probe_tcp`).
   - Node-agent claims jobs (pull model), executes locally, and reports result/error for audit + retries.
+  - Probe kinds dedupe per node+kind+correlation; all running jobs are bounded by the timeout sweeper.
 
 ## Safety
 - Never commit secrets (private keys, passwords, tokens).
@@ -80,7 +81,11 @@
   3. Container build and startup checks pass (if Docker available).
 
 ## Current Admin UI Baseline
-- `/users`: create user, list users, link copy, generate link, enable/disable/delete.
-- `/users/{id}`: user detail page with link, quota summary, recent events table.
-- `/ops`: operations page (host metrics + online users).
 - `/login` and `/logout`: session-based admin auth flow.
+- `/users`: create user, list users (+ `/users/table` HTMX partial), link copy, generate link, enable/disable/delete.
+- `/users/{id}`: user detail page with link, quota summary, recent events table.
+- `/nodes`: node list/management; `/nodes/{id}/deploy`: node deploy + managed-xray page.
+- `/traffic`: traffic charts (rollup-backed).
+- `/enforcements`: enforcement log.
+- `/ops`: operations page (host metrics, node cards, online users, probes, alerts).
+- `/ops-v2`: flag-gated (`ENABLE_OPS_V2=true`) React preview dashboard served from `frontend/ops-demo/dist`.

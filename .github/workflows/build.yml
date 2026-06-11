@@ -50,6 +50,6 @@ jobs:
 
       - name: Shellcheck release scripts
         run: |
-          shellcheck scripts/release/*.sh
+          shellcheck scripts/release/*.sh scripts/mtls/*.sh
           scripts/release/lint_remote_bodies.sh
 
