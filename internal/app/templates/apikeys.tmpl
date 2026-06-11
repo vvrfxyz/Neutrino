@@ -1,0 +1,103 @@
+{{define "page-content"}}
+{{$d := .Content}}
+<!-- Header -->
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-slate-900">API 密钥</h1>
+  <p class="text-sm text-slate-500 mt-1">机器接口（X-API-Key）的密钥生命周期管理：创建、查看、吊销</p>
+</div>
+
+{{if $d.Error}}
+<div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{{$d.Error}}</div>
+{{end}}
+
+{{if $d.PlainKey}}
+<div class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+  <div class="text-sm font-medium text-emerald-800">密钥已创建 — 该明文只显示这一次，请立即复制保存</div>
+  <code id="new-api-key" class="mt-2 block break-all rounded bg-white px-3 py-2 font-mono text-sm text-slate-800 ring-1 ring-emerald-200">{{$d.PlainKey}}</code>
+</div>
+{{end}}
+
+<!-- Create form -->
+<div class="mb-6 {{surfaceCardClass}}">
+  <div class="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">创建密钥</div>
+  <form method="post" action="/apikeys" class="space-y-4 p-4">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <div class="grid gap-4 sm:grid-cols-2">
+      <div>
+        <label class="mb-1 block text-xs font-medium text-slate-500">名称</label>
+        <input name="name" required placeholder="例如 ci-deploy"
+               class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+      </div>
+      <div>
+        <label class="mb-1 block text-xs font-medium text-slate-500">有效期（天，留空为永久）</label>
+        <input name="expires_days" type="number" min="1" placeholder="留空 = 不过期"
+               class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+      </div>
+    </div>
+    <div>
+      <label class="mb-2 block text-xs font-medium text-slate-500">Scopes</label>
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        {{range $d.ValidScopes}}
+        <label class="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-700">
+          <input type="checkbox" name="scopes" value="{{.}}" class="rounded border-slate-300">
+          <code class="font-mono">{{.}}</code>
+        </label>
+        {{end}}
+      </div>
+    </div>
+    <button type="submit" class="{{chipButtonClass "blue" false}}">创建密钥</button>
+  </form>
+</div>
+
+<!-- Key list -->
+<div class="{{surfaceCardClass}}">
+  <div class="overflow-x-auto">
+    <table class="w-full min-w-[760px] text-sm">
+      <thead>
+        <tr class="border-b border-slate-200 bg-slate-50">
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">ID</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">名称</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">Scopes</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">创建时间</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">最近使用</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">过期</th>
+          <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">状态</th>
+          <th class="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range $d.Items}}
+        <tr class="border-b border-slate-100 hover:bg-slate-50/50">
+          <td class="px-3 py-2.5 font-mono text-xs text-slate-400 sm:px-4">#{{.ID}}</td>
+          <td class="px-3 py-2.5 text-sm font-medium text-slate-800 sm:px-4">{{.Name}}</td>
+          <td class="px-3 py-2.5 sm:px-4">
+            <code class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600">{{.Scopes}}</code>
+          </td>
+          <td class="px-3 py-2.5 font-mono text-xs text-slate-500 sm:px-4">{{fmtTime .CreatedAt}}</td>
+          <td class="px-3 py-2.5 font-mono text-xs text-slate-500 sm:px-4">{{fmtMaybeTime .LastUsedAt}}</td>
+          <td class="px-3 py-2.5 font-mono text-xs text-slate-500 sm:px-4">{{fmtMaybeTime .ExpiresAt}}</td>
+          <td class="px-3 py-2.5 sm:px-4">
+            {{if .RevokedAt}}
+            <span class="rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-700">已吊销</span>
+            {{else}}
+            <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">有效</span>
+            {{end}}
+          </td>
+          <td class="px-3 py-2.5 text-right sm:px-4">
+            {{if not .RevokedAt}}
+            <form method="post" action="/apikeys/{{.ID}}/revoke" class="inline"
+                  onsubmit="return confirm('确认吊销该密钥？吊销后立即失效。');">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <button type="submit" class="{{chipButtonClass "red" false}}">吊销</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="8" class="px-3 py-12 text-center text-sm text-slate-400 sm:px-4">暂无密钥</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

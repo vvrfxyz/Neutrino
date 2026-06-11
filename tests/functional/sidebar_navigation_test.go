@@ -33,6 +33,7 @@ func TestFunctional_SidebarNavigationUsesStableHTMXMainTarget(t *testing.T) {
 		{page: "nodes", path: "/nodes"},
 		{page: "traffic", path: "/traffic"},
 		{page: "enforcements", path: "/enforcements"},
+		{page: "apikeys", path: "/apikeys"},
 		{page: "ops", path: "/ops"},
 	}
 	links := sidebarLinksByPage(t, doc)
@@ -85,6 +86,7 @@ func TestFunctional_SidebarActiveStateMatchesRenderedRoute(t *testing.T) {
 		{page: "nodes", path: "/nodes", title: "节点管理"},
 		{page: "traffic", path: "/traffic", title: "流量分析"},
 		{page: "enforcements", path: "/enforcements", title: "执行记录"},
+		{page: "apikeys", path: "/apikeys", title: "API 密钥"},
 		{page: "ops", path: "/ops", title: "运维监控"},
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,5 +131,63 @@ func TestFunctional_APIKeyLifecycleHTTP(t *testing.T) {
 	defer missingResp.Body.Close()
 	if missingResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing id status=%d, want 404", missingResp.StatusCode)
+	}
+}
+
+func TestFunctional_APIKeysAdminPage(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Page renders for an admin with the create form and scope checkboxes.
+	pageResp := env.request(t, http.MethodGet, "/apikeys", nil, true, "")
+	defer pageResp.Body.Close()
+	if pageResp.StatusCode != http.StatusOK {
+		t.Fatalf("page status=%d", pageResp.StatusCode)
+	}
+	body := decodeBodyText(t, pageResp)
+	for _, want := range []string{`action="/apikeys"`, `name="scopes"`, "users:read", "暂无密钥"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("page missing %q", want)
+		}
+	}
+
+	// Create via the SSR form; the plaintext key renders exactly once.
+	form := url.Values{}
+	form.Set("name", "panel-made")
+	form.Add("scopes", "nodes:read")
+	createResp := env.requestForm(t, http.MethodPost, "/apikeys", form, true)
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusOK {
+		t.Fatalf("form create status=%d", createResp.StatusCode)
+	}
+	createBody := decodeBodyText(t, createResp)
+	if !strings.Contains(createBody, "nk_") || !strings.Contains(createBody, "panel-made") {
+		t.Fatalf("create page missing key or name")
+	}
+
+	// Subsequent page loads must NOT re-show the plaintext.
+	again := env.request(t, http.MethodGet, "/apikeys", nil, true, "")
+	defer again.Body.Close()
+	if b := decodeBodyText(t, again); strings.Contains(b, "nk_") {
+		t.Fatalf("plaintext key persisted across page loads")
+	}
+
+	// Revoke via the SSR route redirects back to the page.
+	var keyID int64
+	if err := env.store.RawDB().QueryRowContext(context.Background(),
+		`SELECT id FROM api_keys WHERE name='panel-made'`).Scan(&keyID); err != nil {
+		t.Fatalf("lookup key id: %v", err)
+	}
+	revokeResp := env.requestForm(t, http.MethodPost, "/apikeys/"+strconv.FormatInt(keyID, 10)+"/revoke", url.Values{}, true)
+	defer revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusOK && revokeResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("revoke status=%d", revokeResp.StatusCode)
+	}
+	var revokedAt string
+	if err := env.store.RawDB().QueryRowContext(context.Background(),
+		`SELECT COALESCE(revoked_at,'') FROM api_keys WHERE id=?`, keyID).Scan(&revokedAt); err != nil {
+		t.Fatalf("read revoked_at: %v", err)
+	}
+	if revokedAt == "" {
+		t.Fatalf("revoked_at not set after SSR revoke")
 	}
 }

@@ -87,5 +87,6 @@
 - `/nodes`: node list/management; `/nodes/{id}/deploy`: node deploy + managed-xray page.
 - `/traffic`: traffic charts (rollup-backed).
 - `/enforcements`: enforcement log.
+- `/apikeys`: API key lifecycle (create with scope checkboxes, list, revoke; plaintext shown once).
 - `/ops`: operations page (host metrics, node cards, online users, probes, alerts).
 - `/ops-v2`: flag-gated (`ENABLE_OPS_V2=true`) React preview dashboard served from `frontend/ops-demo/dist`.

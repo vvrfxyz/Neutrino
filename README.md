@@ -128,7 +128,13 @@ go run ./cmd/node-agent
 - `GET /api/v1/ops/nodes` 归到 `nodes:read`
 - `GET /api/v1/metrics/host` 归到 `metrics:read`
 
-> 当前仓库里**没有**暴露 API Key 生命周期的 UI 或 HTTP 管理接口；HTTP 层只实现了验证与 scope 校验。
+API Key 生命周期管理（需要管理员 session 或 `admin`/`*` scope 的密钥；低权限密钥不能创建/吊销密钥）：
+
+- `GET /api/v1/apikeys` — 列出密钥元数据（绝不返回明文或哈希）
+- `POST /api/v1/apikeys` — 创建；明文 `nk_…` 仅在本次响应中出现一次
+- `GET /api/v1/apikeys/{id}` — 单个密钥元数据
+- `DELETE /api/v1/apikeys/{id}` — 吊销（幂等），立即生效
+- 管理页：`/apikeys`（创建表单 + 列表 + 吊销）
 
 ## 关键 HTTP 接口
 

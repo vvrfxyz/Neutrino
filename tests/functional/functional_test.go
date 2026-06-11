@@ -593,7 +593,7 @@ func TestFunctional_UINavAndTrafficFilters(t *testing.T) {
 	}
 
 	resp = env.request(t, http.MethodGet, "/apikeys", nil, true, "")
-	mustStatus(t, resp, http.StatusNotFound)
+	mustStatus(t, resp, http.StatusOK)
 	_ = resp.Body.Close()
 
 	resp = env.request(t, http.MethodGet, "/alerts", nil, true, "")
