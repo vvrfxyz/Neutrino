@@ -55,11 +55,15 @@ func (s *Store) CreateAPIKey(ctx context.Context, name, scopes string, nodeID *i
 	return plain, meta, nil
 }
 
+// RevokeAPIKey marks a key revoked. The revoked_at guard keeps the original
+// revocation timestamp intact under concurrent revokes; sql.ErrNoRows means
+// the key does not exist or was already revoked — callers that need to
+// distinguish should GetAPIKey first.
 func (s *Store) RevokeAPIKey(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, `
 UPDATE api_keys
 SET revoked_at = ?
-WHERE id = ?;
+WHERE id = ? AND revoked_at IS NULL;
 `, time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		return err
