@@ -435,6 +435,275 @@ type claimResult struct {
 	err error
 }
 
+func TestSweepTimedOutRunningJobsSweepsAbandonedProbeJob(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "probe-sweep-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	probeJobID, _, err := s.EnqueueNodeJob(ctx, node.ID, "probe_http", "", `{"url":"https://a.example/healthz"}`, 5, "probe_http:https://a.example/healthz")
+	if err != nil {
+		t.Fatalf("enqueue probe job: %v", err)
+	}
+	claimed, ok, err := s.ClaimNextNodeJobForNode(ctx, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim probe job ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != probeJobID {
+		t.Fatalf("claimed job %d, want probe job %d", claimed.ID, probeJobID)
+	}
+
+	// Production kind defaults: probe kinds are intentionally absent.
+	kindDefaults := map[string]time.Duration{
+		"users_sync":    20 * time.Second,
+		"xray_apply":    120 * time.Second,
+		"xray_rollback": 60 * time.Second,
+	}
+
+	// Within timeout_sec(5s) + grace(60s): not swept yet.
+	recentStart := time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339)
+	if _, err := s.RawDB().ExecContext(ctx, `UPDATE node_jobs SET started_at = ? WHERE id = ?;`, recentStart, probeJobID); err != nil {
+		t.Fatalf("age running probe job (fresh): %v", err)
+	}
+	affected, err := s.SweepTimedOutRunningJobs(ctx, kindDefaults, 5)
+	if err != nil {
+		t.Fatalf("sweep (fresh): %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("fresh probe job should not be swept, affected=%d", affected)
+	}
+
+	// Past timeout_sec + grace: the abandoned probe must be swept even though
+	// probe kinds have no kind-default entry.
+	oldStart := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	if _, err := s.RawDB().ExecContext(ctx, `UPDATE node_jobs SET started_at = ? WHERE id = ?;`, oldStart, probeJobID); err != nil {
+		t.Fatalf("age running probe job (stale): %v", err)
+	}
+	affected, err = s.SweepTimedOutRunningJobs(ctx, kindDefaults, 5)
+	if err != nil {
+		t.Fatalf("sweep (stale): %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("abandoned probe job should be swept, affected=%d", affected)
+	}
+	probeJob, ok, err := s.GetNodeJob(ctx, probeJobID)
+	if err != nil || !ok {
+		t.Fatalf("get probe job ok=%v err=%v", ok, err)
+	}
+	if probeJob.Status != "pending" {
+		t.Fatalf("swept probe job status=%s, want pending", probeJob.Status)
+	}
+
+	// The node's pipeline is unblocked: a users_sync job can be claimed.
+	usersJobID, _, err := s.EnqueueNodeJob(ctx, node.ID, "users_sync", "v1", `{}`, 20, "users")
+	if err != nil {
+		t.Fatalf("enqueue users_sync: %v", err)
+	}
+	claimed, ok, err = s.ClaimNextNodeJobForNode(ctx, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim users_sync after sweep ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != usersJobID || claimed.Kind != "users_sync" {
+		t.Fatalf("expected users_sync claim after sweep, got %+v", claimed)
+	}
+}
+
+func TestSweepTimedOutRunningJobsUsesGlobalFallbackWithoutKindDefaultOrTimeout(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "fallback-sweep-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	// timeout_sec = 0 is stored as NULL; sweep with an empty kind-default map.
+	jobID, _, err := s.EnqueueNodeJob(ctx, node.ID, "probe_dns", "", `{"host":"a.example"}`, 0, "probe_dns:a.example")
+	if err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	if _, ok, err := s.ClaimNextNodeJobForNode(ctx, node.ID); err != nil || !ok {
+		t.Fatalf("claim job ok=%v err=%v", ok, err)
+	}
+	var storedTimeout sql.NullInt64
+	if err := s.RawDB().QueryRowContext(ctx, `SELECT timeout_sec FROM node_jobs WHERE id = ?;`, jobID).Scan(&storedTimeout); err != nil {
+		t.Fatalf("query timeout_sec: %v", err)
+	}
+	if storedTimeout.Valid {
+		t.Fatalf("expected NULL timeout_sec, got %d", storedTimeout.Int64)
+	}
+
+	// Younger than the global fallback: not swept.
+	if _, err := s.RawDB().ExecContext(ctx, `UPDATE node_jobs SET started_at = ? WHERE id = ?;`, time.Now().UTC().Add(-5*time.Minute).Format(time.RFC3339), jobID); err != nil {
+		t.Fatalf("age running job (fresh): %v", err)
+	}
+	affected, err := s.SweepTimedOutRunningJobs(ctx, map[string]time.Duration{}, 5)
+	if err != nil {
+		t.Fatalf("sweep (fresh): %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("job under global fallback should not be swept, affected=%d", affected)
+	}
+
+	// Older than the global fallback: swept even with no kind default and no timeout_sec.
+	if _, err := s.RawDB().ExecContext(ctx, `UPDATE node_jobs SET started_at = ? WHERE id = ?;`, time.Now().UTC().Add(-nodeJobSweepFallbackTimeout-time.Minute).Format(time.RFC3339), jobID); err != nil {
+		t.Fatalf("age running job (stale): %v", err)
+	}
+	affected, err = s.SweepTimedOutRunningJobs(ctx, map[string]time.Duration{}, 5)
+	if err != nil {
+		t.Fatalf("sweep (stale): %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("job past global fallback should be swept, affected=%d", affected)
+	}
+	job, ok, err := s.GetNodeJob(ctx, jobID)
+	if err != nil || !ok {
+		t.Fatalf("get job ok=%v err=%v", ok, err)
+	}
+	if job.Status != "pending" {
+		t.Fatalf("swept job status=%s, want pending", job.Status)
+	}
+}
+
+func TestSweepTimedOutJobCandidateIgnoresFinishedAndReclaimedAttempt(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "sweep-race-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	jobID, _, err := s.EnqueueNodeJob(ctx, node.ID, "users_sync", "v1", `{}`, 20, "race")
+	if err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	first, ok, err := s.ClaimNextNodeJobForNode(ctx, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim first attempt ok=%v err=%v", ok, err)
+	}
+	if first.Attempts != 1 {
+		t.Fatalf("first claim attempt=%d, want 1", first.Attempts)
+	}
+
+	// Simulate the sweep's candidate scan observing attempt 1.
+	var scannedStartedAt string
+	if err := s.RawDB().QueryRowContext(ctx, `SELECT started_at FROM node_jobs WHERE id = ?;`, jobID).Scan(&scannedStartedAt); err != nil {
+		t.Fatalf("read scanned started_at: %v", err)
+	}
+	stale := nodeJobSweepCandidate{
+		jobID:     jobID,
+		nodeID:    node.ID,
+		kind:      "users_sync",
+		attempts:  first.Attempts,
+		startedAt: scannedStartedAt,
+	}
+
+	// Before the sweep update runs, the agent finishes attempt 1 (retryable
+	// failure -> requeue) and re-claims attempt 2.
+	final, err := s.FinishNodeJobForNode(ctx, node.ID, jobID, FinishNodeJobInput{
+		Status:      "failed",
+		Retryable:   true,
+		ErrorMsg:    "transient failure",
+		MaxAttempts: 5,
+		Attempt:     first.Attempts,
+	})
+	if err != nil {
+		t.Fatalf("finish first attempt: %v", err)
+	}
+	if final != "pending" {
+		t.Fatalf("final=%s, want pending", final)
+	}
+	second, ok, err := s.ClaimNextNodeJobForNode(ctx, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim second attempt ok=%v err=%v", ok, err)
+	}
+	if second.Attempts != 2 {
+		t.Fatalf("second claim attempt=%d, want 2", second.Attempts)
+	}
+
+	// The fenced update with the stale attempt must affect 0 rows.
+	swept, err := s.sweepTimedOutJobCandidate(ctx, stale, 5, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("sweep stale candidate: %v", err)
+	}
+	if swept {
+		t.Fatalf("stale candidate must not sweep the re-claimed attempt")
+	}
+	job, ok, err := s.GetNodeJob(ctx, jobID)
+	if err != nil || !ok {
+		t.Fatalf("get job ok=%v err=%v", ok, err)
+	}
+	if job.Status != "running" || job.Attempts != second.Attempts {
+		t.Fatalf("re-claimed attempt was clobbered: %+v", job)
+	}
+	var lastError sql.NullString
+	var lastErrorKind sql.NullString
+	if err := s.RawDB().QueryRowContext(ctx, `SELECT last_error, last_job_error_kind FROM nodes WHERE id = ?;`, node.ID).Scan(&lastError, &lastErrorKind); err != nil {
+		t.Fatalf("query node error state: %v", err)
+	}
+	if lastError.Valid && lastError.String == "timeout" {
+		t.Fatalf("node last_error must not be stamped by a stale sweep, got %q", lastError.String)
+	}
+	if lastErrorKind.Valid && lastErrorKind.String == "retryable" {
+		t.Fatalf("node last_job_error_kind must not be stamped by a stale sweep, got %q", lastErrorKind.String)
+	}
+
+	// Same fencing protects a job that finished 'succeeded' between scan and update.
+	staleSecond := nodeJobSweepCandidate{
+		jobID:     jobID,
+		nodeID:    node.ID,
+		kind:      "users_sync",
+		attempts:  second.Attempts,
+		startedAt: scannedStartedAt, // started_at from attempt 1, stale by definition
+	}
+	if _, err := s.FinishNodeJobForNode(ctx, node.ID, jobID, FinishNodeJobInput{
+		Status:      "succeeded",
+		MaxAttempts: 5,
+		Attempt:     second.Attempts,
+	}); err != nil {
+		t.Fatalf("finish second attempt: %v", err)
+	}
+	swept, err = s.sweepTimedOutJobCandidate(ctx, staleSecond, 5, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("sweep stale candidate after success: %v", err)
+	}
+	if swept {
+		t.Fatalf("stale candidate must not sweep a succeeded job")
+	}
+	job, ok, err = s.GetNodeJob(ctx, jobID)
+	if err != nil || !ok {
+		t.Fatalf("get job after success ok=%v err=%v", ok, err)
+	}
+	if job.Status != "succeeded" {
+		t.Fatalf("succeeded job was clobbered by stale sweep: %+v", job)
+	}
+}
+
 func TestClaimNextNodeJobForNode_ParallelClaimsExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

@@ -504,6 +504,10 @@ func (s *NodeService) RollbackManagedXray(ctx context.Context, nodeID int64, bac
 }
 
 func (s *NodeService) SweepTimedOutJobs(ctx context.Context, maxAttempts int) (int64, error) {
+	// Kind defaults only. Jobs carrying their own timeout_sec (e.g. probes)
+	// are swept at timeout_sec plus a grace period, and any running job with
+	// neither a per-job timeout nor a kind default is bounded by the repo's
+	// global fallback, so no kind can wedge a node's serial job pipeline.
 	timeoutByKind := map[string]time.Duration{
 		"users_sync":    20 * time.Second,
 		"xray_apply":    120 * time.Second,

@@ -635,35 +635,73 @@ ORDER BY j.node_id ASC;
 	return out, rows.Err()
 }
 
-// SweepTimedOutRunningJobs marks timed-out jobs as failed and optionally requeues them.
+// nodeJobSweepGrace is added on top of a job's own timeout_sec when computing
+// the sweep deadline. timeout_sec is the agent-side execution budget (e.g. a
+// probe's 3s execution timeout), so the sweeper must give the agent headroom
+// to run the job and report the result before reclaiming it.
+const nodeJobSweepGrace = 60 * time.Second
+
+// nodeJobSweepFallbackTimeout bounds jobs that have neither a per-job
+// timeout_sec nor a kind default, so every claimed job eventually times out
+// and can never permanently wedge a node's serial job pipeline.
+const nodeJobSweepFallbackTimeout = 10 * time.Minute
+
+// nodeJobSweepTimeout computes the effective sweep timeout for a running job:
+//   - timeout_sec > 0: max(timeout_sec + grace, kind default);
+//   - else: the kind default from timeoutByKind, if set;
+//   - else: the global fallback.
+func nodeJobSweepTimeout(timeoutSec int, kindDefault time.Duration) time.Duration {
+	if timeoutSec > 0 {
+		eff := time.Duration(timeoutSec)*time.Second + nodeJobSweepGrace
+		if kindDefault > eff {
+			eff = kindDefault
+		}
+		return eff
+	}
+	if kindDefault > 0 {
+		return kindDefault
+	}
+	return nodeJobSweepFallbackTimeout
+}
+
+// nodeJobSweepCandidate is one running job the sweeper considers timed out.
+// attempts and startedAt are the values observed during the candidate scan;
+// they fence the subsequent UPDATE so that an attempt the agent finished
+// and/or re-claimed between scan and update is never clobbered.
+type nodeJobSweepCandidate struct {
+	jobID     int64
+	nodeID    int64
+	kind      string
+	attempts  int
+	startedAt string
+}
+
+// SweepTimedOutRunningJobs marks timed-out running jobs as failed (or requeues
+// them while under maxAttempts) and stamps the owning node's error state.
+// The effective timeout per job is computed by nodeJobSweepTimeout, so every
+// claimed job times out eventually even if its kind has no default.
 func (s *Store) SweepTimedOutRunningJobs(ctx context.Context, timeoutByKind map[string]time.Duration, maxAttempts int) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
 	now := time.Now().UTC()
 
-	type candidate struct {
-		jobID    int64
-		nodeID   int64
-		kind     string
-		attempts int
-	}
-
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, node_id, kind, attempts, started_at
+SELECT id, node_id, kind, attempts, started_at, timeout_sec
 FROM node_jobs
 WHERE status = 'running' AND started_at IS NOT NULL;
 `)
 	if err != nil {
 		return 0, err
 	}
-	candidates := make([]candidate, 0, 8)
+	candidates := make([]nodeJobSweepCandidate, 0, 8)
 	for rows.Next() {
 		var jobID, nodeID int64
 		var kind string
 		var attempts int
 		var startedAtStr string
-		if err := rows.Scan(&jobID, &nodeID, &kind, &attempts, &startedAtStr); err != nil {
+		var timeoutSec sql.NullInt64
+		if err := rows.Scan(&jobID, &nodeID, &kind, &attempts, &startedAtStr, &timeoutSec); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -671,14 +709,15 @@ WHERE status = 'running' AND started_at IS NOT NULL;
 		if err != nil {
 			continue
 		}
-		to := timeoutByKind[strings.TrimSpace(kind)]
-		if to <= 0 {
-			continue
+		jobTimeoutSec := 0
+		if timeoutSec.Valid {
+			jobTimeoutSec = int(timeoutSec.Int64)
 		}
+		to := nodeJobSweepTimeout(jobTimeoutSec, timeoutByKind[strings.TrimSpace(kind)])
 		if now.Sub(startedAt) < to {
 			continue
 		}
-		candidates = append(candidates, candidate{jobID: jobID, nodeID: nodeID, kind: kind, attempts: attempts})
+		candidates = append(candidates, nodeJobSweepCandidate{jobID: jobID, nodeID: nodeID, kind: kind, attempts: attempts, startedAt: startedAtStr})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -689,41 +728,66 @@ WHERE status = 'running' AND started_at IS NOT NULL;
 	affected := int64(0)
 	nowStr := now.Format(time.RFC3339)
 	for _, c := range candidates {
-		final := "failed"
-		if c.attempts < maxAttempts {
-			final = "pending"
-		}
-		finishedAt := any(nowStr)
-		lastError := "timeout"
-		if final == "pending" {
-			finishedAt = nil
-			lastError = ""
-		}
-
-		tx, err := s.db.BeginTx(ctx, nil)
+		swept, err := s.sweepTimedOutJobCandidate(ctx, c, maxAttempts, nowStr)
 		if err != nil {
 			return affected, err
 		}
-		if _, err := tx.ExecContext(ctx, `
+		if swept {
+			affected++
+		}
+	}
+	return affected, nil
+}
+
+// sweepTimedOutJobCandidate times out a single scanned candidate. The job
+// UPDATE is fenced on the scanned attempts and started_at (mirroring
+// FinishNodeJobForNode); if the agent finished or re-claimed the job since
+// the scan, the UPDATE affects 0 rows and neither the job nor the node's
+// error fields are touched.
+func (s *Store) sweepTimedOutJobCandidate(ctx context.Context, c nodeJobSweepCandidate, maxAttempts int, nowStr string) (bool, error) {
+	final := "failed"
+	if c.attempts < maxAttempts {
+		final = "pending"
+	}
+	finishedAt := any(nowStr)
+	lastError := "timeout"
+	if final == "pending" {
+		finishedAt = nil
+		lastError = ""
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
 UPDATE node_jobs
 SET status = ?, retryable = 1, http_status = NULL, result_json = NULL, last_error = NULLIF(?, ''), finished_at = ?
-WHERE id = ? AND status = 'running';
-`, final, lastError, finishedAt, c.jobID); err != nil {
-			_ = tx.Rollback()
-			return affected, err
-		}
-		if _, err := tx.ExecContext(ctx, `
+WHERE id = ? AND status = 'running' AND attempts = ? AND started_at = ?;
+`, final, lastError, finishedAt, c.jobID, c.attempts, c.startedAt)
+	if err != nil {
+		return false, err
+	}
+	aff, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if aff == 0 {
+		// The scanned attempt finished or was re-claimed since the candidate
+		// scan; leave the fresh state (and the node's error fields) alone.
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
 UPDATE nodes
 SET last_error = ?, last_job_error_kind = ?, last_job_error_at = ?, updated_at = ?
 WHERE id = ?;
 `, nullableString("timeout"), "retryable", nowStr, nowStr, c.nodeID); err != nil {
-			_ = tx.Rollback()
-			return affected, err
-		}
-		if err := tx.Commit(); err != nil {
-			return affected, err
-		}
-		affected++
+		return false, err
 	}
-	return affected, nil
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
