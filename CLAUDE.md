@@ -8,7 +8,7 @@ For authoritative constraints and runtime decisions, see `AGENTS.md`.
 
 ```bash
 # rtk is a local wrapper around go commands (summarized output); plain `go` works too
-rtk go run ./cmd/server          # panel — must run from the repo root (see Caveats)
+rtk go run ./cmd/server          # panel (templates are embedded; /ops-v2 assets still need repo root)
 rtk go run ./cmd/node-agent      # node agent
 
 rtk go test ./...                # full suite (~335 tests across 21 packages)
@@ -88,7 +88,7 @@ Node deletion is staged: enabled → disable + drain `users_sync` → actual DB 
 ## Current Caveats
 
 - API key validation exists, but there is no UI or HTTP lifecycle endpoint for creating/listing/revoking API keys (repo CRUD helpers are test-only).
-- SSR templates are parsed from the CWD-relative path `internal/app/templates` via `template.Must` — the panel panics at startup unless run from the repo root (tests chdir to root; Dockerfile relies on `WORKDIR /app`). `/ops-v2` assets are likewise read from `frontend/ops-demo/dist` at request time.
+- SSR templates are embedded in the binary via `go:embed` (`internal/app/templates_embed.go`); the panel runs from any working directory. `/ops-v2` assets are still read from the CWD-relative `frontend/ops-demo/dist` at request time (the one remaining CWD dependency, flag-gated).
 - `CSRF_SECRET` is read directly via `os.Getenv` in `internal/app/app.go`, not through `internal/config`; malformed values silently degrade to an ephemeral per-process secret.
 - Usage-rejection contract: `/api/v1/usage` per-event error results carry structured `code` + `permanent` fields which new agents prefer; the legacy `error` strings remain the fallback contract for old agents (`isPermanentUsageRejection`/`isTransientUsageRejection` in `internal/agent/panel_client.go`). Do not reword those panel error strings until the legacy fallback is retired.
 
