@@ -781,6 +781,12 @@ func (a *App) StartWorkers(ctx context.Context) {
 	if err := a.ops().WarmUp(ctx); err != nil {
 		log.Printf("ops cache warmup error: %v", err)
 	}
+	// Delta users-sync rollout: every enabled node without a proven schema-1
+	// baseline gets exactly one forced full backfill (idempotent via the
+	// per-node backfill marker). Must not depend on operator action.
+	if err := a.nodes().EnqueueUsersSyncBaselineBackfill(ctx); err != nil {
+		log.Printf("users_sync baseline backfill error: %v", err)
+	}
 
 	interval := 5 * time.Second
 	quotaInterval := time.Duration(a.cfg.QuotaSweepSec) * time.Second

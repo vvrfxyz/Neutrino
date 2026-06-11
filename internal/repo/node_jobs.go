@@ -398,6 +398,25 @@ type FinishNodeJobInput struct {
 }
 
 func (s *Store) FinishNodeJobForNode(ctx context.Context, nodeID int64, jobID int64, in FinishNodeJobInput) (finalStatus string, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	finalStatus, err = finishNodeJobExec(ctx, tx, nodeID, jobID, in)
+	if err != nil {
+		return "", err
+	}
+	if err = tx.Commit(); err != nil {
+		return "", err
+	}
+	return finalStatus, nil
+}
+
+// finishNodeJobExec runs the terminal/retry transition on the caller's
+// transaction so kind-specific finish paths (users_sync) can compose
+// follow-up writes atomically with the transition.
+func finishNodeJobExec(ctx context.Context, tx usersSyncQuerier, nodeID int64, jobID int64, in FinishNodeJobInput) (finalStatus string, err error) {
 	if nodeID <= 0 || jobID <= 0 {
 		return "", fmt.Errorf("invalid node/job id")
 	}
@@ -415,12 +434,6 @@ func (s *Store) FinishNodeJobForNode(ctx context.Context, nodeID int64, jobID in
 		in.MaxAttempts = 5
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
 
 	// Determine current attempts to decide requeue. Consistent inside the tx.
 	// A finish request is only valid for the running attempt the agent claimed.
@@ -476,9 +489,6 @@ WHERE id = ? AND node_id = ? AND status = 'running' AND attempts = ?;
 	}
 	if affected == 0 {
 		return "", ErrNodeJobNotRunning
-	}
-	if err = tx.Commit(); err != nil {
-		return "", err
 	}
 	return finalStatus, nil
 }
@@ -806,6 +816,15 @@ SET last_error = ?, last_job_error_kind = ?, last_job_error_at = ?, updated_at =
 WHERE id = ?;
 `, nullableString("timeout"), "retryable", nowStr, nowStr, c.nodeID); err != nil {
 		return false, err
+	}
+	// A timed-out managed Xray job may have reloaded the runtime before the
+	// agent lost the finish report, wiping hot-added API users. Enqueue the
+	// forced full users repair in the same sweep transaction; users_sync claim
+	// priority guarantees it runs before any requeued xray attempt.
+	if c.kind == "xray_apply" || c.kind == "xray_rollback" {
+		if _, err := s.prepareUsersSyncTx(ctx, tx, c.nodeID, true, "xray_runtime_unknown_followup"); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err

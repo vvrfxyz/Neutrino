@@ -211,8 +211,18 @@ func Migrate(conn *sql.DB) error {
 			applied_xray_version TEXT NOT NULL DEFAULT '',
 			last_job_error_kind TEXT,
 			last_job_error_at TEXT,
+			users_sync_baseline_schema INTEGER NOT NULL DEFAULT 0,
+			users_sync_delta_ready_at TEXT,
+			users_sync_baseline_backfill_at TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS node_user_sync_snapshots (
+			node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			version TEXT NOT NULL,
+			users_json TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY(node_id, version)
 		);`,
 		`CREATE TABLE IF NOT EXISTS node_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -584,6 +594,11 @@ func Migrate(conn *sql.DB) error {
 		{"nodes", "applied_xray_version", "TEXT NOT NULL DEFAULT ''"},
 		{"nodes", "last_job_error_kind", "TEXT"},
 		{"nodes", "last_job_error_at", "TEXT"},
+		// users_sync_baseline_schema=0 forbids delta job generation for the
+		// node until a schema-1 full users-sync success has been accepted.
+		{"nodes", "users_sync_baseline_schema", "INTEGER NOT NULL DEFAULT 0"},
+		{"nodes", "users_sync_delta_ready_at", "TEXT"},
+		{"nodes", "users_sync_baseline_backfill_at", "TEXT"},
 		{"node_jobs", "desired_version", "TEXT NOT NULL DEFAULT ''"},
 		{"node_jobs", "retryable", "INTEGER NOT NULL DEFAULT 1"},
 		{"node_jobs", "http_status", "INTEGER"},
@@ -670,6 +685,7 @@ ON CONFLICT(source, source_event_id) DO NOTHING;
 		`CREATE INDEX IF NOT EXISTS idx_node_probe_results_time ON node_probe_results(checked_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_ops_alerts_status_seen ON ops_alerts(status, last_seen_at DESC);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_ops_alerts_active_dedupe ON ops_alerts(dedupe_key) WHERE status = 'active';`,
+		`CREATE INDEX IF NOT EXISTS idx_node_user_sync_snapshots_node_created ON node_user_sync_snapshots(node_id, created_at);`,
 	}
 	for _, stmt := range postCompatIndexes {
 		if _, err := conn.Exec(stmt); err != nil {

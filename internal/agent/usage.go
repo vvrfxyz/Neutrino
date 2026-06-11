@@ -365,7 +365,7 @@ func statsBatchHasCapacity(currentEvents int, maxEvents int) bool {
 
 func (a *Agent) buildStatsBatch(ctx context.Context) (UsageBatch, bool) {
 	snap := a.state.Snapshot()
-	users := snap.SyncedUsers
+	users := effectiveSyncedUsers(snap)
 	if len(users) == 0 {
 		return UsageBatch{}, false
 	}
@@ -429,7 +429,7 @@ func (a *Agent) buildAccessBatch(ctx context.Context) (UsageBatch, bool) {
 	}
 
 	snap := a.state.Snapshot()
-	users := snap.SyncedUsers
+	users := effectiveSyncedUsers(snap)
 	if len(users) == 0 {
 		return UsageBatch{}, false
 	}

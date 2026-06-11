@@ -15,6 +15,18 @@ type State struct {
 	// SyncedUsers is the last user list received from panel via /v1/users/sync.
 	SyncedUsers []UserSyncItem `json:"synced_users,omitempty"`
 
+	// SyncedUsersVersion is the canonical usersync.HashItems version of
+	// SyncedUsers as of the last committed users sync. Empty on state files
+	// written before the delta module; such agents must full-sync before any
+	// delta can be accepted.
+	SyncedUsersVersion string `json:"synced_users_version,omitempty"`
+
+	// PendingUsersSync is the pre-operation journal for an in-flight users
+	// sync: persisted before any Xray mutation, cleared in the same update
+	// that commits the new baseline. While set, users hot-added by a failed
+	// attempt may exist in Xray without being in SyncedUsers.
+	PendingUsersSync *PendingUsersSyncState `json:"pending_users_sync,omitempty"`
+
 	// AckedStats stores last counters that have been successfully applied on the panel side.
 	AckedStats map[string]StatEntry `json:"acked_stats,omitempty"`
 	// StatsEpoch is included in xray-stats source_event_id to avoid id collisions when xray counters reset.
@@ -27,6 +39,15 @@ type State struct {
 	// skip an apply: the on-disk config may match the desired config without
 	// the running xray ever having loaded it.
 	XrayReloadPending bool `json:"xray_reload_pending,omitempty"`
+}
+
+type PendingUsersSyncState struct {
+	Mode                 string         `json:"mode"`
+	BaseVersion          string         `json:"base_version,omitempty"`
+	TargetVersion        string         `json:"target_version"`
+	TargetUsers          []UserSyncItem `json:"target_users"`
+	PossibleRuntimeUsers []UserSyncItem `json:"possible_runtime_users,omitempty"`
+	CreatedAt            string         `json:"created_at"`
 }
 
 type AccessState struct {
@@ -85,12 +106,49 @@ func (st *StateStore) Snapshot() State {
 	return st.s
 }
 
+// deepCopy clones everything Update mutations may touch so a failed save can
+// roll back without leaving aliased slices/maps behind.
+func (s State) deepCopy() State {
+	out := s
+	if s.SyncedUsers != nil {
+		out.SyncedUsers = append([]UserSyncItem(nil), s.SyncedUsers...)
+	}
+	if s.AckedStats != nil {
+		out.AckedStats = make(map[string]StatEntry, len(s.AckedStats))
+		for k, v := range s.AckedStats {
+			out.AckedStats[k] = v
+		}
+	}
+	if s.PendingUsersSync != nil {
+		p := *s.PendingUsersSync
+		if p.TargetUsers != nil {
+			p.TargetUsers = append([]UserSyncItem(nil), p.TargetUsers...)
+		}
+		if p.PossibleRuntimeUsers != nil {
+			p.PossibleRuntimeUsers = append([]UserSyncItem(nil), p.PossibleRuntimeUsers...)
+		}
+		out.PendingUsersSync = &p
+	}
+	return out
+}
+
+// Update is memory-atomic: the mutation runs on a deep copy, and the copy is
+// kept only after the save succeeds. A failed save leaves both the persisted
+// file and the in-memory State unchanged, so a sync path can never observe a
+// baseline that was not durably written.
 func (st *StateStore) Update(fn func(s *State)) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	fn(&st.s)
-	return st.saveLocked()
+	next := st.s.deepCopy()
+	fn(&next)
+	prev := st.s
+	st.s = next
+	if err := st.saveLocked(); err != nil {
+		st.s = prev
+		return err
+	}
+	return nil
 }
 
 func (st *StateStore) saveLocked() error {

@@ -215,6 +215,24 @@ func TestFinishNodeJobForNodeRejectsStaleAttempt(t *testing.T) {
 		t.Fatalf("affected=%d, want 1", affected)
 	}
 
+	// A timed-out managed Xray job leaves runtime-user state unknown, so the
+	// sweep enqueues a forced full users_sync repair that must claim before
+	// the requeued xray_apply attempt.
+	repair, ok, err := s.ClaimNextNodeJobForNode(ctx, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim sweep repair ok=%v err=%v", ok, err)
+	}
+	if repair.Kind != "users_sync" {
+		t.Fatalf("expected users_sync repair to claim before xray retry, got %s", repair.Kind)
+	}
+	if _, err := s.FinishNodeJobForNode(ctx, node.ID, repair.ID, FinishNodeJobInput{
+		Status:      "succeeded",
+		MaxAttempts: 5,
+		Attempt:     repair.Attempts,
+	}); err != nil {
+		t.Fatalf("finish sweep repair: %v", err)
+	}
+
 	_, err = s.FinishNodeJobForNode(ctx, node.ID, jobID, FinishNodeJobInput{
 		Status:      "succeeded",
 		MaxAttempts: 5,
