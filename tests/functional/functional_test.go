@@ -1006,7 +1006,7 @@ func TestFunctional_OpsAndNodesCleanup(t *testing.T) {
 	})
 
 	resp = env.requestMTLS(t, node1, http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/report", node1), map[string]any{
-		"reported_at": now.Add(3 * time.Second).Format(time.RFC3339),
+		"reported_at": now.Add(-4 * time.Second).Format(time.RFC3339),
 		"metrics": map[string]any{
 			"month_key":          "2026-03",
 			"month_timezone":     "Asia/Shanghai",
@@ -1019,7 +1019,7 @@ func TestFunctional_OpsAndNodesCleanup(t *testing.T) {
 	_ = decodeBodyMap(t, resp)
 
 	resp = env.requestMTLS(t, node1, http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/report", node1), map[string]any{
-		"reported_at": now.Add(4 * time.Second).Format(time.RFC3339),
+		"reported_at": now.Add(-3 * time.Second).Format(time.RFC3339),
 		"metrics": map[string]any{
 			"cpu_percent":        12.5,
 			"memory_bytes":       2048,
@@ -1095,12 +1095,12 @@ func TestFunctional_OpsAndNodesCleanup(t *testing.T) {
 		}
 		if got, _ := row["agent_metrics_at"].(string); strings.TrimSpace(got) == "" {
 			t.Fatalf("missing agent_metrics_at row=%v", row)
-		} else if got != now.Add(4*time.Second).Format(time.RFC3339) {
-			t.Fatalf("expected agent_metrics_at to follow node reported_at got=%q want=%q row=%v", got, now.Add(4*time.Second).Format(time.RFC3339), row)
+		} else if got != now.Add(-3*time.Second).Format(time.RFC3339) {
+			t.Fatalf("expected agent_metrics_at to follow node reported_at got=%q want=%q row=%v", got, now.Add(-3*time.Second).Format(time.RFC3339), row)
 		}
 		if got, _ := row["last_seen_at"].(string); strings.TrimSpace(got) == "" {
 			t.Fatalf("missing last_seen_at row=%v", row)
-		} else if got == now.Add(4*time.Second).Format(time.RFC3339) {
+		} else if got == now.Add(-3*time.Second).Format(time.RFC3339) {
 			t.Fatalf("expected last_seen_at to reflect panel receive time, not node reported_at row=%v", row)
 		}
 		monthUsage, ok := row["month_usage"].(map[string]any)
@@ -1111,7 +1111,7 @@ func TestFunctional_OpsAndNodesCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load month location: %v", err)
 		}
-		wantMonthKey := now.Add(4 * time.Second).In(monthLoc).Format("2006-01")
+		wantMonthKey := now.Add(-3 * time.Second).In(monthLoc).Format("2006-01")
 		if got, _ := monthUsage["month_key"].(string); got != wantMonthKey {
 			t.Fatalf("unexpected month key=%q want=%q row=%v", got, wantMonthKey, row)
 		}
@@ -1121,8 +1121,8 @@ func TestFunctional_OpsAndNodesCleanup(t *testing.T) {
 		if got := int64(monthUsage["tx_bytes"].(float64)); got != 654321 {
 			t.Fatalf("unexpected month tx=%d row=%v", got, row)
 		}
-		if got, _ := monthUsage["last_reported_at"].(string); got != now.Add(4*time.Second).Format(time.RFC3339) {
-			t.Fatalf("expected month last_reported_at to follow node reported_at got=%q want=%q row=%v", got, now.Add(4*time.Second).Format(time.RFC3339), row)
+		if got, _ := monthUsage["last_reported_at"].(string); got != now.Add(-3*time.Second).Format(time.RFC3339) {
+			t.Fatalf("expected month last_reported_at to follow node reported_at got=%q want=%q row=%v", got, now.Add(-3*time.Second).Format(time.RFC3339), row)
 		}
 		foundRuntime = true
 	}

@@ -48,8 +48,8 @@ func newFakeStatsClient(t *testing.T, srv *fakeStatsServer) *Client {
 func TestPullOnlineIPsParsesIPsAndTimestamps(t *testing.T) {
 	base := time.Date(2026, 5, 1, 12, 30, 0, 0, time.UTC)
 	srv := &fakeStatsServer{ips: map[string]int64{
-		"192.0.2.10":  base.Unix(),
-		"2001:db8::1": base.Add(time.Second).Unix(),
+		"192.0.2.10":    base.Unix(),
+		"2001:db8::1":   base.Add(time.Second).Unix(),
 		"[2001:db8::2]": base.Add(2 * time.Second).Unix(),
 	}}
 	client := newFakeStatsClient(t, srv)
@@ -106,4 +106,70 @@ func TestPullOnlineIPsRejectsInvalidIPOrTimestamp(t *testing.T) {
 			t.Fatalf("expected malformed timestamp error")
 		}
 	})
+}
+
+func TestClientReusesConnectionAcrossCalls(t *testing.T) {
+	srv := &fakeStatsServer{ips: map[string]int64{}}
+	client := newFakeStatsClient(t, srv)
+	defer client.Close()
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.PullOnlineIPs(context.Background(), "alice@example.com"); err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+	client.mu.Lock()
+	conn := client.conn
+	client.mu.Unlock()
+	if conn == nil {
+		t.Fatalf("expected a cached shared connection after calls")
+	}
+}
+
+func TestClientRecoversAfterServerRestart(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := lis.Addr().String()
+	srv := &fakeStatsServer{ips: map[string]int64{}}
+	grpcSrv := grpc.NewServer()
+	statscmd.RegisterStatsServiceServer(grpcSrv, srv)
+	go func() { _ = grpcSrv.Serve(lis) }()
+
+	client := NewRaw(addr, "vless-reality", "xtls-rprx-vision")
+	defer client.Close()
+	if _, err := client.PullOnlineIPs(context.Background(), "alice@example.com"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+
+	// Kill the server: the shared connection must surface an error, not hang.
+	grpcSrv.Stop()
+	_ = lis.Close()
+	if _, err := client.PullOnlineIPs(context.Background(), "alice@example.com"); err == nil {
+		t.Fatalf("expected error while server is down")
+	}
+
+	// Restart on the same address: the client must reconnect transparently.
+	lis2, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Skipf("could not rebind %s: %v", addr, err)
+	}
+	grpcSrv2 := grpc.NewServer()
+	statscmd.RegisterStatsServiceServer(grpcSrv2, srv)
+	go func() { _ = grpcSrv2.Serve(lis2) }()
+	t.Cleanup(func() {
+		grpcSrv2.Stop()
+		_ = lis2.Close()
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := client.PullOnlineIPs(context.Background(), "alice@example.com"); err == nil {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("client did not recover after server restart: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

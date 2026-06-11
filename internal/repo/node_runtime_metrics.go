@@ -37,6 +37,7 @@ type NodeRuntimeMetrics struct {
 	BootTime             *time.Time
 	QueueBytes           int64
 	QueueBatches         int64
+	QuarantinedBatches   int64
 	Goroutines           int
 	AgentVersion         string
 	XrayVersion          string
@@ -125,6 +126,9 @@ func (s *Store) UpsertNodeRuntimeMetrics(ctx context.Context, nodeID int64, repo
 	if in.QueueBatches < 0 {
 		in.QueueBatches = 0
 	}
+	if in.QuarantinedBatches < 0 {
+		in.QuarantinedBatches = 0
+	}
 	if in.Goroutines < 0 {
 		in.Goroutines = 0
 	}
@@ -172,13 +176,14 @@ INSERT INTO node_runtime_metrics(
 	boot_time,
 	queue_bytes,
 	queue_batches,
+	quarantined_batches,
 	goroutines,
 	agent_version,
 	xray_version,
 	xray_config_version,
 	updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(node_id) DO UPDATE SET
 	cpu_percent = excluded.cpu_percent,
 	load1 = excluded.load1,
@@ -206,6 +211,7 @@ ON CONFLICT(node_id) DO UPDATE SET
 	boot_time = excluded.boot_time,
 	queue_bytes = excluded.queue_bytes,
 	queue_batches = excluded.queue_batches,
+	quarantined_batches = excluded.quarantined_batches,
 	goroutines = excluded.goroutines,
 	agent_version = excluded.agent_version,
 	xray_version = excluded.xray_version,
@@ -238,6 +244,7 @@ ON CONFLICT(node_id) DO UPDATE SET
 		bootTime,
 		in.QueueBytes,
 		in.QueueBatches,
+		in.QuarantinedBatches,
 		in.Goroutines,
 		in.AgentVersion,
 		in.XrayVersion,
@@ -276,6 +283,7 @@ SELECT node_id,
 	boot_time,
 	queue_bytes,
 	queue_batches,
+	quarantined_batches,
 	goroutines,
 	agent_version,
 	xray_version,
@@ -331,6 +339,7 @@ SELECT node_id,
 	boot_time,
 	queue_bytes,
 	queue_batches,
+	quarantined_batches,
 	goroutines,
 	agent_version,
 	xray_version,
@@ -381,6 +390,7 @@ func scanNodeRuntimeMetrics(scanner nodeRuntimeMetricsScanner) (NodeRuntimeMetri
 	var bootTime sql.NullString
 	var queueBytes sql.NullInt64
 	var queueBatches sql.NullInt64
+	var quarantinedBatches sql.NullInt64
 	var goroutines sql.NullInt64
 	var agentVersion sql.NullString
 	var xrayVersion sql.NullString
@@ -414,6 +424,7 @@ func scanNodeRuntimeMetrics(scanner nodeRuntimeMetricsScanner) (NodeRuntimeMetri
 		&bootTime,
 		&queueBytes,
 		&queueBatches,
+		&quarantinedBatches,
 		&goroutines,
 		&agentVersion,
 		&xrayVersion,
@@ -501,6 +512,9 @@ func scanNodeRuntimeMetrics(scanner nodeRuntimeMetricsScanner) (NodeRuntimeMetri
 	}
 	if queueBatches.Valid {
 		m.QueueBatches = queueBatches.Int64
+	}
+	if quarantinedBatches.Valid {
+		m.QuarantinedBatches = quarantinedBatches.Int64
 	}
 	if goroutines.Valid {
 		m.Goroutines = int(goroutines.Int64)

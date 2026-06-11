@@ -133,6 +133,62 @@ func TestSyncNodeOpsAlertsClearsGeneratedAlertsWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestSyncNodeOpsAlertsRaisesAndResolvesUsageQuarantine(t *testing.T) {
+	ctx := context.Background()
+	a, nodeID := newOpsAlertTestApp(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	quarantined := map[string]any{
+		"id":      nodeID,
+		"name":    "edge-a",
+		"enabled": true,
+		"health":  "online",
+		"agent_metrics": map[string]any{
+			"disk_used_percent":   10.0,
+			"memory_bytes":        int64(100),
+			"memory_total_bytes":  int64(1000),
+			"queue_batches":       int64(0),
+			"queue_bytes":         int64(0),
+			"quarantined_batches": int64(2),
+		},
+	}
+	if err := a.syncNodeOpsAlerts(ctx, quarantined, now); err != nil {
+		t.Fatalf("sync quarantined alerts: %v", err)
+	}
+	alerts, err := a.store.ListOpsAlerts(ctx, "active", 10)
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
+	if len(alerts) != 1 || alerts[0].Kind != "usage_quarantined" || alerts[0].Severity != "critical" {
+		t.Fatalf("usage_quarantined critical alert missing: %+v", alerts)
+	}
+
+	cleared := map[string]any{
+		"id":      nodeID,
+		"name":    "edge-a",
+		"enabled": true,
+		"health":  "online",
+		"agent_metrics": map[string]any{
+			"disk_used_percent":   10.0,
+			"memory_bytes":        int64(100),
+			"memory_total_bytes":  int64(1000),
+			"queue_batches":       int64(0),
+			"queue_bytes":         int64(0),
+			"quarantined_batches": int64(0),
+		},
+	}
+	if err := a.syncNodeOpsAlerts(ctx, cleared, now.Add(time.Minute)); err != nil {
+		t.Fatalf("sync cleared alerts: %v", err)
+	}
+	alerts, err = a.store.ListOpsAlerts(ctx, "active", 10)
+	if err != nil {
+		t.Fatalf("list active after clear: %v", err)
+	}
+	if len(alerts) != 0 {
+		t.Fatalf("active alerts after clear: %+v", alerts)
+	}
+}
+
 func newOpsAlertTestApp(t *testing.T) (*App, int64) {
 	t.Helper()
 	conn, err := db.Open(filepath.Join(t.TempDir(), "ops-alerts.db"))

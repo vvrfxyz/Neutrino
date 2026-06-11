@@ -133,6 +133,98 @@ func TestExecXrayApplyAppliesWhenExistingConfigCorrupt(t *testing.T) {
 	}
 }
 
+// failNTimesReloadScript writes a reload script that fails the first n
+// invocations and succeeds afterwards, returning the script path.
+func failNTimesReloadScript(t *testing.T, dir string, n int) string {
+	t.Helper()
+	countPath := filepath.Join(dir, "reload.count")
+	scriptPath := filepath.Join(dir, "reload.sh")
+	script := `#!/bin/sh
+countfile=` + strconv.Quote(countPath) + `
+n=0
+if [ -f "$countfile" ]; then n=$(cat "$countfile"); fi
+n=$((n + 1))
+echo "$n" > "$countfile"
+if [ "$n" -le ` + strconv.Itoa(n) + ` ]; then exit 1; fi
+exit 0
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write reload script: %v", err)
+	}
+	return scriptPath
+}
+
+// A failed reload installs the new config on disk but leaves xray running the
+// old one. The retry of the same job renders identical bytes — without the
+// reload-pending flag, skip-if-unchanged would mark the retry "succeeded"
+// without ever reloading xray.
+func TestExecXrayApplyRetriesReloadAfterFailureDespiteUnchangedConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	scriptPath := failNTimesReloadScript(t, dir, 1)
+
+	a := &Agent{xrayConfigPath: configPath, xrayReloadArgs: []string{"sh", scriptPath}}
+	template := `{"port":443}`
+
+	if _, err := a.execXrayApply(context.Background(), XrayApplyRequest{Template: template}); err == nil {
+		t.Fatalf("first apply should fail on reload")
+	}
+	if !a.xrayReloadPending() {
+		t.Fatalf("reload-pending flag must be set after a failed reload")
+	}
+
+	// Retry with the identical template: must NOT skip, must reload.
+	res, err := a.execXrayApply(context.Background(), XrayApplyRequest{Template: template})
+	if err != nil {
+		t.Fatalf("retry apply: %v", err)
+	}
+	if skipped, _ := res["skipped"].(bool); skipped {
+		t.Fatalf("retry must not be skipped while reload is pending; res=%+v", res)
+	}
+	if reloaded, _ := res["runtime_reloaded"].(bool); !reloaded {
+		t.Fatalf("retry must reload xray; res=%+v", res)
+	}
+	if a.xrayReloadPending() {
+		t.Fatalf("reload-pending flag must clear after a successful reload")
+	}
+
+	// Third apply with the same template skips again as usual.
+	res, err = a.execXrayApply(context.Background(), XrayApplyRequest{Template: template})
+	if err != nil {
+		t.Fatalf("third apply: %v", err)
+	}
+	if skipped, _ := res["skipped"].(bool); !skipped {
+		t.Fatalf("third apply should skip once reload recovered; res=%+v", res)
+	}
+}
+
+func TestExecXrayApplyReloadPendingPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	scriptPath := failNTimesReloadScript(t, dir, 1)
+	statePath := filepath.Join(dir, "state.json")
+
+	st := NewStateStore(statePath)
+	a := &Agent{xrayConfigPath: configPath, xrayReloadArgs: []string{"sh", scriptPath}, state: st}
+	if _, err := a.execXrayApply(context.Background(), XrayApplyRequest{Template: `{"port":443}`}); err == nil {
+		t.Fatalf("first apply should fail on reload")
+	}
+
+	// Simulate agent restart: fresh StateStore from the same file.
+	st2 := NewStateStore(statePath)
+	if err := st2.Load(); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	a2 := &Agent{xrayConfigPath: configPath, xrayReloadArgs: []string{"sh", scriptPath}, state: st2}
+	res, err := a2.execXrayApply(context.Background(), XrayApplyRequest{Template: `{"port":443}`})
+	if err != nil {
+		t.Fatalf("apply after restart: %v", err)
+	}
+	if skipped, _ := res["skipped"].(bool); skipped {
+		t.Fatalf("apply after restart must not skip while reload is pending; res=%+v", res)
+	}
+}
+
 func TestExecXrayApplyReportsRollbackReloadForRepair(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")

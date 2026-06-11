@@ -31,14 +31,23 @@ type AccessMeta struct {
 	Offset int64  `json:"offset,omitempty"`
 }
 
+// ErrBatchCorrupt marks a queued batch file whose JSON cannot be parsed.
+// PeekOldest returns it together with the offending path so callers can
+// quarantine the file instead of wedging the queue head forever.
+var ErrBatchCorrupt = errors.New("queue batch corrupt")
+
+const quarantineDirName = "quarantine"
+
 type DiskQueue struct {
 	dir      string
 	maxBytes int64
 
-	mu         sync.Mutex
-	loadedSize bool
-	total      int64
-	files      int64
+	mu          sync.Mutex
+	loadedSize  bool
+	total       int64
+	files       int64
+	loadedQuar  bool
+	quarantined int64
 }
 
 func NewDiskQueue(dir string, maxBytes int64) *DiskQueue {
@@ -157,9 +166,78 @@ func (q *DiskQueue) PeekOldest() (string, UsageBatch, bool, error) {
 	}
 	var b UsageBatch
 	if err := json.Unmarshal(raw, &b); err != nil {
-		return "", UsageBatch{}, false, err
+		return path, UsageBatch{}, false, fmt.Errorf("%w: %s: %v", ErrBatchCorrupt, filepath.Base(path), err)
 	}
 	return path, b, true, nil
+}
+
+// Quarantine moves a batch file out of the active queue into the quarantine
+// subdirectory so the flush loop can make progress past a poison batch. The
+// file is kept on disk for inspection. Returns the quarantined path.
+func (q *DiskQueue) Quarantine(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	qdir := filepath.Join(q.dir, quarantineDirName)
+	if err := os.MkdirAll(qdir, 0700); err != nil {
+		return "", err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if err := q.ensureTotalLoadedLocked(); err != nil {
+		return "", err
+	}
+	size := int64(0)
+	if info, err := os.Stat(path); err == nil {
+		size = info.Size()
+	}
+	dest := filepath.Join(qdir, filepath.Base(path))
+	if err := os.Rename(path, dest); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	q.total -= size
+	if q.total < 0 {
+		q.total = 0
+	}
+	if q.files > 0 {
+		q.files--
+	}
+	if q.loadedQuar {
+		q.quarantined++
+	}
+	return dest, nil
+}
+
+// QuarantinedBatches returns the number of batch files currently held in the
+// quarantine subdirectory. The count is cached after the first directory scan.
+func (q *DiskQueue) QuarantinedBatches() int64 {
+	if q == nil {
+		return 0
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.loadedQuar {
+		count := int64(0)
+		entries, err := os.ReadDir(filepath.Join(q.dir, quarantineDirName))
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return 0
+			}
+		} else {
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+					count++
+				}
+			}
+		}
+		q.quarantined = count
+		q.loadedQuar = true
+	}
+	return q.quarantined
 }
 
 func (q *DiskQueue) Dequeue(path string) error {

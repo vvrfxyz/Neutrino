@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -18,11 +19,18 @@ import (
 	"github.com/xtls/xray-core/proxy/vless"
 )
 
+// rpcTimeout bounds every xray API call so a hung xray cannot stall the
+// agent's usage or heartbeat loops.
+const rpcTimeout = 4 * time.Second
+
 type Client struct {
 	enabled    bool
 	apiAddr    string
 	inboundTag string
 	flow       string
+
+	mu   sync.Mutex
+	conn *grpc.ClientConn
 }
 
 type OnlineIP struct {
@@ -65,11 +73,12 @@ func (c *Client) RemoveUser(ctx context.Context, email string) error {
 		return nil
 	}
 
-	conn, closeFn, err := c.dial(ctx)
+	conn, err := c.getConn()
 	if err != nil {
 		return err
 	}
-	defer closeFn()
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 
 	client := handlercmd.NewHandlerServiceClient(conn)
 	_, err = client.AlterInbound(ctx, &handlercmd.AlterInboundRequest{
@@ -92,11 +101,12 @@ func (c *Client) PullUserTraffic(ctx context.Context, email string) (uplink, dow
 		return 0, 0, errors.New("empty email")
 	}
 
-	conn, closeFn, err := c.dial(ctx)
+	conn, err := c.getConn()
 	if err != nil {
 		return 0, 0, err
 	}
-	defer closeFn()
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 
 	stats := statscmd.NewStatsServiceClient(conn)
 	uplink, err = c.readStat(ctx, stats, "user>>>"+email+">>>traffic>>>uplink")
@@ -119,11 +129,12 @@ func (c *Client) PullOnlineIPs(ctx context.Context, email string) ([]OnlineIP, e
 		return nil, errors.New("empty email")
 	}
 
-	conn, closeFn, err := c.dial(ctx)
+	conn, err := c.getConn()
 	if err != nil {
 		return nil, err
 	}
-	defer closeFn()
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 
 	stats := statscmd.NewStatsServiceClient(conn)
 	resp, err := stats.GetStatsOnlineIpList(ctx, &statscmd.GetStatsRequest{
@@ -167,11 +178,12 @@ func normalizeOnlineIP(raw string) (string, bool) {
 }
 
 func (c *Client) addUser(ctx context.Context, email, uuid string) error {
-	conn, closeFn, err := c.dial(ctx)
+	conn, err := c.getConn()
 	if err != nil {
 		return err
 	}
-	defer closeFn()
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 
 	user := &protocol.User{
 		Level: 0,
@@ -210,17 +222,36 @@ func (c *Client) readStat(ctx context.Context, stats statscmd.StatsServiceClient
 	return resp.Stat.Value, nil
 }
 
-func (c *Client) dial(parent context.Context) (*grpc.ClientConn, func(), error) {
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
-	conn, err := grpc.DialContext(ctx, c.apiAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-	if err != nil {
-		cancel()
-		return nil, nil, fmt.Errorf("dial xray api %s: %w", c.apiAddr, err)
+// getConn returns a shared gRPC client connection, creating it lazily. The
+// connection is non-blocking: gRPC's channel state machine transparently
+// reconnects after xray restarts, and per-RPC timeouts (rpcTimeout) bound each
+// call instead of a blocking dial. This replaces the previous dial-per-call
+// behavior, which opened (and tore down) a TCP connection for every stats or
+// user-management RPC.
+func (c *Client) getConn() (*grpc.ClientConn, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != nil {
+		return c.conn, nil
 	}
-	return conn, func() {
-		_ = conn.Close()
-		cancel()
-	}, nil
+	conn, err := grpc.NewClient(c.apiAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, fmt.Errorf("create xray api client %s: %w", c.apiAddr, err)
+	}
+	c.conn = conn
+	return conn, nil
+}
+
+// Close releases the shared connection. Safe to call multiple times.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil
+	}
+	err := c.conn.Close()
+	c.conn = nil
+	return err
 }
 
 func isNotFoundErr(err error) bool {
