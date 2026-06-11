@@ -37,10 +37,13 @@ type App struct {
 	rl          *rateLimiter
 	csrfSecret  []byte
 
-	userService  *service.UserService
-	usageService *service.UsageService
-	nodeService  *service.NodeService
-	opsService   *service.OpsService
+	userService   *service.UserService
+	usageService  *service.UsageService
+	nodeService   *service.NodeService
+	opsService    *service.OpsService
+	alertService  *service.AlertService
+	backupService *service.BackupService
+	auditService  *service.AuditService
 
 	wsHub              *wsHub
 	metricHistoryQueue *nodeMetricHistoryQueue
@@ -256,6 +259,9 @@ func New(cfg config.Config, store *repo.Store) *App {
 	a.usageService = service.NewUsageService(store, cfg.OnlineWindowSec, cfg.IPLimitStrikes, a)
 	a.nodeService = service.NewNodeService(store, cfg.NodeStaleDeleteAfterSec, a)
 	a.opsService = service.NewOpsService(store)
+	a.alertService = service.NewAlertService(store)
+	a.backupService = service.NewBackupService(store, cfg.DBPath, cfg.BackupDir)
+	a.auditService = service.NewAuditService(store)
 	a.wsHub = newWSHub()
 	a.metricHistoryQueue = newNodeMetricHistoryQueueFromConfig(store, cfg)
 	return a
@@ -276,6 +282,15 @@ func (a *App) ensureServices() {
 	}
 	if a.opsService == nil {
 		a.opsService = service.NewOpsService(a.store)
+	}
+	if a.alertService == nil {
+		a.alertService = service.NewAlertService(a.store)
+	}
+	if a.backupService == nil {
+		a.backupService = service.NewBackupService(a.store, a.cfg.DBPath, a.cfg.BackupDir)
+	}
+	if a.auditService == nil {
+		a.auditService = service.NewAuditService(a.store)
 	}
 	if a.metricHistoryQueue == nil {
 		a.metricHistoryQueue = newNodeMetricHistoryQueueFromConfig(a.store, a.cfg)
@@ -321,6 +336,21 @@ func (a *App) ops() *service.OpsService {
 	return a.opsService
 }
 
+func (a *App) alerts() *service.AlertService {
+	a.ensureServices()
+	return a.alertService
+}
+
+func (a *App) backups() *service.BackupService {
+	a.ensureServices()
+	return a.backupService
+}
+
+func (a *App) audit() *service.AuditService {
+	a.ensureServices()
+	return a.auditService
+}
+
 func loadCSRFSecret() []byte {
 	raw := strings.TrimSpace(os.Getenv("CSRF_SECRET"))
 	if raw != "" {
@@ -350,19 +380,16 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ip := a.clientIPFromRequest(r)
 		now := time.Now()
 		if !a.rl.Allow("login:ip:"+ip, 60, time.Minute, now) || !a.rl.Allow("login:ipuser:"+ip+":"+username, 20, time.Minute, now) {
-			_ = a.store.InsertAuditLog(r.Context(), "admin", username, "admin.login", "admin_account", username,
-				`{"ok":false,"reason":"rate_limited"}`, ip, r.UserAgent(), requestIDFromContext(r.Context()))
+			auditActionAs(a, r, "admin", username, "admin.login", "admin_account", username, map[string]any{"ok": false, "reason": "rate_limited"})
 			_ = a.pages["login"].ExecuteTemplate(w, "login.tmpl", loginData{Error: "尝试过于频繁，请稍后再试"})
 			return
 		}
 		if err := a.store.AuthenticateAdmin(r.Context(), username, password); err != nil {
-			_ = a.store.InsertAuditLog(r.Context(), "admin", username, "admin.login", "admin_account", username,
-				`{"ok":false,"reason":"bad_credentials"}`, ip, r.UserAgent(), requestIDFromContext(r.Context()))
+			auditActionAs(a, r, "admin", username, "admin.login", "admin_account", username, map[string]any{"ok": false, "reason": "bad_credentials"})
 			_ = a.pages["login"].ExecuteTemplate(w, "login.tmpl", loginData{Error: "用户名或密码错误"})
 			return
 		}
-		_ = a.store.InsertAuditLog(r.Context(), "admin", username, "admin.login", "admin_account", username,
-			`{"ok":true}`, ip, r.UserAgent(), requestIDFromContext(r.Context()))
+		auditActionAs(a, r, "admin", username, "admin.login", "admin_account", username, map[string]any{"ok": true})
 		ttl := time.Duration(a.cfg.AdminSessionHours) * time.Hour
 		if ttl <= 0 {
 			ttl = 24 * time.Hour

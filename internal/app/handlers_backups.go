@@ -13,9 +13,6 @@ import (
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
-
-	"neutrino/internal/backup"
-	"neutrino/internal/repo"
 )
 
 const (
@@ -78,7 +75,7 @@ func (a *App) handleAPIBackupRoutesV1(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAPIListBackups(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	recs, err := a.store.ListBackups(r.Context(), limit)
+	recs, err := a.backups().List(r.Context(), limit)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list failed"})
 		return
@@ -87,22 +84,9 @@ func (a *App) handleAPIListBackups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAPICreateBackup(w http.ResponseWriter, r *http.Request) {
-	res, err := backup.CreateSQLiteBackup(r.Context(), a.store.RawDB(), a.cfg.DBPath, a.cfg.BackupDir)
+	stored, err := a.backups().Create(r.Context())
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "create backup failed: " + err.Error()})
-		return
-	}
-	rec := repo.BackupRecord{
-		FilePath:  res.FilePath,
-		SizeBytes: res.SizeBytes,
-		SHA256:    res.SHA256,
-		Storage:   "local",
-	}
-	stored, err := a.store.InsertBackupRecord(r.Context(), rec)
-	if err != nil {
-		// Best-effort cleanup so we don't leak a backup file with no record.
-		_ = os.Remove(res.FilePath)
-		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "store backup record failed"})
 		return
 	}
 	auditAction(a, r, "backup.create", "backup", strconv.FormatInt(stored.ID, 10), map[string]any{
@@ -114,7 +98,7 @@ func (a *App) handleAPICreateBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAPIGetBackup(w http.ResponseWriter, r *http.Request, id int64) {
-	rec, err := a.store.GetBackup(r.Context(), id)
+	rec, err := a.backups().Get(r.Context(), id)
 	if err != nil {
 		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
@@ -123,15 +107,12 @@ func (a *App) handleAPIGetBackup(w http.ResponseWriter, r *http.Request, id int6
 }
 
 func (a *App) handleAPIDeleteBackup(w http.ResponseWriter, r *http.Request, id int64) {
-	rec, err := a.store.GetBackup(r.Context(), id)
+	rec, err := a.backups().Delete(r.Context(), id)
 	if err != nil {
-		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
-		return
-	}
-	if rec.Storage == "local" && rec.FilePath != "" {
-		_ = os.Remove(rec.FilePath)
-	}
-	if err := a.store.DeleteBackup(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
 		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "delete failed"})
 		return
 	}
@@ -142,7 +123,7 @@ func (a *App) handleAPIDeleteBackup(w http.ResponseWriter, r *http.Request, id i
 }
 
 func (a *App) handleAPIDownloadBackup(w http.ResponseWriter, r *http.Request, id int64) {
-	rec, err := a.store.GetBackup(r.Context(), id)
+	rec, err := a.backups().Get(r.Context(), id)
 	if err != nil {
 		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return

@@ -38,7 +38,7 @@ func (a *App) handleAPIOpsAlertsV1(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		status := strings.TrimSpace(r.URL.Query().Get("status"))
-		items, err := a.store.ListOpsAlerts(r.Context(), status, 200)
+		items, err := a.alerts().List(r.Context(), status, 200)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -60,7 +60,7 @@ func (a *App) handleAPIOpsAlertsV1(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.TrimSpace(req.Action) == "resolve" {
-			ok, err := a.store.ResolveOpsAlert(r.Context(), req.DedupeKey, time.Now().UTC())
+			ok, err := a.alerts().Resolve(r.Context(), req.DedupeKey, time.Now().UTC())
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -68,7 +68,7 @@ func (a *App) handleAPIOpsAlertsV1(w http.ResponseWriter, r *http.Request) {
 			a.writeJSON(w, http.StatusOK, map[string]any{"ok": ok})
 			return
 		}
-		id, err := a.store.UpsertOpsAlert(r.Context(), req.NodeID, req.Kind, req.Severity, req.Message, req.DedupeKey, time.Now().UTC())
+		id, err := a.alerts().Upsert(r.Context(), req.NodeID, req.Kind, req.Severity, req.Message, req.DedupeKey, time.Now().UTC())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

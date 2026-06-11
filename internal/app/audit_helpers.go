@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"neutrino/internal/service"
 )
 
 type auditActor struct {
@@ -33,11 +35,18 @@ func actorFromRequest(a *App, r *http.Request) auditActor {
 }
 
 func auditAction(a *App, r *http.Request, action, targetType, targetID string, detail any) {
-	if a == nil || r == nil {
-		return
-	}
 	act := actorFromRequest(a, r)
 	if act.typ == "" || act.id == "" {
+		return
+	}
+	auditActionAs(a, r, act.typ, act.id, action, targetType, targetID, detail)
+}
+
+// auditActionAs records an audit entry with an explicit actor, for flows where
+// the actor is known out-of-band (e.g. enroll-code-authenticated nodes, login
+// attempts before a session exists).
+func auditActionAs(a *App, r *http.Request, actorType, actorID, action, targetType, targetID string, detail any) {
+	if a == nil || r == nil {
 		return
 	}
 	detailJSON := ""
@@ -46,7 +55,17 @@ func auditAction(a *App, r *http.Request, action, targetType, targetID string, d
 			detailJSON = string(b)
 		}
 	}
-	_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, action, targetType, targetID, detailJSON, a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
+	_ = a.audit().Record(r.Context(), service.AuditEntry{
+		ActorType:  actorType,
+		ActorID:    actorID,
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		DetailJSON: detailJSON,
+		ClientIP:   a.clientIPFromRequest(r),
+		UserAgent:  r.UserAgent(),
+		RequestID:  requestIDFromContext(r.Context()),
+	})
 }
 
 func (a *App) clientIPFromRequest(r *http.Request) string {

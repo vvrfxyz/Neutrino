@@ -33,7 +33,7 @@ func (a *App) handleSubscription(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	u, _, err := a.store.GetUserBySubscriptionToken(r.Context(), token)
+	res, err := a.users().ResolveSubscription(r.Context(), token)
 	if err != nil {
 		if errors.Is(err, repo.ErrUserNotFound) || errors.Is(err, repo.ErrUserInactive) {
 			http.Error(w, "invalid subscription", http.StatusNotFound)
@@ -42,24 +42,15 @@ func (a *App) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
+	u := res.User
 
 	if u.ActiveLink == nil {
 		http.Error(w, "subscription unavailable: no active link", http.StatusConflict)
 		return
 	}
 
-	userNodeIDs, err := a.store.ListUserNodeIDs(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, "nodes query failed", http.StatusInternalServerError)
-		return
-	}
-	restrictedToNodes := len(userNodeIDs) > 0
-
-	nodes, err := a.store.ListEnabledNodesForUser(r.Context(), u.ID)
-	if err != nil {
-		http.Error(w, "nodes query failed", http.StatusInternalServerError)
-		return
-	}
+	restrictedToNodes := res.Restricted
+	nodes := res.Nodes
 	if len(nodes) == 0 {
 		// Explicit node restrictions must never fall back to the global default.
 		if restrictedToNodes {
@@ -228,7 +219,7 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "traffic" && r.Method == http.MethodGet {
-		if _, err := a.store.GetUser(r.Context(), userID); err != nil {
+		if _, err := a.users().Get(r.Context(), userID); err != nil {
 			if errors.Is(err, repo.ErrUserNotFound) {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
@@ -240,7 +231,7 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 		if period == "" {
 			period = "hourly"
 		}
-		series, err := a.store.GetTrafficSeries(r.Context(), userID, period)
+		series, err := a.usage().TrafficSeries(r.Context(), userID, period)
 		if err != nil {
 			status := http.StatusInternalServerError
 			message := "query failed"
@@ -272,7 +263,7 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 				nodeID = &parsed
 			}
 		}
-		items, err := a.store.ListUserEventsFiltered(r.Context(), userID, limit, source, nodeID)
+		items, err := a.usage().UserEvents(r.Context(), userID, limit, source, nodeID)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -520,14 +511,11 @@ func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if act := actorFromRequest(a, r); act.typ != "" {
-			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.create", "node", fmt.Sprintf("%d", item.ID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-		}
+		auditAction(a, r, "node.create", "node", fmt.Sprintf("%d", item.ID), nil)
 
 		if managed.DesiredVersion != "" {
-			_ = a.store.InsertAuditLog(r.Context(), "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
-				fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, managed.DesiredVersion, managed.JobID, managed.Enqueued),
-				a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
+			auditActionAs(a, r, "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
+				map[string]any{"desired_version": managed.DesiredVersion, "job_id": managed.JobID, "enqueued": managed.Enqueued})
 		}
 		_ = a.ops().RefreshNode(r.Context(), item.ID)
 
@@ -772,13 +760,10 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item := update.Node
-		if act := actorFromRequest(a, r); act.typ != "" {
-			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.update", "node", fmt.Sprintf("%d", item.ID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-		}
+		auditAction(a, r, "node.update", "node", fmt.Sprintf("%d", item.ID), nil)
 		if update.ManagedXray.DesiredVersion != "" {
-			_ = a.store.InsertAuditLog(r.Context(), "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
-				fmt.Sprintf(`{"desired_version":"%s","job_id":%d,"enqueued":%v}`, update.ManagedXray.DesiredVersion, update.ManagedXray.JobID, update.ManagedXray.Enqueued),
-				a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
+			auditActionAs(a, r, "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
+				map[string]any{"desired_version": update.ManagedXray.DesiredVersion, "job_id": update.ManagedXray.JobID, "enqueued": update.ManagedXray.Enqueued})
 		}
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
 
@@ -805,17 +790,13 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 		if result.PendingDelete {
 			_ = a.ops().RefreshNode(r.Context(), nodeID)
 			if result.DisabledForDelete {
-				if act := actorFromRequest(a, r); act.typ != "" {
-					_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.disable_for_delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-				}
+				auditAction(a, r, "node.disable_for_delete", "node", fmt.Sprintf("%d", nodeID), nil)
 			}
 			a.writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "pending_delete": true})
 			return
 		}
 		if result.Deleted {
-			if act := actorFromRequest(a, r); act.typ != "" {
-				_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.delete", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-			}
+			auditAction(a, r, "node.delete", "node", fmt.Sprintf("%d", nodeID), nil)
 		}
 		a.ops().RemoveNode(nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
