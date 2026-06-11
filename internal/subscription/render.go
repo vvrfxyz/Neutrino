@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -177,6 +178,9 @@ func renderNodeURI(node repo.Node, user repo.User, activeLink *repo.ProxyLink) s
 	if host == "" {
 		return ""
 	}
+	// ObservedIP can legitimately be IPv6; an unbracketed IPv6 host makes the
+	// URI unparseable for every client.
+	hostPort := net.JoinHostPort(host, strconv.Itoa(node.Port))
 
 	switch node.Protocol {
 	case "vless_reality":
@@ -211,7 +215,7 @@ func renderNodeURI(node repo.Node, user repo.User, activeLink *repo.ProxyLink) s
 		if q.Get("security") == "reality" && (strings.TrimSpace(q.Get("pbk")) == "" || strings.TrimSpace(q.Get("sid")) == "") {
 			return ""
 		}
-		return "vless://" + activeLink.UUID + "@" + host + ":" + strconv.Itoa(node.Port) + "?" + q.Encode() + "#" + nodeName
+		return "vless://" + activeLink.UUID + "@" + hostPort + "?" + q.Encode() + "#" + nodeName
 	case "hysteria2":
 		q := url.Values{}
 		if strings.TrimSpace(node.SNI) != "" {
@@ -221,13 +225,13 @@ func renderNodeURI(node repo.Node, user repo.User, activeLink *repo.ProxyLink) s
 		// template/vars). It must never be embedded in subscriber-facing URIs:
 		// that leaks panel internals to every subscription holder, and no
 		// client consumes an "extra" query param anyway.
-		return "hysteria2://" + activeLink.UUID + "@" + host + ":" + strconv.Itoa(node.Port) + "?" + q.Encode() + "#" + nodeName
+		return "hysteria2://" + activeLink.UUID + "@" + hostPort + "?" + q.Encode() + "#" + nodeName
 	case "tuic":
 		q := url.Values{}
 		if strings.TrimSpace(node.SNI) != "" {
 			q.Set("sni", node.SNI)
 		}
-		return "tuic://" + activeLink.UUID + ":" + activeLink.UUID + "@" + host + ":" + strconv.Itoa(node.Port) + "?" + q.Encode() + "#" + nodeName
+		return "tuic://" + activeLink.UUID + ":" + activeLink.UUID + "@" + hostPort + "?" + q.Encode() + "#" + nodeName
 	default:
 		return ""
 	}

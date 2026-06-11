@@ -120,11 +120,11 @@ func (b *TelegramBot) fetchUpdates(ctx context.Context, offset int64) ([]struct 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?timeout=25&offset=%d", b.cfg.TelegramBotToken, offset)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, b.redactToken(err)
 	}
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, b.redactToken(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
@@ -149,18 +149,32 @@ func (b *TelegramBot) sendMessage(ctx context.Context, chatID int64, text string
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.cfg.TelegramBotToken)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return b.redactToken(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return err
+		return b.redactToken(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("telegram sendMessage status=%d", resp.StatusCode)
 	}
 	return nil
+}
+
+// redactToken strips the bot token from transport errors before they reach
+// logs: url.Error (and anything wrapping it) embeds the full request URL,
+// which contains the token as a path segment.
+func (b *TelegramBot) redactToken(err error) error {
+	if err == nil {
+		return nil
+	}
+	token := strings.TrimSpace(b.cfg.TelegramBotToken)
+	if token == "" || !strings.Contains(err.Error(), token) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), token, "<redacted>"))
 }
 
 func (b *TelegramBot) isAdminChat(chatID int64) bool {

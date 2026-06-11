@@ -314,3 +314,22 @@ func TestRendererRegistryAliasesAndUnknown(t *testing.T) {
 		t.Fatalf("Targets() = %v", got)
 	}
 }
+
+// An IPv6 host (reachable via the ObservedIP fallback) must be bracketed or
+// every emitted URI is unparseable.
+func TestRenderNodeURIBracketsIPv6Host(t *testing.T) {
+	user := repo.User{Username: "alice"}
+	link := &repo.ProxyLink{UUID: "11111111-1111-1111-1111-111111111111"}
+	node := repo.Node{
+		ID: 1, Name: "v6", Protocol: "vless_reality", Port: 443,
+		ObservedIP: "2001:db8::1", PublicKey: "pbk", ShortID: "sid",
+	}
+	uri := renderNodeURI(node, user, link)
+	if !strings.Contains(uri, "@[2001:db8::1]:443?") {
+		t.Fatalf("IPv6 host must be bracketed: %s", uri)
+	}
+	p := parseProxyURI(uri)
+	if p.Host != "2001:db8::1" || p.Port != 443 {
+		t.Fatalf("parsed host/port: %q/%d", p.Host, p.Port)
+	}
+}

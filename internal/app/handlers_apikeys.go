@@ -100,7 +100,11 @@ func (a *App) handleAPIKeyByIDV1(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		item, err := a.apikeys().Get(r.Context(), id)
 		if err != nil {
-			a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			if errors.Is(err, service.ErrAPIKeyNotFound) {
+				a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+				return
+			}
+			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "lookup failed"})
 			return
 		}
 		a.writeJSON(w, http.StatusOK, item)
@@ -183,7 +187,13 @@ func (a *App) handleAPIKeysPage(w http.ResponseWriter, r *http.Request) {
 		}
 		plain, meta, err := a.apikeys().Create(r.Context(), in)
 		if err != nil {
-			a.renderAPIKeysPage(w, r, "", "创建失败: "+err.Error())
+			// Show validation messages; mask anything else (DB/driver error
+			// text must not reach the page, mirroring the JSON handler).
+			msg := "创建失败"
+			if errors.Is(err, service.ErrAPIKeyInvalidInput) {
+				msg = "创建失败: " + err.Error()
+			}
+			a.renderAPIKeysPage(w, r, "", msg)
 			return
 		}
 		auditAction(a, r, "apikey.create", "api_key", strconv.FormatInt(meta.ID, 10), map[string]any{
