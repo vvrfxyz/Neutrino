@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -26,6 +27,64 @@ type RenderOptions struct {
 	AllowActiveLinkFallback bool
 }
 
+// Renderer turns a list of per-node proxy URIs into a client-specific payload.
+type Renderer struct {
+	ContentType string
+	Render      func(uris []string) (string, error)
+}
+
+// renderers is the target registry. Keys are canonical lowercase target names;
+// aliases map onto the same Renderer. DetectTargetFromUA must only return keys
+// that exist here.
+var renderers = map[string]Renderer{
+	"v2rayn": {
+		ContentType: "text/plain; charset=utf-8",
+		Render: func(uris []string) (string, error) {
+			raw := strings.Join(uris, "\n")
+			return base64.StdEncoding.EncodeToString([]byte(raw)), nil
+		},
+	},
+	"shadowrocket": {
+		ContentType: "text/plain; charset=utf-8",
+		Render: func(uris []string) (string, error) {
+			return strings.Join(uris, "\n"), nil
+		},
+	},
+	"clash": {
+		ContentType: "text/yaml; charset=utf-8",
+		Render: func(uris []string) (string, error) {
+			return renderClashYAML(uris), nil
+		},
+	},
+	"singbox": {
+		ContentType: "application/json",
+		Render:      renderSingBoxJSON,
+	},
+}
+
+// targetAliases maps accepted spellings onto canonical registry keys.
+var targetAliases = map[string]string{
+	"sing-box": "singbox",
+}
+
+// Targets returns the canonical renderer names (sorted), for docs/UI.
+func Targets() []string {
+	out := make([]string, 0, len(renderers))
+	for name := range renderers {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func resolveRenderer(target string) (Renderer, bool) {
+	if canonical, ok := targetAliases[target]; ok {
+		target = canonical
+	}
+	r, ok := renderers[target]
+	return r, ok
+}
+
 func Render(target string, user repo.User, activeLink *repo.ProxyLink, nodes []repo.Node) (string, string, error) {
 	return RenderWithOptions(target, user, activeLink, nodes, RenderOptions{AllowActiveLinkFallback: true})
 }
@@ -34,6 +93,10 @@ func RenderWithOptions(target string, user repo.User, activeLink *repo.ProxyLink
 	target = strings.ToLower(strings.TrimSpace(target))
 	if target == "" {
 		target = "v2rayn"
+	}
+	renderer, ok := resolveRenderer(target)
+	if !ok {
+		return "", "", fmt.Errorf("unsupported target: %s", target)
 	}
 
 	// Prefer per-node URIs when available.
@@ -67,24 +130,11 @@ func RenderWithOptions(target string, user repo.User, activeLink *repo.ProxyLink
 		return "", "", fmt.Errorf("no available nodes")
 	}
 
-	switch target {
-	case "v2rayn":
-		raw := strings.Join(uris, "\n")
-		return base64.StdEncoding.EncodeToString([]byte(raw)), "text/plain; charset=utf-8", nil
-	case "shadowrocket":
-		return strings.Join(uris, "\n"), "text/plain; charset=utf-8", nil
-	case "clash":
-		yamlText := renderClashYAML(uris)
-		return yamlText, "text/yaml; charset=utf-8", nil
-	case "singbox", "sing-box":
-		jsonText, err := renderSingBoxJSON(uris)
-		if err != nil {
-			return "", "", err
-		}
-		return jsonText, "application/json", nil
-	default:
-		return "", "", fmt.Errorf("unsupported target: %s", target)
+	payload, err := renderer.Render(uris)
+	if err != nil {
+		return "", "", err
 	}
+	return payload, renderer.ContentType, nil
 }
 
 // canonicalProxyURIKey normalizes a proxy URI for comparison.
@@ -107,7 +157,11 @@ func renderNodeURI(node repo.Node, user repo.User, activeLink *repo.ProxyLink) s
 	if nodeName == "" {
 		nodeName = fmt.Sprintf("node-%d", node.ID)
 	}
-	nodeName = url.QueryEscape(nodeName + "-" + user.Username)
+	// Escape for the URI fragment. PathEscape encodes a space as %20, which
+	// url.Parse round-trips back to a space; QueryEscape would use "+", which
+	// fragment decoding does NOT reverse — names like "HK 01" rendered as
+	// "HK+01-alice" in clash/sing-box outputs.
+	nodeName = url.PathEscape(nodeName + "-" + user.Username)
 
 	// A per-user UUID is required to render node URIs.
 	// Subscriptions should ensure an active link exists (create one on-demand) rather than emitting placeholders.
@@ -163,17 +217,15 @@ func renderNodeURI(node repo.Node, user repo.User, activeLink *repo.ProxyLink) s
 		if strings.TrimSpace(node.SNI) != "" {
 			q.Set("sni", node.SNI)
 		}
-		if strings.TrimSpace(node.ExtraJSON) != "" {
-			q.Set("extra", node.ExtraJSON)
-		}
+		// node.ExtraJSON is server-side node configuration (managed Xray
+		// template/vars). It must never be embedded in subscriber-facing URIs:
+		// that leaks panel internals to every subscription holder, and no
+		// client consumes an "extra" query param anyway.
 		return "hysteria2://" + activeLink.UUID + "@" + host + ":" + strconv.Itoa(node.Port) + "?" + q.Encode() + "#" + nodeName
 	case "tuic":
 		q := url.Values{}
 		if strings.TrimSpace(node.SNI) != "" {
 			q.Set("sni", node.SNI)
-		}
-		if strings.TrimSpace(node.ExtraJSON) != "" {
-			q.Set("extra", node.ExtraJSON)
 		}
 		return "tuic://" + activeLink.UUID + ":" + activeLink.UUID + "@" + host + ":" + strconv.Itoa(node.Port) + "?" + q.Encode() + "#" + nodeName
 	default:
