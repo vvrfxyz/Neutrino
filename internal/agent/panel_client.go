@@ -150,13 +150,24 @@ func (c *PanelClient) PushUsage(ctx context.Context, events []UsageEvent) error 
 		if v, ok := result["error"]; ok {
 			msg := strings.TrimSpace(fmt.Sprint(v))
 			if msg != "" {
+				// Prefer the structured classification (panels that send
+				// "permanent" alongside the error string). permanent=true means
+				// the rejection is deterministic for the event content: skip it
+				// like an accepted event. permanent=false means a retry of the
+				// identical batch can succeed: plain retryable error, never
+				// counted toward poison-batch quarantine.
+				if perm, ok := result["permanent"].(bool); ok {
+					if perm {
+						continue
+					}
+					return fmt.Errorf("panel rejected usage event %d: %s", i, msg)
+				}
+				// Legacy string contract for panels predating the structured
+				// fields. Do not reword these strings panel-side.
 				if isPermanentUsageRejection(msg) {
 					continue
 				}
 				if isTransientUsageRejection(msg) {
-					// Time-dependent or panel-side failures: retrying the same
-					// batch can succeed later, so these must never count
-					// toward poison-batch quarantine.
 					return fmt.Errorf("panel rejected usage event %d: %s", i, msg)
 				}
 				return usageRejectionf("panel rejected usage event %d: %s", i, msg)

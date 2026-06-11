@@ -17,9 +17,12 @@ var (
 	ErrNodeDeleteWouldWidenAccess = errors.New("node delete would widen restricted user access")
 	ErrNodeJobNotRunning          = errors.New("node job is not running for this attempt")
 	ErrNodeJobInvalidStatus       = errors.New("node job finish status must be succeeded or failed")
-	ErrUsageTimestampSkew         = errors.New("usage event timestamp outside allowed skew")
-	ErrUsageTimestampTooOld       = errors.New("usage event timestamp too old")
-	ErrTelegramBindRateLimited    = errors.New("telegram bind rate limited")
+	// ErrEnrollCodeInvalid covers every enroll-code rejection (missing, wrong,
+	// already used, expired); the wrapping message carries the specific cause.
+	ErrEnrollCodeInvalid       = errors.New("enroll code rejected")
+	ErrUsageTimestampSkew      = errors.New("usage event timestamp outside allowed skew")
+	ErrUsageTimestampTooOld    = errors.New("usage event timestamp too old")
+	ErrTelegramBindRateLimited = errors.New("telegram bind rate limited")
 )
 
 type Store struct {

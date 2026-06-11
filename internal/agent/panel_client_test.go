@@ -150,6 +150,51 @@ func TestPanelClientPushUsageClassifiesRejectionTypes(t *testing.T) {
 	}
 }
 
+// New panels send "code" + "permanent" alongside the legacy error string; the
+// structured flag must take precedence over the string tables.
+func TestPanelClientPushUsagePrefersStructuredPermanentField(t *testing.T) {
+	t.Parallel()
+
+	push := func(t *testing.T, body string) error {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+		defer srv.Close()
+		client := &PanelClient{baseURL: srv.URL, client: srv.Client()}
+		return client.PushUsage(context.Background(), []UsageEvent{
+			{UserID: 1, Direction: "outbound", Bytes: 1, Source: "test", SourceEventID: "a"},
+		})
+	}
+	isRejection := func(err error) bool {
+		var rej *UsageRejectionError
+		return errors.As(err, &rej)
+	}
+
+	// permanent=true with an unknown string: skipped like an accepted event
+	// (legacy classification would have produced a UsageRejectionError).
+	if err := push(t, `{"processed":1,"results":[{"user_id":1,"error":"some new rejection","code":"new_code","permanent":true}]}`); err != nil {
+		t.Fatalf("permanent=true must be skipped, got %v", err)
+	}
+
+	// permanent=false with a string the legacy table calls permanent: the
+	// structured field wins → plain retryable error, not skipped, and not a
+	// deterministic rejection.
+	err := push(t, `{"processed":1,"results":[{"user_id":1,"error":"user not found","code":"user_not_found","permanent":false}]}`)
+	if err == nil {
+		t.Fatalf("permanent=false must surface an error")
+	}
+	if isRejection(err) {
+		t.Fatalf("permanent=false must not be a UsageRejectionError: %v", err)
+	}
+
+	// Without the structured field, legacy string matching still applies.
+	if err := push(t, `{"processed":1,"results":[{"user_id":1,"error":"user not found"}]}`); err != nil {
+		t.Fatalf("legacy permanent string must be skipped, got %v", err)
+	}
+}
+
 func TestPanelClientPushUsageAcceptsDuplicateResults(t *testing.T) {
 	t.Parallel()
 

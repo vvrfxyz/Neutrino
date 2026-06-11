@@ -636,7 +636,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 			status := http.StatusInternalServerError
 			if errors.Is(err, repo.ErrNodeNotFound) {
 				status = http.StatusNotFound
-			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || strings.Contains(err.Error(), "not managed") || strings.Contains(err.Error(), "core_type") {
+			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || errors.Is(err, service.ErrNodeNotManaged) || errors.Is(err, service.ErrNodeCoreTypeNotXray) {
 				status = http.StatusBadRequest
 			}
 			http.Error(w, err.Error(), status)
@@ -677,7 +677,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 			status := http.StatusInternalServerError
 			if errors.Is(err, repo.ErrNodeNotFound) {
 				status = http.StatusNotFound
-			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || strings.Contains(err.Error(), "not managed") || strings.Contains(err.Error(), "core_type") {
+			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || errors.Is(err, service.ErrNodeNotManaged) || errors.Is(err, service.ErrNodeCoreTypeNotXray) {
 				status = http.StatusBadRequest
 			}
 			http.Error(w, err.Error(), status)

@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"neutrino/internal/certutil"
+	"neutrino/internal/repo"
 )
 
 type signedCertResponse struct {
@@ -176,7 +178,7 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 	// revoke any previously active certs atomically.
 	revoked, err := a.store.CompleteNodeEnroll(r.Context(), nodeID, req.EnrollCode, cert, now)
 	if err != nil {
-		if strings.Contains(err.Error(), "enroll_code") {
+		if errors.Is(err, repo.ErrEnrollCodeInvalid) {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}

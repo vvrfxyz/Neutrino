@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	handlercmd "github.com/xtls/xray-core/app/proxyman/command"
 	statscmd "github.com/xtls/xray-core/app/stats/command"
@@ -254,7 +256,14 @@ func (c *Client) Close() error {
 	return err
 }
 
+// isNotFoundErr detects "stat/user does not exist" responses. The xray stats
+// service returns a proper codes.NotFound status; the proxyman AlterInbound
+// path (RemoveUser) surfaces plain text via codes.Unknown, so a substring
+// check on the message is kept as a fallback for that path only.
 func isNotFoundErr(err error) bool {
+	if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+		return true
+	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "not found")
 }

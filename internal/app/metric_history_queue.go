@@ -222,11 +222,14 @@ func (q *nodeMetricHistoryQueue) flushDiskBacklog(ctx context.Context) {
 	}
 }
 
+// nodeMetricHistoryErrorMayHaveCommitted reports whether a flush error came
+// from a transaction that nevertheless committed (per-item failures). Such
+// items must be dequeued, not retried — retrying would re-insert the items
+// that succeeded. Detected via the repo's typed sentinel; the previous
+// substring heuristic ("details node_id=") missed sample-only failures, which
+// also commit.
 func nodeMetricHistoryErrorMayHaveCommitted(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "details node_id=")
+	return errors.Is(err, repo.ErrBatchCommittedWithItemErrors)
 }
 
 func (q *nodeMetricHistoryQueue) syncDroppedAlert(ctx context.Context) {

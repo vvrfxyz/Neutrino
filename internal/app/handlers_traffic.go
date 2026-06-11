@@ -34,6 +34,19 @@ type UsageRequest struct {
 	Events []UsageEventInput `json:"events"`
 }
 
+// usageErrorResult builds a per-event error result. The legacy "error" string
+// is the wire contract with old agents and must not be reworded; "code" and
+// "permanent" are the machine-readable fields new agents prefer (permanent
+// means deterministic for the event content — retrying can never succeed).
+func usageErrorResult(userID int64, code string, permanent bool, legacyMsg string) map[string]any {
+	return map[string]any{
+		"user_id":   userID,
+		"error":     legacyMsg,
+		"code":      code,
+		"permanent": permanent,
+	}
+}
+
 func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -69,17 +82,11 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 
 	for i, evt := range req.Events {
 		if evt.SourceEventID == "" {
-			results[i] = map[string]any{
-				"user_id": evt.UserID,
-				"error":   "source_event_id required",
-			}
+			results[i] = usageErrorResult(evt.UserID, "missing_source_event_id", true, "source_event_id required")
 			continue
 		}
 		if strings.TrimSpace(evt.Source) == "" {
-			results[i] = map[string]any{
-				"user_id": evt.UserID,
-				"error":   "source required",
-			}
+			results[i] = usageErrorResult(evt.UserID, "missing_source", true, "source required")
 			continue
 		}
 
@@ -92,10 +99,7 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 		if evt.At != "" {
 			parsed, err := time.Parse(time.RFC3339, evt.At)
 			if err != nil {
-				results[i] = map[string]any{
-					"user_id": evt.UserID,
-					"error":   "invalid event timestamp",
-				}
+				results[i] = usageErrorResult(evt.UserID, "bad_timestamp_format", true, "invalid event timestamp")
 				continue
 			}
 			eventAt = parsed.UTC()
@@ -140,44 +144,27 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 			idx := indexes[i]
 			if br.Err != nil {
 				if errors.Is(br.Err, repo.ErrUserNotFound) {
-					results[idx] = map[string]any{
-						"user_id": req.Events[idx].UserID,
-						"error":   "user not found",
-					}
+					results[idx] = usageErrorResult(req.Events[idx].UserID, "user_not_found", true, "user not found")
 					continue
 				}
 				if errors.Is(br.Err, repo.ErrUserNotAllowedOnNode) {
-					results[idx] = map[string]any{
-						"user_id": req.Events[idx].UserID,
-						"error":   "user not allowed on node",
-					}
+					results[idx] = usageErrorResult(req.Events[idx].UserID, "user_not_allowed_on_node", true, "user not allowed on node")
 					continue
 				}
 				if errors.Is(br.Err, repo.ErrUserInactive) {
-					results[idx] = map[string]any{
-						"user_id": req.Events[idx].UserID,
-						"error":   "user not active",
-					}
+					results[idx] = usageErrorResult(req.Events[idx].UserID, "user_inactive", true, "user not active")
 					continue
 				}
 				if errors.Is(br.Err, repo.ErrUsageTimestampTooOld) {
-					results[idx] = map[string]any{
-						"user_id": req.Events[idx].UserID,
-						"error":   "event timestamp too old",
-					}
+					results[idx] = usageErrorResult(req.Events[idx].UserID, "timestamp_too_old", true, "event timestamp too old")
 					continue
 				}
 				if errors.Is(br.Err, repo.ErrUsageTimestampSkew) {
-					results[idx] = map[string]any{
-						"user_id": req.Events[idx].UserID,
-						"error":   "invalid event timestamp",
-					}
+					// Future-skewed timestamps become valid as the clock advances.
+					results[idx] = usageErrorResult(req.Events[idx].UserID, "timestamp_skew", false, "invalid event timestamp")
 					continue
 				}
-				results[idx] = map[string]any{
-					"user_id": req.Events[idx].UserID,
-					"error":   "record failed",
-				}
+				results[idx] = usageErrorResult(req.Events[idx].UserID, "record_failed", false, "record failed")
 				continue
 			}
 			if br.Duplicate {
@@ -189,10 +176,7 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if br.User == nil {
-				results[idx] = map[string]any{
-					"user_id": req.Events[idx].UserID,
-					"error":   "record failed",
-				}
+				results[idx] = usageErrorResult(req.Events[idx].UserID, "record_failed", false, "record failed")
 				continue
 			}
 			results[idx] = map[string]any{
@@ -204,10 +188,7 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range results {
 		if results[i] == nil {
-			results[i] = map[string]any{
-				"user_id": req.Events[i].UserID,
-				"error":   "record failed",
-			}
+			results[i] = usageErrorResult(req.Events[i].UserID, "record_failed", false, "record failed")
 		}
 	}
 
