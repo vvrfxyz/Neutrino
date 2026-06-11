@@ -285,40 +285,44 @@ func parseFirstCert(pemStr string) (*x509.Certificate, error) {
 	return nil, fmt.Errorf("no certificate block found")
 }
 
-func (a *Agent) installMTLSFilesAndReloadPanelClient(keyPEM, certPEM, caPEM []byte) (*PanelClient, error) {
-	if a == nil {
-		return nil, fmt.Errorf("nil agent")
-	}
+type mtlsFileUpdate struct {
+	path string
+	perm os.FileMode
+	body []byte
+}
 
-	keyPath := filepath.Clean(strings.TrimSpace(a.cfg.PanelMTLSClientKeyPath))
-	certPath := filepath.Clean(strings.TrimSpace(a.cfg.PanelMTLSClientCertPath))
-	caPath := filepath.Clean(strings.TrimSpace(a.cfg.PanelMTLSCACertPath))
-	if keyPath == "" || certPath == "" || caPath == "" {
-		return nil, fmt.Errorf("panel mTLS file paths are required")
-	}
-
+// installMTLSFiles atomically replaces the given files on disk using
+// tmp-write + backup-rename + install-rename. On failure it rolls back any
+// partial changes itself and returns the error. On success it returns a
+// rollback function the caller can invoke to restore the previous files if a
+// later step fails; backups (".bak.<ts>") are kept on disk for diagnostics.
+func installMTLSFiles(files []mtlsFileUpdate) (rollback func(), err error) {
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	type upd struct {
-		path string
-		perm os.FileMode
-		body []byte
-		tmp  string
-		bak  string
-		had  bool
+		mtlsFileUpdate
+		tmp       string
+		bak       string
+		had       bool // original existed and was moved to bak
+		installed bool // new file was renamed from tmp into place at path
 	}
-	updates := []upd{
-		{path: keyPath, perm: 0600, body: keyPEM},
-		{path: certPath, perm: 0644, body: certPEM},
-		{path: caPath, perm: 0644, body: caPEM},
+	updates := make([]upd, 0, len(files))
+	for _, f := range files {
+		updates = append(updates, upd{mtlsFileUpdate: f})
 	}
 
-	rollback := func() {
+	rollback = func() {
 		for _, u := range updates {
-			_ = os.Remove(u.tmp)
+			if u.tmp != "" {
+				_ = os.Remove(u.tmp)
+			}
 		}
-		// Restore backups.
+		// Undo installs and restore backups. Never touch u.path unless the
+		// new file was installed there: otherwise the original file (or
+		// nothing) is still sitting at u.path.
 		for _, u := range updates {
-			_ = os.Remove(u.path)
+			if u.installed {
+				_ = os.Remove(u.path)
+			}
 			if u.had {
 				_ = os.Rename(u.bak, u.path)
 			}
@@ -329,6 +333,7 @@ func (a *Agent) installMTLSFilesAndReloadPanelClient(keyPEM, certPEM, caPEM []by
 	for i := range updates {
 		u := &updates[i]
 		if err := os.MkdirAll(filepath.Dir(u.path), 0700); err != nil {
+			rollback()
 			return nil, err
 		}
 		u.tmp = u.path + ".tmp." + ts
@@ -362,26 +367,46 @@ func (a *Agent) installMTLSFilesAndReloadPanelClient(keyPEM, certPEM, caPEM []by
 			return nil, err
 		}
 		u.tmp = ""
+		u.installed = true
 	}
 
-	// 4) Sanity check keypair.
+	return rollback, nil
+}
+
+func (a *Agent) installMTLSFilesAndReloadPanelClient(keyPEM, certPEM, caPEM []byte) (*PanelClient, error) {
+	if a == nil {
+		return nil, fmt.Errorf("nil agent")
+	}
+
+	keyPath := filepath.Clean(strings.TrimSpace(a.cfg.PanelMTLSClientKeyPath))
+	certPath := filepath.Clean(strings.TrimSpace(a.cfg.PanelMTLSClientCertPath))
+	caPath := filepath.Clean(strings.TrimSpace(a.cfg.PanelMTLSCACertPath))
+	if keyPath == "" || certPath == "" || caPath == "" {
+		return nil, fmt.Errorf("panel mTLS file paths are required")
+	}
+
+	rollback, err := installMTLSFiles([]mtlsFileUpdate{
+		{path: keyPath, perm: 0600, body: keyPEM},
+		{path: certPath, perm: 0644, body: certPEM},
+		{path: caPath, perm: 0644, body: caPEM},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Sanity check keypair.
 	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
 		rollback()
 		return nil, fmt.Errorf("install cert/key failed sanity check: %w", err)
 	}
 
-	// 5) Reload panel client (reads cert/ca from disk).
+	// Reload panel client (reads cert/ca from disk).
 	newPC, err := NewPanelClient(a.cfg.PanelMTLSURL, a.cfg.NodeID, caPath, certPath, keyPath)
 	if err != nil {
 		rollback()
 		return nil, err
 	}
 
-	// Keep backups for diagnostics. Ensure temp files are removed.
-	for _, u := range updates {
-		if u.tmp != "" {
-			_ = os.Remove(u.tmp)
-		}
-	}
+	// Keep backups for diagnostics.
 	return newPC, nil
 }
