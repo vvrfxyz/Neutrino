@@ -193,8 +193,7 @@ cat > docker-compose.release.yml <<EOF
 services:
   neutrino:
     image: ${IMAGE_REPO}:${TAG}
-    # Compose schema requires build to be string/object if present.
-    # We keep it as a harmless string and rely on --no-build on the server.EOF
+EOF
 
 extra_args=()
 if [[ -f docker-compose.panel-hostnet.yml ]] && grep -qE '^\s*HOSTNET_ENABLE\s*=\s*(1|true|yes)\s*$' .env; then
