@@ -63,22 +63,6 @@ ON CONFLICT(key) DO UPDATE SET
 	return err
 }
 
-func (s *Store) GetXrayStateInt64(ctx context.Context, key string) (int64, bool, error) {
-	raw, ok, err := s.GetXrayState(ctx, key)
-	if err != nil || !ok {
-		return 0, ok, err
-	}
-	v, parseErr := strconv.ParseInt(raw, 10, 64)
-	if parseErr != nil {
-		return 0, false, nil
-	}
-	return v, true, nil
-}
-
-func (s *Store) SetXrayStateInt64(ctx context.Context, key string, value int64) error {
-	return s.SetXrayState(ctx, key, strconv.FormatInt(value, 10))
-}
-
 func (s *Store) getXrayStateInt64Tx(ctx context.Context, tx *sql.Tx, key string) (int64, bool, error) {
 	raw, ok, err := s.getXrayStateTx(ctx, tx, key)
 	if err != nil || !ok {

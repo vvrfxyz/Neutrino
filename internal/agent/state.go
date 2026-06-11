@@ -27,13 +27,6 @@ type State struct {
 	// skip an apply: the on-disk config may match the desired config without
 	// the running xray ever having loaded it.
 	XrayReloadPending bool `json:"xray_reload_pending,omitempty"`
-
-	// PendingStatsTarget captures the counters we will commit into AckedStats after a successful push.
-	PendingStatsTarget map[string]StatEntry `json:"pending_stats_target,omitempty"`
-	// PendingStatsEpochTarget captures the epoch we will commit into StatsEpoch after a successful push.
-	PendingStatsEpochTarget *int64 `json:"pending_stats_epoch_target,omitempty"`
-	// PendingUsageEvents is retried until accepted by the panel.
-	PendingUsageEvents []UsageEvent `json:"pending_usage_events,omitempty"`
 }
 
 type AccessState struct {

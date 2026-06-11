@@ -8,66 +8,6 @@ import (
 	"time"
 )
 
-func (s *Store) ListUserEvents(ctx context.Context, userID int64, limit int) ([]UserEvent, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-SELECT
-	id, user_id, node_id, direction, bytes, event_at, source, source_event_id,
-	target_host, target_ip, target_port, sni, destination, client_ip, inbound_tag
-FROM traffic_events
-WHERE user_id = ?
-ORDER BY event_at DESC, id DESC
-LIMIT ?;
-`, userID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	events := make([]UserEvent, 0, limit)
-	for rows.Next() {
-		var e UserEvent
-		var eventAt string
-		var nodeID sql.NullInt64
-		var sourceEventID, targetHost, targetIP, sni, destination, clientIP, inboundTag sql.NullString
-		var targetPort sql.NullInt64
-
-		if err := rows.Scan(
-			&e.ID, &e.UserID, &nodeID, &e.Direction, &e.Bytes, &eventAt, &e.Source, &sourceEventID,
-			&targetHost, &targetIP, &targetPort, &sni, &destination, &clientIP, &inboundTag,
-		); err != nil {
-			return nil, err
-		}
-		if nodeID.Valid && nodeID.Int64 > 0 {
-			v := nodeID.Int64
-			e.NodeID = &v
-		}
-
-		parsed, err := time.Parse(time.RFC3339, eventAt)
-		if err != nil {
-			return nil, err
-		}
-		e.EventAt = parsed
-		e.SourceEventID = sourceEventID.String
-		e.TargetHost = targetHost.String
-		e.TargetIP = targetIP.String
-		if targetPort.Valid {
-			v := targetPort.Int64
-			e.TargetPort = &v
-		}
-		e.SNI = sni.String
-		e.Destination = destination.String
-		e.ClientIP = clientIP.String
-		e.InboundTag = inboundTag.String
-
-		events = append(events, e)
-	}
-	return events, rows.Err()
-}
-
 func (s *Store) ListUserEventsFiltered(ctx context.Context, userID int64, limit int, source string, nodeID *int64) ([]UserEvent, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100

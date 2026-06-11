@@ -161,19 +161,6 @@ WHERE user_id = ?;
 	return out, nil
 }
 
-func (s *Store) SetSubscriptionTokenEnabled(ctx context.Context, userID int64, enabled bool) error {
-	enabledInt := 0
-	if enabled {
-		enabledInt = 1
-	}
-	_, err := s.db.ExecContext(ctx, `
-UPDATE subscription_tokens
-SET enabled = ?
-WHERE user_id = ?;
-`, enabledInt, userID)
-	return err
-}
-
 func (s *Store) GetUserBySubscriptionToken(ctx context.Context, token string) (User, SubscriptionToken, error) {
 	// No SweepExpiredUsers here: /sub is a public endpoint and a sweep is a
 	// full write transaction. Freshness is preserved by the status/expiry
