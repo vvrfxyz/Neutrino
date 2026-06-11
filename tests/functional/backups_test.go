@@ -114,6 +114,19 @@ func TestFunctional_Backup_CreateListDownload(t *testing.T) {
 	if _, err := os.Stat(created.FilePath); !os.IsNotExist(err) {
 		t.Fatalf("backup file should be removed after delete, got err=%v", err)
 	}
+
+	// Backup operations are sensitive (full-DB export incl. credentials), so
+	// each lifecycle step must leave an audit trail.
+	for _, action := range []string{"backup.create", "backup.download", "backup.delete"} {
+		var count int
+		if err := env.store.RawDB().QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM audit_logs WHERE action = ?`, action).Scan(&count); err != nil {
+			t.Fatalf("count audit %s: %v", action, err)
+		}
+		if count != 1 {
+			t.Fatalf("audit action %s count=%d, want 1", action, count)
+		}
+	}
 }
 
 func TestFunctional_Backup_RestoreStagesValidUpload(t *testing.T) {
@@ -290,4 +303,3 @@ func TestApplyPendingRestoreRejectsInvalidPending(t *testing.T) {
 		t.Fatalf("pending should remain on disk for inspection: %v", err)
 	}
 }
-

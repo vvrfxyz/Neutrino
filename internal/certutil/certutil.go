@@ -109,4 +109,3 @@ func CertToPEM(cert *x509.Certificate) string {
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
 }
-

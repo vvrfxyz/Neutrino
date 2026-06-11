@@ -16,6 +16,7 @@ var (
 	ErrNodeNotFound               = errors.New("node not found")
 	ErrNodeDeleteWouldWidenAccess = errors.New("node delete would widen restricted user access")
 	ErrNodeJobNotRunning          = errors.New("node job is not running for this attempt")
+	ErrNodeJobInvalidStatus       = errors.New("node job finish status must be succeeded or failed")
 	ErrUsageTimestampSkew         = errors.New("usage event timestamp outside allowed skew")
 	ErrUsageTimestampTooOld       = errors.New("usage event timestamp too old")
 	ErrTelegramBindRateLimited    = errors.New("telegram bind rate limited")

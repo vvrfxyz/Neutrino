@@ -300,6 +300,10 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 			http.Error(w, "job is not running for this attempt", http.StatusConflict)
 			return
 		}
+		if errors.Is(err, repo.ErrNodeJobInvalidStatus) {
+			http.Error(w, "status must be succeeded or failed", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "finish failed", http.StatusInternalServerError)
 		return
 	}

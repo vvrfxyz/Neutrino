@@ -714,15 +714,28 @@ func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// StartWorkers runs all background workers until ctx is canceled, then waits
+// for every worker goroutine to exit (including the metric-history shutdown
+// drain) before returning. Callers that need a graceful shutdown should wait
+// for StartWorkers to return before closing the DB.
 func (a *App) StartWorkers(ctx context.Context) {
 	a.ensureServices()
-	go a.hostMonitor.Start(ctx, a.cfg.HostMetricsInterval(), a.store.GetTrafficTotals)
-	go a.startHostNetMonthlyRecorder(ctx)
-	go a.telegram.Start(ctx)
-	go a.startNodeReconciler(ctx)
-	go a.startNodeJobTimeoutSweeper(ctx)
-	go a.startOpsSnapshotPublisher(ctx)
-	go a.metricHistoryQueue.Run(ctx)
+	var wg sync.WaitGroup
+	spawn := func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
+	}
+	spawn(func() { a.hostMonitor.Start(ctx, a.cfg.HostMetricsInterval(), a.store.GetTrafficTotals) })
+	spawn(func() { a.startHostNetMonthlyRecorder(ctx) })
+	spawn(func() { a.telegram.Start(ctx) })
+	spawn(func() { a.startNodeReconciler(ctx) })
+	spawn(func() { a.startNodeJobTimeoutSweeper(ctx) })
+	spawn(func() { a.startOpsSnapshotPublisher(ctx) })
+	spawn(func() { a.metricHistoryQueue.Run(ctx) })
+	defer wg.Wait()
 	if err := a.ops().WarmUp(ctx); err != nil {
 		log.Printf("ops cache warmup error: %v", err)
 	}
@@ -811,6 +824,21 @@ func (a *App) pruneOnce(ctx context.Context, now time.Time) error {
 			return err
 		} else if n > 0 {
 			log.Printf("pruned online_sessions deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
+		}
+	}
+	if a.cfg.UsageEventKeyRetentionDays > 0 {
+		// Floor at 3 days: keys guard idempotency against agent replays
+		// (26h backdate cap + disk-queue flush delay), so aggressive values
+		// must not reopen the duplicate-usage window.
+		days := a.cfg.UsageEventKeyRetentionDays
+		if days < 3 {
+			days = 3
+		}
+		cutoff := now.AddDate(0, 0, -days)
+		if n, err := a.store.PruneUsageEventKeys(ctx, cutoff, 2000); err != nil {
+			return err
+		} else if n > 0 {
+			log.Printf("pruned usage_event_keys deleted=%d cutoff=%s", n, cutoff.UTC().Format(time.RFC3339))
 		}
 	}
 	counts, err := a.store.CleanupOpsData(ctx, now, a.cfg.NodeMetricSampleRetentionDays, a.cfg.NodeMetricDetailRetentionHours, a.cfg.NodeProbeResultRetentionDays, a.cfg.OpsAlertResolvedRetentionDays, 5000)

@@ -53,7 +53,11 @@ func main() {
 	defer stop()
 
 	server := app.New(cfg, store)
-	go server.StartWorkers(runCtx)
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(workersDone)
+		server.StartWorkers(runCtx)
+	}()
 
 	log.Printf("admin user: %s", cfg.AdminUser)
 	log.Printf("listening on %s", cfg.Addr)
@@ -124,6 +128,14 @@ func main() {
 		_ = agentSrv.Shutdown(shutdownCtx)
 	}
 	_ = mainSrv.Shutdown(shutdownCtx)
+
+	// Join workers before the deferred conn.Close(): the metric-history queue
+	// drains buffered samples to the DB on shutdown.
+	select {
+	case <-workersDone:
+	case <-shutdownCtx.Done():
+		log.Printf("workers did not stop within shutdown timeout")
+	}
 
 	select {
 	case err := <-errCh:

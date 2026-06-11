@@ -80,4 +80,3 @@ func DecryptString(aead cipher.AEAD, cipherB64 string) (string, error) {
 	}
 	return string(pt), nil
 }
-
