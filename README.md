@@ -46,7 +46,7 @@ Neutrino 是一个基于 **Go + SQLite + SSR Templates + HTMX/Alpine.js** 的代
 - 节点首次通过一次性 `ENROLL_CODE` 自动换取 mTLS 证书
 - 节点证书支持 allowlist / pin 校验与单节点吊销
 - durable job 模型：
-  - `users_sync`
+  - `users_sync`（schema-1 full/delta 负载：节点确立版本化基线后小变更走 delta，full 永远是权威修复路径；legacy `{}` 负载仍按 full 处理）
   - `xray_apply`
   - `xray_rollback`
 - 节点 runtime report 同时包含：

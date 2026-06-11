@@ -43,6 +43,8 @@ Panel layering: `internal/app` (HTTP/SSR/workers) → `internal/service` (orches
 
 Node job model (`internal/repo/node_jobs.go`): kinds `users_sync | xray_apply | xray_rollback | probe_dns | probe_tcp | probe_http` (`probe_ping` legacy alias). pending → running → succeeded/failed; at most one pending job per node+kind (probe kinds dedupe by correlation); claim is per-node serial; finish must echo the claimed `attempt` (fencing); retryable failures requeue up to `NODE_JOB_MAX_ATTEMPTS`. Desired/applied state versions are SHA-256 content hashes (sorted users list / xray payload), re-reconciled every 30s — the panel never shells into nodes.
 
+User sync (`internal/usersync` + `internal/repo/user_sync.go` + agent): canonical Item/hash/diff/apply contract shared by panel and agent (hash byte-compatible with the legacy `UsersDesiredVersion`). `PrepareUsersSync` materializes the canonical target, persists a per-node snapshot (`node_user_sync_snapshots`), updates the desired version, and picks full vs delta in one transaction — delta only when the node is delta-ready (`nodes.users_sync_baseline_schema=1`, set only after an accepted schema-1 full result), the applied snapshot hash-matches, and the diff is safe (no email moves) and smaller than full. Full-over-delta priority on the single pending slot; forced full is never satisfied by a running delta. `FinishUsersSyncJobForNode` validates `applied_version` against the captured/current desired version, manages the delta-ready marker (cleared on agent capability drift), cancels stale/redundant pending jobs (protected repair reasons survive), and enqueues forced repair / follow-up reconcile in the same transaction. Agent side: `SyncedUsersVersion` + `PendingUsersSync` journal (persisted before any Xray mutation; merged into stale-removal and the `effectiveSyncedUsers` runtime mapping), copy-on-write `StateStore.Update`, and non-retryable `need_full_sync` failures (`base_version_mismatch`, `local_hash_mismatch`, `remove_base_mismatch`, …) that trigger panel-side forced full. Timed-out managed-Xray jobs enqueue an `xray_runtime_unknown_followup` full repair inside the sweep transaction. Startup runs a one-shot baseline backfill per never-proven node.
+
 `internal/agent` (`Agent.Run`): localhost health server, cert-renewer state machine (12h check, renew within 7d of expiry, atomic install + PanelClient hot-swap, re-enroll fallback when expired), one-shot synced-user restore into Xray, job runner (25s long-poll claim), usage loop (1s tick), heartbeat (2s report incl. online-IP snapshot, monthly RX/TX keyed by `AGENT_MONTH_TZ` → `time.Local` → UTC).
 
 Usage pipeline invariants (do **not** break — see `docs/USAGE_PIPELINE_DESIGN.md` and the 2026-03-28 postmortem):
@@ -82,7 +84,7 @@ Node deletion is staged: enabled → disable + drain `users_sync` → actual DB 
 - `docs/NODE_MONTHLY_USAGE_DESIGN.md`: node natural-month RX/TX telemetry semantics.
 - `docs/OPS_MONITORING_DESIGN.md`: `/ops` + `/ops-v2` realtime monitoring, metric history, probes, alerts.
 - `docs/XBOARD_LEARNINGS_UPGRADE_MODULES.md`: active upgrade-module roadmap.
-- `docs/USER_SYNC_MODULE_PLAN.md`: delta user-sync plan (**not yet implemented** — no `internal/usersync` package exists).
+- `docs/USER_SYNC_MODULE_PLAN.md`: delta user-sync design (implemented; `internal/usersync` is the shared panel/agent contract).
 - `docs/POSTMORTEM_2026-03-28_NODE14_USAGE_DUPLICATION.md`: usage-duplication incident; its invariants are encoded in agent tests.
 
 ## Current Caveats
