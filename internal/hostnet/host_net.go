@@ -2,6 +2,7 @@ package hostnet
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	gnet "github.com/shirou/gopsutil/v3/net"
 )
 
 // NetTotals holds cumulative host-level RX/TX byte counters.
@@ -206,12 +209,6 @@ func isPreferredIface(name string) bool {
 	}
 }
 
-// SumPreferredIfaceTotals sums all preferred interface counters in byIface.
-func SumPreferredIfaceTotals(byIface map[string]NetTotals) (NetTotals, bool) {
-	totals, _, ok := SumPreferredIfaceTotalsWithNames(byIface)
-	return totals, ok
-}
-
 // SumPreferredIfaceTotalsWithNames sums preferred interface counters and returns
 // the sorted interface set used to build stable counter-source identifiers.
 func SumPreferredIfaceTotalsWithNames(byIface map[string]NetTotals) (NetTotals, []string, bool) {
@@ -265,4 +262,36 @@ func ClampInt64FromUint64(v uint64) int64 {
 		return math.MaxInt64
 	}
 	return int64(v)
+}
+
+// ReadTotals reads host network RX/TX totals: proc counters first (when
+// procPath is set and readable), then gopsutil per-NIC counters summed over
+// the preferred interface set. The returned source identifies the counter
+// origin so downstream consumers can detect counter rebasing.
+func ReadTotals(ctx context.Context, procPath string) (NetTotals, string, error) {
+	procPath = strings.TrimSpace(procPath)
+	if procPath != "" {
+		if totals, source, err := ReadFromProcWithSource(procPath); err == nil {
+			return totals, source, nil
+		}
+	}
+	ioCounters, err := gnet.IOCountersWithContext(ctx, true)
+	if err != nil {
+		return NetTotals{}, "", err
+	}
+	if len(ioCounters) == 0 {
+		return NetTotals{}, "", fmt.Errorf("no network counters")
+	}
+	byIface := make(map[string]NetTotals, len(ioCounters))
+	for _, counter := range ioCounters {
+		byIface[counter.Name] = NetTotals{
+			RX: ClampInt64FromUint64(counter.BytesRecv),
+			TX: ClampInt64FromUint64(counter.BytesSent),
+		}
+	}
+	totals, names, ok := SumPreferredIfaceTotalsWithNames(byIface)
+	if !ok {
+		return NetTotals{}, "", fmt.Errorf("no usable network counters")
+	}
+	return totals, CounterSource("gopsutil:pernic", names), nil
 }

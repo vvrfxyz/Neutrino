@@ -18,6 +18,7 @@ import (
 
 	"neutrino/internal/bot"
 	"neutrino/internal/config"
+	"neutrino/internal/hostnet"
 	"neutrino/internal/monitor"
 	"neutrino/internal/notify"
 	"neutrino/internal/repo"
@@ -858,11 +859,11 @@ func (a *App) startHostNetMonthlyRecorder(ctx context.Context) {
 	defer ticker.Stop()
 
 	recordOnce := func() {
-		rx, tx, source, err := panelReadNetTotals(ctx, a.cfg.HostProcPath)
+		totals, source, err := hostnet.ReadTotals(ctx, a.cfg.HostProcPath)
 		if err != nil {
 			return
 		}
-		_ = a.store.RecordHostNetTotals(ctx, rx, tx, source, time.Now())
+		_ = a.store.RecordHostNetTotals(ctx, totals.RX, totals.TX, source, time.Now())
 	}
 
 	recordOnce()
