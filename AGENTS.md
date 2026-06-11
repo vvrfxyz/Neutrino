@@ -67,6 +67,7 @@
   - `node_jobs.kind=users_sync|xray_apply|xray_rollback|probe_dns|probe_tcp|probe_http` (`probe_ping` is a legacy alias for `probe_tcp`).
   - Node-agent claims jobs (pull model), executes locally, and reports result/error for audit + retries.
   - Probe kinds dedupe per node+kind+correlation; all running jobs are bounded by the timeout sweeper.
+  - `users_sync` carries schema-1 full/delta payloads (see `docs/USER_SYNC_MODULE_PLAN.md`): delta is generated only for delta-ready nodes (`users_sync_baseline_schema=1`) from a hash-verified applied snapshot; full sync is always the authoritative repair path and forced full is never satisfied by a running delta. `nodes.applied_users_version` is updated only after finish-side version validation.
 
 ## Safety
 - Never commit secrets (private keys, passwords, tokens).
