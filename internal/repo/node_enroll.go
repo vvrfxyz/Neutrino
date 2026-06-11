@@ -134,7 +134,7 @@ type nodeEnrollCodeQuerier interface {
 func validateNodeEnrollCode(ctx context.Context, q nodeEnrollCodeQuerier, nodeID int64, code string, now time.Time) (string, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
-		return "", fmt.Errorf("missing enroll_code")
+		return "", fmt.Errorf("%w: missing enroll_code", ErrEnrollCodeInvalid)
 	}
 
 	var dbCode string
@@ -147,22 +147,22 @@ WHERE node_id = ?;
 `, nodeID).Scan(&dbCode, &expiresAt, &usedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", fmt.Errorf("invalid enroll_code")
+			return "", fmt.Errorf("%w: invalid enroll_code", ErrEnrollCodeInvalid)
 		}
 		return "", err
 	}
 	if strings.TrimSpace(dbCode) == "" || dbCode != code {
-		return "", fmt.Errorf("invalid enroll_code")
+		return "", fmt.Errorf("%w: invalid enroll_code", ErrEnrollCodeInvalid)
 	}
 	if usedAt.Valid && strings.TrimSpace(usedAt.String) != "" {
-		return "", fmt.Errorf("enroll_code already used")
+		return "", fmt.Errorf("%w: enroll_code already used", ErrEnrollCodeInvalid)
 	}
 	exp, err := time.Parse(time.RFC3339, expiresAt)
 	if err != nil {
-		return "", fmt.Errorf("invalid enroll_code")
+		return "", fmt.Errorf("%w: invalid enroll_code", ErrEnrollCodeInvalid)
 	}
 	if now.UTC().After(exp) {
-		return "", fmt.Errorf("enroll_code expired")
+		return "", fmt.Errorf("%w: enroll_code expired", ErrEnrollCodeInvalid)
 	}
 	return code, nil
 }
@@ -183,7 +183,7 @@ WHERE node_id = ? AND code = ? AND used_at IS NULL;
 	}
 	aff, _ := res.RowsAffected()
 	if aff == 0 {
-		return fmt.Errorf("enroll_code already used")
+		return fmt.Errorf("%w: enroll_code already used", ErrEnrollCodeInvalid)
 	}
 	return nil
 }

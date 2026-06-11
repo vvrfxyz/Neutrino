@@ -194,6 +194,12 @@ VALUES (?, ?, ?);
 	return err
 }
 
+// ErrBatchCommittedWithItemErrors marks a batch insert whose transaction
+// committed even though some items failed. Callers deciding between retry and
+// dequeue must treat this as "written": retrying would duplicate the items
+// that succeeded.
+var ErrBatchCommittedWithItemErrors = errors.New("batch committed with item errors")
+
 func (s *Store) InsertNodeMetricHistoryBatch(ctx context.Context, items []NodeMetricHistoryInput) error {
 	if len(items) == 0 {
 		return nil
@@ -220,7 +226,10 @@ func (s *Store) InsertNodeMetricHistoryBatch(ctx context.Context, items []NodeMe
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", ErrBatchCommittedWithItemErrors, errors.Join(errs...))
+	}
+	return nil
 }
 
 func (s *Store) UpsertNodeStaticFacts(ctx context.Context, nodeID int64, reportedAt time.Time, in NodeStaticFactsInput) error {

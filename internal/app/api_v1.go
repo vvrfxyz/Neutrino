@@ -641,7 +641,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		item, err := a.nodes().Get(r.Context(), nodeID)
 		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			if errors.Is(err, repo.ErrNodeNotFound) {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
@@ -652,7 +652,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut, http.MethodPatch:
 		before, beforeErr := a.nodes().Get(r.Context(), nodeID)
 		if beforeErr != nil {
-			if strings.Contains(strings.ToLower(beforeErr.Error()), "not found") {
+			if errors.Is(beforeErr, repo.ErrNodeNotFound) {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}

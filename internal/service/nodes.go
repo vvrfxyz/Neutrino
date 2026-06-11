@@ -67,7 +67,11 @@ type NodeDeleteResult struct {
 	Deleted           bool
 }
 
-var ErrInvalidManagedXrayConfig = errors.New("invalid managed xray config")
+var (
+	ErrInvalidManagedXrayConfig = errors.New("invalid managed xray config")
+	ErrNodeNotManaged           = errors.New("node is not managed")
+	ErrNodeCoreTypeNotXray      = errors.New("node core_type is not xray")
+)
 
 func (s *NodeService) CleanupStaleNodes(ctx context.Context) error {
 	if s.staleDeleteAfterSec <= 0 {
@@ -176,11 +180,7 @@ func (s *NodeService) List(ctx context.Context) ([]repo.Node, error) {
 }
 
 func (s *NodeService) Get(ctx context.Context, nodeID int64) (repo.Node, error) {
-	node, err := s.store.GetNode(ctx, nodeID)
-	if err != nil {
-		return repo.Node{}, normalizeNodeNotFound(err)
-	}
-	return node, nil
+	return s.store.GetNode(ctx, nodeID)
 }
 
 func (s *NodeService) ListJobs(ctx context.Context, nodeID int64, limit int) ([]repo.NodeJob, error) {
@@ -463,10 +463,10 @@ func (s *NodeService) DeployManagedXray(ctx context.Context, nodeID int64) (Mana
 		return ManagedXrayResult{}, err
 	}
 	if !node.Managed {
-		return ManagedXrayResult{}, fmt.Errorf("node is not managed")
+		return ManagedXrayResult{}, ErrNodeNotManaged
 	}
 	if node.CoreType != "xray" {
-		return ManagedXrayResult{}, fmt.Errorf("node core_type is not xray")
+		return ManagedXrayResult{}, ErrNodeCoreTypeNotXray
 	}
 	payload, err := BuildManagedXrayApplyPayload(node)
 	if err != nil {
@@ -486,10 +486,10 @@ func (s *NodeService) RollbackManagedXray(ctx context.Context, nodeID int64, bac
 		return ManagedXrayResult{}, err
 	}
 	if !node.Managed {
-		return ManagedXrayResult{}, fmt.Errorf("node is not managed")
+		return ManagedXrayResult{}, ErrNodeNotManaged
 	}
 	if node.CoreType != "xray" {
-		return ManagedXrayResult{}, fmt.Errorf("node core_type is not xray")
+		return ManagedXrayResult{}, ErrNodeCoreTypeNotXray
 	}
 	payload, err := BuildManagedXrayRollbackPayload(node, backupName)
 	if err != nil {
@@ -526,17 +526,4 @@ func (s *NodeService) syncAfterEnabledTransition(ctx context.Context, nodeID int
 	case !wasEnabled && isEnabled:
 		s.sync.RequestUsersSyncNow(ctx)
 	}
-}
-
-func normalizeNodeNotFound(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, repo.ErrNodeNotFound) {
-		return repo.ErrNodeNotFound
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "node not found") {
-		return repo.ErrNodeNotFound
-	}
-	return err
 }

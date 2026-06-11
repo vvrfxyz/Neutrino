@@ -1264,6 +1264,12 @@ func TestFunctional_UsageRejectsUserOutsideNodeAccess(t *testing.T) {
 	if got := result["error"]; got != "user not allowed on node" {
 		t.Fatalf("expected node access error, got %v payload=%v", got, payload)
 	}
+	if got := result["code"]; got != "user_not_allowed_on_node" {
+		t.Fatalf("expected structured code, got %v payload=%v", got, payload)
+	}
+	if got, _ := result["permanent"].(bool); !got {
+		t.Fatalf("expected permanent=true, got %v payload=%v", result["permanent"], payload)
+	}
 
 	resp = env.request(t, http.MethodGet, fmt.Sprintf("/api/v1/traffic/summary?range=1h&user_id=%d", userID), nil, true, "")
 	mustStatus(t, resp, http.StatusOK)

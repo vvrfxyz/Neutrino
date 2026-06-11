@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -72,7 +71,7 @@ LIMIT 1;
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return Node{}, fmt.Errorf("node not found")
+			return Node{}, ErrNodeNotFound
 		}
 		return Node{}, err
 	}

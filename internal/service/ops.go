@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -71,7 +72,7 @@ func (s *OpsService) RefreshNode(ctx context.Context, nodeID int64) error {
 	}
 	item, ok, err := s.buildSingleNodeItem(ctx, nodeID)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+		if errors.Is(err, repo.ErrNodeNotFound) {
 			s.cache.RemoveNode(nodeID)
 			return nil
 		}

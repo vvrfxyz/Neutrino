@@ -91,7 +91,7 @@ Node deletion is staged: enabled → disable + drain `users_sync` → actual DB 
 - SSR templates are parsed from the CWD-relative path `internal/app/templates` via `template.Must` — the panel panics at startup unless run from the repo root (tests chdir to root; Dockerfile relies on `WORKDIR /app`). `/ops-v2` assets are likewise read from `frontend/ops-demo/dist` at request time.
 - `CSRF_SECRET` is read directly via `os.Getenv` in `internal/app/app.go`, not through `internal/config`; malformed values silently degrade to an ephemeral per-process secret.
 - Dead code kept in tree: `internal/singboxapi`, `internal/cryptoutil`, and the S3/restore helpers in `internal/backup` (the live restore path is `handlers_backups.go` staging + `ApplyPendingRestore`).
-- Cross-layer error mapping partly relies on error-string matching — including the agent↔panel permanent-rejection contract for usage events (`internal/agent/panel_client.go`). Do not reword those panel error strings without updating the agent.
+- Usage-rejection contract: `/api/v1/usage` per-event error results carry structured `code` + `permanent` fields which new agents prefer; the legacy `error` strings remain the fallback contract for old agents (`isPermanentUsageRejection`/`isTransientUsageRejection` in `internal/agent/panel_client.go`). Do not reword those panel error strings until the legacy fallback is retired.
 
 ## Backup / Restore
 
