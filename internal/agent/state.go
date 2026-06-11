@@ -22,6 +22,12 @@ type State struct {
 
 	Access AccessState `json:"access,omitempty"`
 
+	// XrayReloadPending records that the last xray reload attempt failed after
+	// a new config was installed on disk. While set, skip-if-unchanged must not
+	// skip an apply: the on-disk config may match the desired config without
+	// the running xray ever having loaded it.
+	XrayReloadPending bool `json:"xray_reload_pending,omitempty"`
+
 	// PendingStatsTarget captures the counters we will commit into AckedStats after a successful push.
 	PendingStatsTarget map[string]StatEntry `json:"pending_stats_target,omitempty"`
 	// PendingStatsEpochTarget captures the epoch we will commit into StatsEpoch after a successful push.
@@ -104,8 +110,31 @@ func (st *StateStore) saveLocked() error {
 		return err
 	}
 	tmp := st.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, st.path)
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	// fsync before rename: a crash after rename must never leave a truncated
+	// state file, or AckedStats/Access offsets would silently rewind and the
+	// agent would re-report usage the panel cannot fully dedupe.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, st.path); err != nil {
+		return err
+	}
+	// Best-effort directory fsync so the rename itself is durable.
+	if dir, err := os.Open(filepath.Dir(st.path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }

@@ -60,12 +60,18 @@ type Config struct {
 	QueueDir           string
 	QueueMaxBytes      int64
 	PushBatchMaxEvents int
+	// Consecutive panel rejections of the same queued batch before it is moved
+	// to the quarantine directory so the usage pipeline can make progress.
+	UsageQuarantineAfterRejects int
 
 	// polling
 	StatsPollSec         int
 	AccessPollSec        int
 	RuntimeReportSec     int
 	StaticFactsReportSec int
+	// Online-IP snapshot collection cadence. Collecting walks every active
+	// user via the xray gRPC API, so it runs slower than the heartbeat.
+	OnlineSnapshotSec int
 
 	// access 0-byte sampling
 	AccessZeroByteMaxPerMinPerUser     int
@@ -87,10 +93,11 @@ func ConfigFromEnv() Config {
 		XrayTestArgsJSON:   getEnv("XRAY_TEST_ARGS_JSON", ""),
 		XrayReloadArgsJSON: getEnv("XRAY_RELOAD_ARGS_JSON", ""),
 
-		StatePath:          getEnv("STATE_PATH", "state.json"),
-		QueueDir:           getEnv("QUEUE_DIR", ""),
-		QueueMaxBytes:      getEnvInt64("QUEUE_MAX_BYTES", 200000000),
-		PushBatchMaxEvents: getEnvInt("PUSH_BATCH_MAX_EVENTS", 500),
+		StatePath:                   getEnv("STATE_PATH", "state.json"),
+		QueueDir:                    getEnv("QUEUE_DIR", ""),
+		QueueMaxBytes:               getEnvInt64("QUEUE_MAX_BYTES", 200000000),
+		PushBatchMaxEvents:          getEnvInt("PUSH_BATCH_MAX_EVENTS", 500),
+		UsageQuarantineAfterRejects: getEnvInt("USAGE_QUARANTINE_AFTER_REJECTS", 5),
 
 		PanelURL:     getEnv("PANEL_URL", ""),
 		PanelMTLSURL: getEnv("PANEL_MTLS_URL", ""),
@@ -110,6 +117,7 @@ func ConfigFromEnv() Config {
 		AccessPollSec:        getEnvInt("ACCESS_POLL_SEC", 2),
 		RuntimeReportSec:     getEnvInt("AGENT_RUNTIME_REPORT_SEC", 2),
 		StaticFactsReportSec: getEnvInt("AGENT_STATIC_FACTS_REPORT_SEC", 1800),
+		OnlineSnapshotSec:    getEnvInt("AGENT_ONLINE_SNAPSHOT_SEC", 10),
 
 		AccessZeroByteMaxPerMinPerUser:     getEnvInt("ACCESS_ZERO_BYTE_MAX_PER_MIN_PER_USER", 30),
 		AccessZeroByteMaxPerMinPerUserDest: getEnvInt("ACCESS_ZERO_BYTE_MAX_PER_MIN_PER_USER_DEST", 5),

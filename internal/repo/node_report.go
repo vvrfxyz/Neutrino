@@ -67,17 +67,18 @@ type NodeReportMetricsInput struct {
 	UDPConnections  int     `json:"udp_connections,omitempty"`
 	ProcessCount    int     `json:"process_count,omitempty"`
 
-	UptimeSec         int64           `json:"uptime_sec,omitempty"`
-	SystemUptimeSec   int64           `json:"system_uptime_sec,omitempty"`
-	AgentUptimeSec    int64           `json:"agent_uptime_sec,omitempty"`
-	BootTime          string          `json:"boot_time,omitempty"`
-	QueueBytes        int64           `json:"queue_bytes,omitempty"`
-	QueueBatches      int64           `json:"queue_batches,omitempty"`
-	Goroutines        int             `json:"goroutines,omitempty"`
-	AgentVersion      string          `json:"agent_version,omitempty"`
-	XrayVersion       string          `json:"xray_version,omitempty"`
-	XrayConfigVersion string          `json:"xray_config_version,omitempty"`
-	Details           json.RawMessage `json:"details,omitempty"`
+	UptimeSec          int64           `json:"uptime_sec,omitempty"`
+	SystemUptimeSec    int64           `json:"system_uptime_sec,omitempty"`
+	AgentUptimeSec     int64           `json:"agent_uptime_sec,omitempty"`
+	BootTime           string          `json:"boot_time,omitempty"`
+	QueueBytes         int64           `json:"queue_bytes,omitempty"`
+	QueueBatches       int64           `json:"queue_batches,omitempty"`
+	QuarantinedBatches int64           `json:"quarantined_batches,omitempty"`
+	Goroutines         int             `json:"goroutines,omitempty"`
+	AgentVersion       string          `json:"agent_version,omitempty"`
+	XrayVersion        string          `json:"xray_version,omitempty"`
+	XrayConfigVersion  string          `json:"xray_config_version,omitempty"`
+	Details            json.RawMessage `json:"details,omitempty"`
 }
 
 type NodeStaticFactsInput struct {

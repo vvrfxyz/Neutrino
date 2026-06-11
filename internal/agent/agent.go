@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -61,6 +62,14 @@ type Agent struct {
 
 	startedAt time.Time
 	mu        sync.RWMutex
+
+	// reloadPendingMem mirrors State.XrayReloadPending when no StateStore is
+	// attached (unit tests build Agent structs directly).
+	reloadPendingMem bool
+
+	// usageRejections counts consecutive panel rejections per queued batch
+	// path; reaching the quarantine threshold moves the batch aside.
+	usageRejections map[string]int
 
 	lastNetInTotal     int64
 	lastNetOutTotal    int64
@@ -141,7 +150,13 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	st := NewStateStore(cfg.StatePath)
-	_ = st.Load()
+	if err := st.Load(); err != nil {
+		// A corrupt or unreadable state file must stop the agent: continuing
+		// with zeroed AckedStats/Access offsets would re-report usage that the
+		// panel cannot fully dedupe (stats event ids change once the epoch is
+		// recomputed). Operators must repair or explicitly remove the file.
+		return nil, fmt.Errorf("load state %s failed (repair or remove the file to reset usage ack state): %w", cfg.StatePath, err)
+	}
 
 	// Auto-enroll if cert/key/ca are missing.
 	if err := ensureEnrolled(cfg); err != nil {
@@ -668,6 +683,27 @@ func hashUsers(users []UserSyncItem) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// xrayReloadPending reports whether the previous reload attempt failed after a
+// config was installed on disk. While true, skip-if-unchanged is disabled.
+func (a *Agent) xrayReloadPending() bool {
+	if a.state != nil {
+		return a.state.Snapshot().XrayReloadPending
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.reloadPendingMem
+}
+
+func (a *Agent) setXrayReloadPending(pending bool) {
+	if a.state != nil {
+		_ = a.state.Update(func(s *State) { s.XrayReloadPending = pending })
+		return
+	}
+	a.mu.Lock()
+	a.reloadPendingMem = pending
+	a.mu.Unlock()
+}
+
 func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[string]any, error) {
 	if strings.TrimSpace(a.xrayConfigPath) == "" {
 		return nil, JobError{Retryable: false, Msg: "XRAY_CONFIG_PATH is required"}
@@ -702,8 +738,10 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 	// Smart restart: when the canonical form of the new config matches the
 	// existing on-disk config, skip the entire apply pipeline (backup + write
 	// + reload). This prevents needless connection churn when the panel emits
-	// a re-sync that produces an identical config.
-	if old, err := os.ReadFile(a.xrayConfigPath); err == nil {
+	// a re-sync that produces an identical config. Never skip while a previous
+	// reload is still pending: the on-disk config may already match without
+	// the running xray ever having loaded it.
+	if old, err := os.ReadFile(a.xrayConfigPath); err == nil && !a.xrayReloadPending() {
 		if configEqualCanonical(old, renderedBytes) {
 			return map[string]any{
 				"ok":               true,
@@ -765,6 +803,10 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 				result["rollback_applied"] = true
 			}
 		}
+		// Unless rollback fully restored and reloaded the previous config, the
+		// running xray no longer matches the on-disk file. Record that so the
+		// retry attempt cannot be skipped by the unchanged-config check.
+		a.setXrayReloadPending(!rolledBack)
 		msg := "xray reload failed: " + err.Error()
 		if rolledBack {
 			msg = msg + " (rolled back to previous config)"
@@ -776,6 +818,7 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 		}
 		return nil, JobError{Retryable: true, Msg: msg, ResultJSON: result}
 	}
+	a.setXrayReloadPending(false)
 
 	out := map[string]any{"ok": true, "config_path": a.xrayConfigPath, "runtime_reloaded": true}
 	if strings.TrimSpace(backupPath) != "" {
@@ -802,6 +845,7 @@ func (a *Agent) execXrayRollback(ctx context.Context, req XrayRollbackRequest) (
 		return nil, JobError{Retryable: true, Msg: "restore failed: " + err.Error()}
 	}
 	if err := runArgs(ctx, expandArgs(a.xrayReloadArgs, a.xrayConfigPath, a.xrayConfigPath), a.xrayConfigPath, a.xrayConfigPath); err != nil {
+		a.setXrayReloadPending(true)
 		return nil, JobError{
 			Retryable: true,
 			Msg:       "reload failed: " + err.Error(),
@@ -814,6 +858,7 @@ func (a *Agent) execXrayRollback(ctx context.Context, req XrayRollbackRequest) (
 			},
 		}
 	}
+	a.setXrayReloadPending(false)
 	return map[string]any{
 		"ok":               true,
 		"config_path":      a.xrayConfigPath,
@@ -956,6 +1001,13 @@ func (a *Agent) startHeartbeat(ctx context.Context) {
 		staticInterval = 30 * time.Minute
 	}
 	lastStaticAt := time.Time{}
+	// Online-IP collection walks every active user through the xray gRPC API,
+	// so it runs on its own (slower) cadence than the heartbeat itself.
+	onlineInterval := time.Duration(a.cfg.OnlineSnapshotSec) * time.Second
+	if onlineInterval < interval {
+		onlineInterval = interval
+	}
+	lastOnlineAt := time.Time{}
 	sendOnce := func() {
 		pc := a.panelClient()
 		if pc == nil {
@@ -968,10 +1020,13 @@ func (a *Agent) startHeartbeat(ctx context.Context) {
 		}
 		rp.ReportedAt = reportedAt.Format(time.RFC3339)
 		rp.Metrics = a.heartbeatMetrics(reportedAt)
-		if snapshot, err := a.buildOnlineSnapshot(ctx, reportedAt); err != nil {
-			log.Printf("online snapshot collection failed: %v", err)
-		} else {
-			rp.OnlineSnapshot = snapshot
+		if lastOnlineAt.IsZero() || reportedAt.Sub(lastOnlineAt) >= onlineInterval {
+			if snapshot, err := a.buildOnlineSnapshot(ctx, reportedAt); err != nil {
+				log.Printf("online snapshot collection failed: %v", err)
+			} else {
+				rp.OnlineSnapshot = snapshot
+				lastOnlineAt = reportedAt
+			}
 		}
 		if lastStaticAt.IsZero() || reportedAt.Sub(lastStaticAt) >= staticInterval {
 			rp.StaticFacts = a.staticFacts()
@@ -1207,6 +1262,7 @@ func (a *Agent) heartbeatMetrics(reportedAt time.Time) *NodeReportMetrics {
 	if a.queue != nil {
 		m.QueueBytes = a.queue.ApproxBytes()
 		m.QueueBatches = a.queue.ApproxBatches()
+		m.QuarantinedBatches = a.queue.QuarantinedBatches()
 	}
 	if len(m.Details) == 0 {
 		m.Details = nil
@@ -1587,47 +1643,13 @@ func (a *Agent) startUsageLoop(ctx context.Context) {
 			// 1) Flush queued batches first (try multiple items per tick to catch up faster).
 			flushed := 0
 			for flushed < 8 {
-				path, batch, ok, err := a.queue.PeekOldest()
-				if err != nil {
-					log.Printf("queue peek failed: %v", err)
-					break
-				}
+				advanced, ok := a.flushQueuedBatchOnce(ctx)
 				if !ok {
 					break
 				}
-				pc := a.panelClient()
-				if pc == nil {
-					break
+				if advanced {
+					flushed++
 				}
-				if err := pc.PushUsage(ctx, batch.Events); err != nil {
-					log.Printf("push queued usage failed: %v", err)
-					break
-				}
-				_ = a.state.Update(func(s *State) {
-					switch batch.Kind {
-					case "stats":
-						if batch.Stats != nil {
-							if s.AckedStats == nil {
-								s.AckedStats = make(map[string]StatEntry)
-							}
-							for k, v := range batch.Stats.NextAck {
-								s.AckedStats[k] = v
-							}
-							s.StatsEpoch = batch.Stats.Epoch
-						}
-					case "access":
-						if batch.Access != nil {
-							s.Access.Path = batch.Access.Path
-							s.Access.Inode = batch.Access.Inode
-							s.Access.Offset = batch.Access.Offset
-						}
-					}
-				})
-				if err := a.queue.Dequeue(path); err != nil {
-					log.Printf("queue dequeue failed: %v", err)
-					break
-				}
-				flushed++
 			}
 			if flushed > 0 {
 				continue
@@ -1658,6 +1680,111 @@ func (a *Agent) startUsageLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// flushQueuedBatchOnce attempts to push the oldest queued batch to the panel.
+// Returns (advanced, keepGoing): advanced is true when a batch was flushed or
+// quarantined (the queue head moved), keepGoing is false when the flush loop
+// should stop for this tick (queue empty, transport error, or panel missing).
+//
+// Poison-batch isolation: a corrupt batch file is quarantined immediately; a
+// batch the panel keeps rejecting (deterministic per content, see
+// UsageRejectionError) is quarantined after cfg.UsageQuarantineAfterRejects
+// consecutive rejections. Without this, a single poison batch at the queue
+// head halts the node's entire usage pipeline forever, because flush-first
+// also stops fresh sampling while anything is queued.
+func (a *Agent) flushQueuedBatchOnce(ctx context.Context) (bool, bool) {
+	path, batch, ok, err := a.queue.PeekOldest()
+	if err != nil {
+		if errors.Is(err, ErrBatchCorrupt) && path != "" {
+			a.quarantineBatch(path, err.Error())
+			return true, true
+		}
+		log.Printf("queue peek failed: %v", err)
+		return false, false
+	}
+	if !ok {
+		return false, false
+	}
+	pc := a.panelClient()
+	if pc == nil {
+		return false, false
+	}
+	if err := pc.PushUsage(ctx, batch.Events); err != nil {
+		log.Printf("push queued usage failed: %v", err)
+		var rejection *UsageRejectionError
+		if errors.As(err, &rejection) {
+			if a.noteUsageRejection(path) {
+				a.quarantineBatch(path, rejection.Error())
+				return true, true
+			}
+		}
+		return false, false
+	}
+	a.clearUsageRejections(path)
+	_ = a.state.Update(func(s *State) {
+		switch batch.Kind {
+		case "stats":
+			if batch.Stats != nil {
+				if s.AckedStats == nil {
+					s.AckedStats = make(map[string]StatEntry)
+				}
+				for k, v := range batch.Stats.NextAck {
+					s.AckedStats[k] = v
+				}
+				s.StatsEpoch = batch.Stats.Epoch
+			}
+		case "access":
+			if batch.Access != nil {
+				s.Access.Path = batch.Access.Path
+				s.Access.Inode = batch.Access.Inode
+				s.Access.Offset = batch.Access.Offset
+			}
+		}
+	})
+	if err := a.queue.Dequeue(path); err != nil {
+		log.Printf("queue dequeue failed: %v", err)
+		return false, false
+	}
+	return true, true
+}
+
+// noteUsageRejection bumps the consecutive-rejection counter for a batch path
+// and reports whether the quarantine threshold has been reached.
+func (a *Agent) noteUsageRejection(path string) bool {
+	threshold := a.cfg.UsageQuarantineAfterRejects
+	if threshold <= 0 {
+		threshold = 5
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.usageRejections == nil {
+		a.usageRejections = make(map[string]int)
+	}
+	a.usageRejections[path]++
+	return a.usageRejections[path] >= threshold
+}
+
+func (a *Agent) clearUsageRejections(path string) {
+	a.mu.Lock()
+	if a.usageRejections != nil {
+		delete(a.usageRejections, path)
+	}
+	a.mu.Unlock()
+}
+
+// quarantineBatch moves a poison batch out of the active queue. The skipped
+// usage is permanently lost to accounting (kept on disk for inspection), so
+// this is loud: the quarantine count also reaches the panel via heartbeat
+// metrics and raises an ops alert there.
+func (a *Agent) quarantineBatch(path, reason string) {
+	a.clearUsageRejections(path)
+	dest, err := a.queue.Quarantine(path)
+	if err != nil {
+		log.Printf("quarantine usage batch failed path=%s: %v", path, err)
+		return
+	}
+	log.Printf("quarantined poison usage batch path=%s dest=%s reason=%s", path, dest, reason)
 }
 
 func shouldGenerateUsageBatches(flushed int, q interface{ ApproxBatches() int64 }) bool {

@@ -98,6 +98,21 @@ func NewPanelClient(baseURL string, nodeID int64, caPath, certPath, keyPath stri
 	}, nil
 }
 
+// UsageRejectionError reports that the panel received and processed a usage
+// batch but rejected it (or returned a response that cannot match the batch).
+// Unlike transport errors, these rejections are deterministic per batch
+// content, so repeated rejections of the same queued batch indicate a poison
+// batch that will never be accepted.
+type UsageRejectionError struct {
+	msg string
+}
+
+func (e *UsageRejectionError) Error() string { return e.msg }
+
+func usageRejectionf(format string, args ...any) error {
+	return &UsageRejectionError{msg: fmt.Sprintf(format, args...)}
+}
+
 func (c *PanelClient) PushUsage(ctx context.Context, events []UsageEvent) error {
 	payload := map[string]any{"events": events}
 	body, err := json.Marshal(payload)
@@ -126,11 +141,11 @@ func (c *PanelClient) PushUsage(ctx context.Context, events []UsageEvent) error 
 		return fmt.Errorf("decode usage response: %w", err)
 	}
 	if len(out.Results) != len(events) {
-		return fmt.Errorf("usage response result count %d does not match event count %d", len(out.Results), len(events))
+		return usageRejectionf("usage response result count %d does not match event count %d", len(out.Results), len(events))
 	}
 	for i, result := range out.Results {
 		if result == nil {
-			return fmt.Errorf("usage event %d missing result", i)
+			return usageRejectionf("usage event %d missing result", i)
 		}
 		if v, ok := result["error"]; ok {
 			msg := strings.TrimSpace(fmt.Sprint(v))
@@ -138,7 +153,7 @@ func (c *PanelClient) PushUsage(ctx context.Context, events []UsageEvent) error 
 				if isPermanentUsageRejection(msg) {
 					continue
 				}
-				return fmt.Errorf("panel rejected usage event %d: %s", i, msg)
+				return usageRejectionf("panel rejected usage event %d: %s", i, msg)
 			}
 		}
 	}
@@ -231,17 +246,18 @@ type NodeReportMetrics struct {
 	UDPConnections  int     `json:"udp_connections,omitempty"`
 	ProcessCount    int     `json:"process_count,omitempty"`
 
-	UptimeSec         int64          `json:"uptime_sec,omitempty"`
-	SystemUptimeSec   int64          `json:"system_uptime_sec,omitempty"`
-	AgentUptimeSec    int64          `json:"agent_uptime_sec,omitempty"`
-	BootTime          string         `json:"boot_time,omitempty"`
-	QueueBytes        int64          `json:"queue_bytes,omitempty"`
-	QueueBatches      int64          `json:"queue_batches,omitempty"`
-	Goroutines        int            `json:"goroutines,omitempty"`
-	AgentVersion      string         `json:"agent_version,omitempty"`
-	XrayVersion       string         `json:"xray_version,omitempty"`
-	XrayConfigVersion string         `json:"xray_config_version,omitempty"`
-	Details           map[string]any `json:"details,omitempty"`
+	UptimeSec          int64          `json:"uptime_sec,omitempty"`
+	SystemUptimeSec    int64          `json:"system_uptime_sec,omitempty"`
+	AgentUptimeSec     int64          `json:"agent_uptime_sec,omitempty"`
+	BootTime           string         `json:"boot_time,omitempty"`
+	QueueBytes         int64          `json:"queue_bytes,omitempty"`
+	QueueBatches       int64          `json:"queue_batches,omitempty"`
+	QuarantinedBatches int64          `json:"quarantined_batches,omitempty"`
+	Goroutines         int            `json:"goroutines,omitempty"`
+	AgentVersion       string         `json:"agent_version,omitempty"`
+	XrayVersion        string         `json:"xray_version,omitempty"`
+	XrayConfigVersion  string         `json:"xray_config_version,omitempty"`
+	Details            map[string]any `json:"details,omitempty"`
 }
 
 type NodeStaticFacts struct {

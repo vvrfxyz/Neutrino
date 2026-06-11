@@ -120,6 +120,14 @@ func (a *App) syncNodeOpsAlerts(ctx context.Context, item map[string]any, now ti
 		}
 	}
 
+	if quarantined := int64FromAny(metrics["quarantined_batches"]); quarantined > 0 {
+		if err := a.upsertNodeOpsAlert(ctx, nodeID, "usage_quarantined", "critical", fmt.Sprintf("%s has %d quarantined usage batches (usage data is being dropped)", name, quarantined), now); err != nil {
+			return err
+		}
+	} else if err := a.resolveNodeOpsAlert(ctx, nodeID, "usage_quarantined", now); err != nil {
+		return err
+	}
+
 	if hasVersionDrift(item, "desired_users_version", "applied_users_version") || hasVersionDrift(item, "desired_xray_version", "applied_xray_version") {
 		if err := a.upsertNodeOpsAlert(ctx, nodeID, "version_drift", "warning", fmt.Sprintf("%s applied version differs from desired", name), now); err != nil {
 			return err
@@ -146,6 +154,7 @@ func (a *App) resolveGeneratedNodeOpsAlerts(ctx context.Context, nodeID int64, a
 		"disk_high",
 		"memory_high",
 		"queue_backlog",
+		"usage_quarantined",
 		"version_drift",
 		"job_stuck",
 		"xray_apply_failed",
