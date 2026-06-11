@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,7 +97,17 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 	backupPath := ""
 	if old, err := os.ReadFile(a.xrayConfigPath); err == nil {
 		backupPath = fmt.Sprintf("%s.bak.%s", a.xrayConfigPath, time.Now().UTC().Format("20060102T150405Z"))
-		_ = os.WriteFile(backupPath, old, 0600)
+		if werr := os.WriteFile(backupPath, old, 0600); werr != nil {
+			// A failed/truncated backup must never be used as a rollback source.
+			_ = os.Remove(backupPath)
+			if req.RollbackOnFail {
+				// rollback_on_fail relies on this backup; fail before touching the
+				// live config so a retry can run with an intact rollback path.
+				return nil, JobError{Retryable: true, Msg: "write config backup failed: " + werr.Error()}
+			}
+			log.Printf("warn: write config backup failed (%s): %v; continuing without backup", backupPath, werr)
+			backupPath = ""
+		}
 	}
 
 	dir := filepath.Dir(a.xrayConfigPath)
@@ -168,6 +179,8 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 		return nil, JobError{Retryable: true, Msg: msg, ResultJSON: result}
 	}
 	a.setXrayReloadPending(false)
+
+	pruneConfigBackups(a.xrayConfigPath, keepConfigBackups)
 
 	out := map[string]any{"ok": true, "config_path": a.xrayConfigPath, "runtime_reloaded": true}
 	if strings.TrimSpace(backupPath) != "" {
@@ -276,6 +289,45 @@ func runArgs(ctx context.Context, args []string, neutrinoConfigPath string, xray
 		return fmt.Errorf("%v: %s", err, msg)
 	}
 	return nil
+}
+
+// keepConfigBackups is how many config.json.bak.* files pruneConfigBackups
+// retains after a successful apply.
+const keepConfigBackups = 5
+
+// pruneConfigBackups removes old <config>.bak.<timestamp> files, keeping the
+// most recent `keep`. Best-effort: failures only log, never fail the apply.
+func pruneConfigBackups(configPath string, keep int) {
+	configPath = filepath.Clean(strings.TrimSpace(configPath))
+	if configPath == "" || keep < 0 {
+		return
+	}
+	dir := filepath.Dir(configPath)
+	prefix := filepath.Base(configPath) + ".bak."
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Printf("warn: prune config backups: read dir %s: %v", dir, err)
+		return
+	}
+	cands := make([]string, 0, 8)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), prefix) {
+			cands = append(cands, e.Name())
+		}
+	}
+	if len(cands) <= keep {
+		return
+	}
+	// Suffix is yyyymmddThhmmssZ, so lexical order is chronological.
+	sort.Strings(cands)
+	for _, name := range cands[:len(cands)-keep] {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			log.Printf("warn: prune config backup %s: %v", name, err)
+		}
+	}
 }
 
 func resolveBackupPath(configPath string, backupName string) (string, error) {

@@ -895,7 +895,20 @@ WHERE user_id = ? AND window_start <= ? AND window_end > ?;
 	}
 	_, err = tx.ExecContext(ctx, `
 	INSERT INTO quota_windows(user_id, window_start, window_end, cycle_type, cycle_key, reset_reason, inbound_bytes, outbound_bytes, effective_bytes, credit_bytes)
-	VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0);
+	VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
+	ON CONFLICT(user_id, window_start) DO UPDATE SET
+		window_end = excluded.window_end,
+		cycle_type = excluded.cycle_type,
+		cycle_key = excluded.cycle_key,
+		reset_reason = excluded.reset_reason,
+		inbound_bytes = 0,
+		outbound_bytes = 0,
+		effective_bytes = 0,
+		credit_bytes = 0,
+		over_limit_at = NULL,
+		alert_80_sent_at = NULL,
+		alert_90_sent_at = NULL,
+		closed_at = NULL;
 	`, userID, nowStr, end.Format(time.RFC3339), cycleType, cycleKey+":manual", reason)
 	if err != nil {
 		return err

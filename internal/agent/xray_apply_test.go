@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // reloadCounter returns reload args that append a marker line to a counter
@@ -312,5 +315,140 @@ exit 0
 	}
 	if string(got) != `{"old":true}` {
 		t.Fatalf("expected config restored after rollback, got %s", string(got))
+	}
+}
+
+// blockBackupWrites plants non-empty directories at the backup paths the next
+// apply would use, making the backup os.WriteFile fail deterministically.
+func blockBackupWrites(t *testing.T, configPath string) {
+	t.Helper()
+	now := time.Now().UTC()
+	for _, ts := range []time.Time{now, now.Add(time.Second)} {
+		p := fmt.Sprintf("%s.bak.%s", configPath, ts.Format("20060102T150405Z"))
+		if err := os.MkdirAll(filepath.Join(p, "block"), 0700); err != nil {
+			t.Fatalf("plant backup blocker: %v", err)
+		}
+	}
+}
+
+func TestExecXrayApplyBackupFailureWithRollbackFailsBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	args, count := reloadCounter(t, dir)
+
+	if err := os.WriteFile(configPath, []byte(`{"old":true}`), 0600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	blockBackupWrites(t, configPath)
+
+	a := &Agent{xrayConfigPath: configPath, xrayReloadArgs: args}
+	_, err := a.execXrayApply(context.Background(), XrayApplyRequest{
+		Template:       `{"old":false}`,
+		RollbackOnFail: true,
+	})
+	if err == nil {
+		t.Fatalf("expected apply failure when backup write fails with rollback_on_fail")
+	}
+	je, ok := err.(JobError)
+	if !ok {
+		t.Fatalf("expected JobError, got %T: %v", err, err)
+	}
+	if !je.Retryable {
+		t.Fatalf("backup write failure must be retryable, got %+v", je)
+	}
+	if !strings.Contains(je.Msg, "backup") {
+		t.Fatalf("error should mention backup, got %q", je.Msg)
+	}
+	got, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if string(got) != `{"old":true}` {
+		t.Fatalf("live config must be untouched when backup fails, got %s", string(got))
+	}
+	if c := count(); c != 0 {
+		t.Fatalf("reload must not run when backup fails; counter=%d", c)
+	}
+}
+
+func TestExecXrayApplyBackupFailureWithoutRollbackContinues(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	args, count := reloadCounter(t, dir)
+
+	if err := os.WriteFile(configPath, []byte(`{"old":true}`), 0600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	blockBackupWrites(t, configPath)
+
+	a := &Agent{xrayConfigPath: configPath, xrayReloadArgs: args}
+	res, err := a.execXrayApply(context.Background(), XrayApplyRequest{Template: `{"old":false}`})
+	if err != nil {
+		t.Fatalf("apply should continue past backup failure without rollback_on_fail: %v", err)
+	}
+	if reloaded, _ := res["runtime_reloaded"].(bool); !reloaded {
+		t.Fatalf("expected runtime_reloaded; res=%+v", res)
+	}
+	if _, has := res["backup_name"]; has {
+		t.Fatalf("must not report a backup_name when the backup failed; res=%+v", res)
+	}
+	got, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if string(got) != `{"old":false}` {
+		t.Fatalf("new config should be installed, got %s", string(got))
+	}
+	if c := count(); c != 1 {
+		t.Fatalf("reload should run once; counter=%d", c)
+	}
+}
+
+func TestExecXrayApplyPrunesOldBackups(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	args, _ := reloadCounter(t, dir)
+
+	if err := os.WriteFile(configPath, []byte(`{"old":true}`), 0600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	for i := 0; i < 7; i++ {
+		name := fmt.Sprintf("%s.bak.2020010%dT000000Z", configPath, i+1)
+		if err := os.WriteFile(name, []byte("old"), 0600); err != nil {
+			t.Fatalf("seed backup: %v", err)
+		}
+	}
+
+	a := &Agent{xrayConfigPath: configPath, xrayReloadArgs: args}
+	res, err := a.execXrayApply(context.Background(), XrayApplyRequest{Template: `{"old":false}`})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	newBackup, _ := res["backup_name"].(string)
+	if newBackup == "" {
+		t.Fatalf("expected backup_name in result; res=%+v", res)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	baks := make([]string, 0, 8)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "config.json.bak.") {
+			baks = append(baks, e.Name())
+		}
+	}
+	sort.Strings(baks)
+	if len(baks) != keepConfigBackups {
+		t.Fatalf("expected %d backups after prune, got %d: %v", keepConfigBackups, len(baks), baks)
+	}
+	if baks[len(baks)-1] != newBackup {
+		t.Fatalf("newest backup %s must survive prune, got %v", newBackup, baks)
+	}
+	for _, name := range baks {
+		if name == "config.json.bak.20200101T000000Z" || name == "config.json.bak.20200102T000000Z" || name == "config.json.bak.20200103T000000Z" {
+			t.Fatalf("oldest backups must be pruned, still present: %v", baks)
+		}
 	}
 }
