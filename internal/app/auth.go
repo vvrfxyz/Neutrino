@@ -308,6 +308,10 @@ func requiredScope(method, path string) string {
 			return "backups:read"
 		}
 		return "backups:write"
+	// Key management is admin-only: a narrowly-scoped key must never be able
+	// to mint or revoke keys (privilege escalation). Only "admin"/"*" pass.
+	case strings.HasPrefix(path, "/api/v1/apikeys"):
+		return "admin"
 	default:
 		return ""
 	}

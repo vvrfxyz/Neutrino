@@ -56,12 +56,78 @@ func (s *Store) CreateAPIKey(ctx context.Context, name, scopes string, nodeID *i
 }
 
 func (s *Store) RevokeAPIKey(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 UPDATE api_keys
 SET revoked_at = ?
 WHERE id = ?;
 `, time.Now().UTC().Format(time.RFC3339), id)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ListAPIKeys returns key metadata (never hashes or plaintext), newest first.
+func (s *Store) ListAPIKeys(ctx context.Context, limit int) ([]APIKey, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, name, scopes, node_id, expires_at, last_used_at, revoked_at, created_at
+FROM api_keys
+ORDER BY id DESC
+LIMIT ?;
+`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]APIKey, 0, 16)
+	for rows.Next() {
+		var k APIKey
+		var nodeID sql.NullInt64
+		var expiresAt, lastUsedAt, revokedAt sql.NullString
+		var createdAt string
+		if err := rows.Scan(&k.ID, &k.Name, &k.Scopes, &nodeID, &expiresAt, &lastUsedAt, &revokedAt, &createdAt); err != nil {
+			return nil, err
+		}
+		if nodeID.Valid {
+			k.NodeID = &nodeID.Int64
+		}
+		k.ExpiresAt = parseOptionalRFC3339(expiresAt)
+		k.LastUsedAt = parseOptionalRFC3339(lastUsedAt)
+		k.RevokedAt = parseOptionalRFC3339(revokedAt)
+		k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// GetAPIKey returns one key's metadata (never hash or plaintext).
+func (s *Store) GetAPIKey(ctx context.Context, id int64) (APIKey, error) {
+	var k APIKey
+	var nodeID sql.NullInt64
+	var expiresAt, lastUsedAt, revokedAt sql.NullString
+	var createdAt string
+	err := s.db.QueryRowContext(ctx, `
+SELECT id, name, scopes, node_id, expires_at, last_used_at, revoked_at, created_at
+FROM api_keys
+WHERE id = ?;
+`, id).Scan(&k.ID, &k.Name, &k.Scopes, &nodeID, &expiresAt, &lastUsedAt, &revokedAt, &createdAt)
+	if err != nil {
+		return APIKey{}, err
+	}
+	if nodeID.Valid {
+		k.NodeID = &nodeID.Int64
+	}
+	k.ExpiresAt = parseOptionalRFC3339(expiresAt)
+	k.LastUsedAt = parseOptionalRFC3339(lastUsedAt)
+	k.RevokedAt = parseOptionalRFC3339(revokedAt)
+	k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	return k, nil
 }
 
 func (s *Store) ValidateAPIKey(ctx context.Context, raw string) (APIKeyAuth, bool, error) {
