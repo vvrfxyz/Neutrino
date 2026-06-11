@@ -33,7 +33,14 @@ func TestFlushQuarantinesBatchAfterRepeatedPanelRejections(t *testing.T) {
 		// batch is rejected as a whole and will be rejected forever.
 		_, _ = w.Write([]byte(`{"processed":1,"results":[{"user_id":1,"error":"event outside current quota window"}]}`))
 	})
-	if err := a.queue.Enqueue(UsageBatch{Kind: "stats", Events: []UsageEvent{{UserID: 1, Bytes: 1, Source: "test", SourceEventID: "poison"}}}); err != nil {
+	if err := a.queue.Enqueue(UsageBatch{
+		Kind:   "stats",
+		Events: []UsageEvent{{UserID: 1, Bytes: 1, Source: "test", SourceEventID: "poison"}},
+		Stats: &StatsMeta{
+			NextAck: map[string]StatEntry{"poison@example.com": {Uplink: 111, Downlink: 222}},
+			Epoch:   7,
+		},
+	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 	if err := a.queue.Enqueue(UsageBatch{Kind: "stats", Events: []UsageEvent{{UserID: 2, Bytes: 1, Source: "test", SourceEventID: "good"}}}); err != nil {
@@ -62,6 +69,70 @@ func TestFlushQuarantinesBatchAfterRepeatedPanelRejections(t *testing.T) {
 	}
 	if got := a.queue.ApproxBatches(); got != 1 {
 		t.Fatalf("ApproxBatches = %d, want 1 (the non-poison batch)", got)
+	}
+	// The panel commits acceptable events of a rejected batch before reporting
+	// per-event errors, so quarantine must advance acks like a success —
+	// otherwise the next sample re-emits the same ranges under fresh event ids
+	// and the panel double-counts.
+	st := a.state.Snapshot()
+	if got := st.AckedStats["poison@example.com"]; got.Uplink != 111 || got.Downlink != 222 {
+		t.Fatalf("acks not committed on quarantine: %+v", st.AckedStats)
+	}
+	if st.StatsEpoch != 7 {
+		t.Fatalf("epoch not committed on quarantine: %d", st.StatsEpoch)
+	}
+}
+
+func TestFlushDoesNotQuarantineOnTransientPanelRejections(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	a, _ := newFlushTestAgent(t, dir, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// "record failed" covers transient panel-side failures (busy DB);
+		// retrying the identical batch can succeed, so it must never count
+		// toward quarantine no matter how often it repeats.
+		_, _ = w.Write([]byte(`{"processed":1,"results":[{"user_id":1,"error":"record failed"}]}`))
+	})
+	if err := a.queue.Enqueue(UsageBatch{Kind: "stats", Events: []UsageEvent{{UserID: 1, Bytes: 1, Source: "test", SourceEventID: "a"}}}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		advanced, keepGoing := a.flushQueuedBatchOnce(ctx)
+		if advanced || keepGoing {
+			t.Fatalf("attempt %d: advanced=%v keepGoing=%v, want false/false", i+1, advanced, keepGoing)
+		}
+	}
+	if got := a.queue.QuarantinedBatches(); got != 0 {
+		t.Fatalf("transient rejections must never quarantine; quarantined=%d", got)
+	}
+}
+
+func TestFlushQuarantineHonorsMinAge(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	a, _ := newFlushTestAgent(t, dir, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"processed":1,"results":[{"user_id":1,"error":"event outside current quota window"}]}`))
+	})
+	a.cfg.UsageQuarantineMinAgeSec = 3600
+	if err := a.queue.Enqueue(UsageBatch{Kind: "stats", Events: []UsageEvent{{UserID: 1, Bytes: 1, Source: "test", SourceEventID: "young"}}}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	ctx := context.Background()
+	// Far beyond the rejection threshold, but the batch is too young.
+	for i := 0; i < 10; i++ {
+		advanced, _ := a.flushQueuedBatchOnce(ctx)
+		if advanced {
+			t.Fatalf("attempt %d: batch quarantined before min age", i+1)
+		}
+	}
+	if got := a.queue.QuarantinedBatches(); got != 0 {
+		t.Fatalf("QuarantinedBatches = %d, want 0 before min age", got)
 	}
 }
 
@@ -124,7 +195,7 @@ func TestFlushSuccessClearsRejectionCounter(t *testing.T) {
 	a, _ := newFlushTestAgent(t, dir, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if fail {
-			_, _ = w.Write([]byte(`{"processed":1,"results":[{"user_id":1,"error":"record failed"}]}`))
+			_, _ = w.Write([]byte(`{"processed":1,"results":[{"user_id":1,"error":"event outside current quota window"}]}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"processed":1,"results":[{"user_id":1,"status":"active"}]}`))

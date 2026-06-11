@@ -69,7 +69,7 @@ type Agent struct {
 
 	// usageRejections counts consecutive panel rejections per queued batch
 	// path; reaching the quarantine threshold moves the batch aside.
-	usageRejections map[string]int
+	usageRejections map[string]usageRejectionState
 
 	lastNetInTotal     int64
 	lastNetOutTotal    int64
@@ -773,7 +773,16 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 		}
 	}
 
+	// Write-ahead the reload intent: once the rename lands, the on-disk config
+	// no longer matches the running xray. If the agent dies anywhere between
+	// the rename and a successful reload, the persisted flag keeps the retried
+	// job from being skipped as "config unchanged".
+	a.setXrayReloadPending(true)
+
 	if err := os.Rename(tmpPath, a.xrayConfigPath); err != nil {
+		// Leave the pending flag set: it may also be carrying state from an
+		// earlier failed reload, and a spurious pending only costs one extra
+		// reload on the next apply.
 		return nil, JobError{Retryable: true, Msg: "install config failed: " + err.Error()}
 	}
 
@@ -841,6 +850,9 @@ func (a *Agent) execXrayRollback(ctx context.Context, req XrayRollbackRequest) (
 	if backupPath == "" {
 		return nil, JobError{Retryable: false, Msg: "no backup found"}
 	}
+	// Write-ahead, mirroring execXrayApply: the restore replaces the on-disk
+	// config before any reload happens.
+	a.setXrayReloadPending(true)
 	if err := restoreBackupFile(a.xrayConfigPath, backupPath); err != nil {
 		return nil, JobError{Retryable: true, Msg: "restore failed: " + err.Error()}
 	}
@@ -1715,6 +1727,13 @@ func (a *Agent) flushQueuedBatchOnce(ctx context.Context) (bool, bool) {
 		var rejection *UsageRejectionError
 		if errors.As(err, &rejection) {
 			if a.noteUsageRejection(path) {
+				// The panel durably commits every acceptable event of a
+				// rejected batch before reporting per-event errors, so the
+				// acks must advance exactly as on success — otherwise the
+				// next sample re-emits the same byte ranges under fresh
+				// event ids (ids embed the absolute counters) and the panel
+				// double-counts them.
+				a.commitBatchAcks(batch)
 				a.quarantineBatch(path, rejection.Error())
 				return true, true
 			}
@@ -1722,6 +1741,20 @@ func (a *Agent) flushQueuedBatchOnce(ctx context.Context) (bool, bool) {
 		return false, false
 	}
 	a.clearUsageRejections(path)
+	a.commitBatchAcks(batch)
+	if err := a.queue.Dequeue(path); err != nil {
+		log.Printf("queue dequeue failed: %v", err)
+		return false, false
+	}
+	return true, true
+}
+
+// commitBatchAcks advances the persisted ack state (stats counters/epoch or
+// access offset) for a batch that has left the queue.
+func (a *Agent) commitBatchAcks(batch UsageBatch) {
+	if a.state == nil {
+		return
+	}
 	_ = a.state.Update(func(s *State) {
 		switch batch.Kind {
 		case "stats":
@@ -1742,27 +1775,41 @@ func (a *Agent) flushQueuedBatchOnce(ctx context.Context) (bool, bool) {
 			}
 		}
 	})
-	if err := a.queue.Dequeue(path); err != nil {
-		log.Printf("queue dequeue failed: %v", err)
-		return false, false
-	}
-	return true, true
+}
+
+type usageRejectionState struct {
+	count   int
+	firstAt time.Time
 }
 
 // noteUsageRejection bumps the consecutive-rejection counter for a batch path
-// and reports whether the quarantine threshold has been reached.
+// and reports whether the quarantine threshold has been reached. Quarantine
+// requires both N rejections and a minimum wall-clock age since the first
+// rejection (USAGE_QUARANTINE_MIN_AGE_SEC) so conditions that self-heal —
+// like an unknown panel error string for a transient state — do not cost a
+// batch of real usage data within seconds.
 func (a *Agent) noteUsageRejection(path string) bool {
 	threshold := a.cfg.UsageQuarantineAfterRejects
 	if threshold <= 0 {
 		threshold = 5
 	}
+	minAge := time.Duration(a.cfg.UsageQuarantineMinAgeSec) * time.Second
+	if minAge < 0 {
+		minAge = 0
+	}
+	now := time.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.usageRejections == nil {
-		a.usageRejections = make(map[string]int)
+		a.usageRejections = make(map[string]usageRejectionState)
 	}
-	a.usageRejections[path]++
-	return a.usageRejections[path] >= threshold
+	st := a.usageRejections[path]
+	if st.count == 0 {
+		st.firstAt = now
+	}
+	st.count++
+	a.usageRejections[path] = st
+	return st.count >= threshold && now.Sub(st.firstAt) >= minAge
 }
 
 func (a *Agent) clearUsageRejections(path string) {
@@ -1773,10 +1820,11 @@ func (a *Agent) clearUsageRejections(path string) {
 	a.mu.Unlock()
 }
 
-// quarantineBatch moves a poison batch out of the active queue. The skipped
-// usage is permanently lost to accounting (kept on disk for inspection), so
-// this is loud: the quarantine count also reaches the panel via heartbeat
-// metrics and raises an ops alert there.
+// quarantineBatch moves a poison batch out of the active queue. Events the
+// panel rejected are permanently lost to accounting (the file is kept on disk
+// for inspection); events it had already accepted were counted and their acks
+// committed by the caller. This is loud: the quarantine count also reaches
+// the panel via heartbeat metrics and raises a critical ops alert there.
 func (a *Agent) quarantineBatch(path, reason string) {
 	a.clearUsageRejections(path)
 	dest, err := a.queue.Quarantine(path)
