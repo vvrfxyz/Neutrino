@@ -37,7 +37,6 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /out/neutrino /app/neutrino
-COPY internal/app/templates /app/internal/app/templates
 COPY --from=ops-demo-builder /src/frontend/ops-demo/dist /app/frontend/ops-demo/dist
 
 ENV ADDR=:8080

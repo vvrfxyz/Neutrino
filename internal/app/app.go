@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -198,34 +199,34 @@ func New(cfg config.Config, store *repo.Store) *App {
 		},
 	}
 
-	tplDir := "internal/app/templates"
-	baseTmpl := filepath.Join(tplDir, "base.tmpl")
-	partialFiles, _ := filepath.Glob(filepath.Join(tplDir, "partials", "*.tmpl"))
+	const tplDir = "templates"
+	baseTmpl := tplDir + "/base.tmpl"
+	partialFiles, _ := fs.Glob(templatesFS, tplDir+"/partials/*.tmpl")
 
 	pageFiles := map[string]string{
-		"users":        filepath.Join(tplDir, "users.tmpl"),
-		"user_detail":  filepath.Join(tplDir, "user_detail.tmpl"),
-		"nodes":        filepath.Join(tplDir, "nodes.tmpl"),
-		"node_deploy":  filepath.Join(tplDir, "node_deploy.tmpl"),
-		"traffic":      filepath.Join(tplDir, "traffic.tmpl"),
-		"ops":          filepath.Join(tplDir, "ops.tmpl"),
-		"enforcements": filepath.Join(tplDir, "enforcements.tmpl"),
+		"users":        tplDir + "/users.tmpl",
+		"user_detail":  tplDir + "/user_detail.tmpl",
+		"nodes":        tplDir + "/nodes.tmpl",
+		"node_deploy":  tplDir + "/node_deploy.tmpl",
+		"traffic":      tplDir + "/traffic.tmpl",
+		"ops":          tplDir + "/ops.tmpl",
+		"enforcements": tplDir + "/enforcements.tmpl",
 	}
 
 	// Extra files that specific pages need (e.g. HTMX partials included via {{template}}).
 	pageExtras := map[string][]string{
-		"users": {filepath.Join(tplDir, "users_table.tmpl")},
+		"users": {tplDir + "/users_table.tmpl"},
 	}
 
 	pages := make(map[string]*template.Template, len(pageFiles)+2)
 
 	// Login is standalone (no base layout).
 	pages["login"] = template.Must(
-		template.New("").Funcs(funcs).ParseFiles(filepath.Join(tplDir, "login.tmpl")),
+		template.New("").Funcs(funcs).ParseFS(templatesFS, tplDir+"/login.tmpl"),
 	)
 	// users_table is an HTMX partial (no base layout).
 	pages["users_table"] = template.Must(
-		template.New("").Funcs(funcs).ParseFiles(filepath.Join(tplDir, "users_table.tmpl")),
+		template.New("").Funcs(funcs).ParseFS(templatesFS, tplDir+"/users_table.tmpl"),
 	)
 
 	// Each page template gets its own template set: base + partials + page + extras.
@@ -235,7 +236,7 @@ func New(cfg config.Config, store *repo.Store) *App {
 		files = append(files, partialFiles...)
 		files = append(files, pageExtras[name]...)
 		pages[name] = template.Must(
-			template.New("").Funcs(funcs).ParseFiles(files...),
+			template.New("").Funcs(funcs).ParseFS(templatesFS, files...),
 		)
 	}
 
