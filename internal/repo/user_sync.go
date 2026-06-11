@@ -43,6 +43,7 @@ var repairCompatibleUsersSyncReasons = func() map[string]bool {
 		"base_version_mismatch":       true,
 		"local_hash_mismatch":         true,
 		"remove_base_mismatch":        true,
+		"delta_email_move":            true,
 		"invalid_local_baseline":      true,
 		"full_response_hash_mismatch": true,
 		"pending_journal_mismatch":    true,
@@ -114,6 +115,12 @@ func sortItemsByUserID(items []usersync.Item) {
 	}
 }
 
+// errUserSyncSnapshotCorrupt marks a snapshot row whose users_json no longer
+// decodes. Prepare must treat it like a missing snapshot (fall back to full)
+// instead of failing: a hard error here would abort every reconcile tick for
+// the node with no recovery path.
+var errUserSyncSnapshotCorrupt = errors.New("user sync snapshot corrupt")
+
 func getNodeUserSyncSnapshotExec(ctx context.Context, q usersSyncQuerier, nodeID int64, version string) ([]usersync.Item, bool, error) {
 	var usersJSON string
 	err := q.QueryRowContext(ctx, `
@@ -127,7 +134,7 @@ SELECT users_json FROM node_user_sync_snapshots WHERE node_id = ? AND version = 
 	}
 	var items []usersync.Item
 	if err := json.Unmarshal([]byte(usersJSON), &items); err != nil {
-		return nil, false, fmt.Errorf("decode snapshot node=%d version=%s: %w", nodeID, version, err)
+		return nil, false, fmt.Errorf("%w: node=%d version=%s: %v", errUserSyncSnapshotCorrupt, nodeID, version, err)
 	}
 	return items, true, nil
 }
@@ -140,11 +147,19 @@ func (s *Store) GetNodeUserSyncSnapshot(ctx context.Context, nodeID int64, versi
 // node's desired/applied versions, every pending/running users_sync job's
 // desired version and delta base version, and the newest 10 snapshots. If any
 // pending/running payload cannot be parsed, pruning is skipped entirely
-// rather than risking deletion of a baseline a job still needs.
+// rather than risking deletion of a baseline a job still needs. The scan and
+// the DELETE share one transaction so a concurrent prepare/finish cannot
+// re-reference a snapshot between them.
 func (s *Store) PruneNodeUserSyncSnapshots(ctx context.Context, nodeID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	retained := make(map[string]bool, 8)
 	var desired, applied sql.NullString
-	if err := s.db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 SELECT desired_users_version, applied_users_version FROM nodes WHERE id = ?;
 `, nodeID).Scan(&desired, &applied); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -159,7 +174,7 @@ SELECT desired_users_version, applied_users_version FROM nodes WHERE id = ?;
 		retained[v] = true
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 SELECT COALESCE(desired_version, ''), payload_json
 FROM node_jobs
 WHERE node_id = ? AND kind = 'users_sync' AND status IN ('pending','running');
@@ -216,8 +231,10 @@ WHERE node_id = ?
 		}
 	}
 	query += ";"
-	_, err = s.db.ExecContext(ctx, query, args...)
-	return err
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // --- canonical node users query ---
@@ -345,10 +362,15 @@ UPDATE nodes SET desired_users_version = ?, updated_at = ? WHERE id = ?;
 	}
 
 	if !forceFull && applied == targetVersion {
-		// No drift. A stale pending delta (base no longer applied) would fail
-		// immediately after claim; cancel it instead of leaving it claimable.
-		if hasPending && pendingClass == usersSyncPayloadDelta && strings.TrimSpace(pendingPayload.BaseVersion) != applied {
-			if err := cancelUsersSyncJobExec(ctx, tx, pending.ID, now, "stale delta base"); err != nil {
+		// No drift. A stale pending delta — base no longer applied, or target no
+		// longer the desired version — carries superseded changes in its payload
+		// and would be applied (and accepted against the job's captured desired
+		// version) as-is; cancel it instead of leaving it claimable. A stale
+		// pending full is harmless: the agent re-fetches current truth.
+		if hasPending && pendingClass == usersSyncPayloadDelta &&
+			(strings.TrimSpace(pendingPayload.BaseVersion) != applied ||
+				strings.TrimSpace(pendingPayload.TargetVersion) != targetVersion) {
+			if err := cancelUsersSyncJobExec(ctx, tx, pending.ID, now, "stale delta"); err != nil {
 				return PrepareUsersSyncResult{}, err
 			}
 		}
@@ -366,7 +388,19 @@ UPDATE nodes SET desired_users_version = ?, updated_at = ? WHERE id = ?;
 	if !forceFull && baselineSchema >= 1 && applied != "" {
 		base, ok, err := getNodeUserSyncSnapshotExec(ctx, tx, nodeID, applied)
 		if err != nil {
-			return PrepareUsersSyncResult{}, err
+			if !errors.Is(err, errUserSyncSnapshotCorrupt) {
+				return PrepareUsersSyncResult{}, err
+			}
+			// A corrupt snapshot row must degrade to full like a missing one —
+			// failing here would abort every reconcile for this node forever.
+			// Delete the bad row so pruning/retention logic never trips on it.
+			log.Printf("users_sync node=%d: %v; using full and deleting the bad snapshot", nodeID, err)
+			if _, derr := tx.ExecContext(ctx, `
+DELETE FROM node_user_sync_snapshots WHERE node_id = ? AND version = ?;
+`, nodeID, applied); derr != nil {
+				return PrepareUsersSyncResult{}, derr
+			}
+			ok = false
 		}
 		if ok {
 			if usersync.HashItems(base) != applied {
@@ -434,6 +468,115 @@ WHERE id = ? AND status = 'pending';
 	return err
 }
 
+// reconcileUsersSyncPendingSlotExec restores the single-pending-slot invariant
+// after a retryable requeue returned a previously running users_sync job to
+// pending behind a newer row enqueued while it ran. Exactly one survivor is
+// kept — protected full > full/legacy > invalid > delta (mirroring enqueue's
+// overwrite priority), newest row inside a class — so a stale requeued delta
+// can never run ahead of the repair or fresher payload behind it. A protected
+// full loser only ever loses to a newer protected full, so repairs survive;
+// canceling a pending backfill in favor of a different reason clears the
+// backfill marker so the startup pass can retry.
+func reconcileUsersSyncPendingSlotExec(ctx context.Context, q usersSyncQuerier, nodeID int64, now string) error {
+	rows, err := q.QueryContext(ctx, `
+SELECT id, payload_json
+FROM node_jobs
+WHERE node_id = ? AND kind = 'users_sync' AND status = 'pending'
+ORDER BY id DESC;
+`, nodeID)
+	if err != nil {
+		return err
+	}
+	type slotJob struct {
+		id      int64
+		payload usersync.JobPayload
+		class   usersSyncPayloadClass
+	}
+	jobs := make([]slotJob, 0, 2)
+	for rows.Next() {
+		var j slotJob
+		var payloadJSON string
+		if err := rows.Scan(&j.id, &payloadJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		j.payload, j.class = classifyUsersSyncPayload(payloadJSON)
+		jobs = append(jobs, j)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(jobs) <= 1 {
+		return nil
+	}
+
+	rank := func(j slotJob) int {
+		switch {
+		case j.class == usersSyncPayloadFull && protectedUsersSyncReasons[strings.TrimSpace(j.payload.Reason)]:
+			return 0
+		case j.class == usersSyncPayloadFull || j.class == usersSyncPayloadLegacyFull:
+			return 1
+		case j.class == usersSyncPayloadInvalid:
+			return 2
+		default:
+			return 3
+		}
+	}
+	survivor := 0
+	for i := 1; i < len(jobs); i++ {
+		// jobs is newest-first, so a tie keeps the newer row.
+		if rank(jobs[i]) < rank(jobs[survivor]) {
+			survivor = i
+		}
+	}
+	for i, j := range jobs {
+		if i == survivor {
+			continue
+		}
+		if err := cancelUsersSyncJobExec(ctx, q, j.id, now, "superseded pending users_sync"); err != nil {
+			return err
+		}
+		if j.class == usersSyncPayloadFull && strings.TrimSpace(j.payload.Reason) == "baseline_backfill" &&
+			strings.TrimSpace(jobs[survivor].payload.Reason) != "baseline_backfill" {
+			if _, err := q.ExecContext(ctx, `
+UPDATE nodes SET users_sync_baseline_backfill_at = NULL WHERE id = ?;
+`, nodeID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// handleUsersSyncTerminalFailureExec runs the kind-specific consequences of a
+// users_sync job reaching terminal failure, shared by agent-reported finishes
+// and the timeout sweeper. A failed backfill must not strand the node: the
+// marker is cleared so the next startup backfill pass retries. Any other
+// protected repair exists because runtime state is (or may be) wrong while
+// applied == desired — dropping it would leave the node silently broken, so
+// it is re-enqueued as a fresh forced full with the same reason.
+func (s *Store) handleUsersSyncTerminalFailureExec(ctx context.Context, tx usersSyncQuerier, nodeID int64, payload usersync.JobPayload, class usersSyncPayloadClass) (repairEnqueued bool, err error) {
+	if class != usersSyncPayloadFull {
+		return false, nil
+	}
+	reason := strings.TrimSpace(payload.Reason)
+	if reason == "baseline_backfill" {
+		_, err := tx.ExecContext(ctx, `
+UPDATE nodes SET users_sync_baseline_backfill_at = NULL WHERE id = ?;
+`, nodeID)
+		return false, err
+	}
+	if !protectedUsersSyncReasons[reason] {
+		return false, nil
+	}
+	if _, err := s.prepareUsersSyncTx(ctx, tx, nodeID, true, reason); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // enqueueUsersSyncJobExec enforces full-over-delta priority on the single
 // pending users_sync slot per node:
 //   - a later delta never overwrites a pending full (or legacy/invalid) job;
@@ -491,6 +634,32 @@ ORDER BY id DESC LIMIT 1;
 		} else {
 			if (pClass == usersSyncPayloadFull || pClass == usersSyncPayloadLegacyFull) && pending.DesiredVersion == targetVersion {
 				return pending.ID, false, nil
+			}
+		}
+		// Overwriting the pending slot must not weaken a protected repair:
+		// the payload reason drives cancellation protection and (for
+		// baseline_backfill) the backfill-marker lifecycle. An ordinary full
+		// adopts the pending protected reason — the job is a full sync either
+		// way, so preserving it only strengthens the overwrite. A forced
+		// repair with a different reason legitimately replaces a pending
+		// backfill, so the marker is cleared for the startup pass to retry.
+		if pClass == usersSyncPayloadFull && protectedUsersSyncReasons[strings.TrimSpace(pPayload.Reason)] {
+			pendingReason := strings.TrimSpace(pPayload.Reason)
+			if !forceFull && mode == usersync.ModeFull {
+				var np usersync.JobPayload
+				if json.Unmarshal([]byte(payloadJSON), &np) == nil {
+					np.Reason = pendingReason
+					if b, merr := json.Marshal(np); merr == nil {
+						payloadJSON = string(b)
+						reason = pendingReason
+					}
+				}
+			} else if pendingReason == "baseline_backfill" && reason != "baseline_backfill" {
+				if _, err := q.ExecContext(ctx, `
+UPDATE nodes SET users_sync_baseline_backfill_at = NULL WHERE id = ?;
+`, nodeID); err != nil {
+					return 0, false, err
+				}
 			}
 		}
 		if _, err := q.ExecContext(ctx, `
@@ -579,7 +748,12 @@ SELECT kind, desired_version, payload_json FROM node_jobs WHERE id = ? AND node_
 	}
 	out.FinalStatus = final
 	if final == "pending" {
-		// Retry already scheduled; no terminal follow-ups.
+		// Retry already scheduled; no terminal follow-ups. The requeue may have
+		// returned this job to pending behind a newer one enqueued while it ran
+		// — restore the single-pending-slot invariant before committing.
+		if err := reconcileUsersSyncPendingSlotExec(ctx, tx, nodeID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return out, err
+		}
 		return out, tx.Commit()
 	}
 
@@ -696,16 +870,14 @@ UPDATE nodes SET users_sync_baseline_schema = 0, users_sync_delta_ready_at = NUL
 		return out, tx.Commit()
 	}
 
-	// Terminal failure.
-	if payloadClass == usersSyncPayloadFull && strings.TrimSpace(payload.Reason) == "baseline_backfill" {
-		// A failed backfill must not strand the node: clear the marker so the
-		// next startup backfill pass retries.
-		if _, err := tx.ExecContext(ctx, `
-UPDATE nodes SET users_sync_baseline_backfill_at = NULL WHERE id = ?;
-`, nodeID); err != nil {
-			return out, err
-		}
+	// Terminal failure. Backfill-marker clearing and protected-repair
+	// re-enqueue come first: a later need_full_sync repair with a merely
+	// repair-compatible reason must not displace a protected one.
+	repairEnqueued, err := s.handleUsersSyncTerminalFailureExec(ctx, tx, nodeID, payload, payloadClass)
+	if err != nil {
+		return out, err
 	}
+	out.RepairEnqueued = repairEnqueued
 	if resultParsed && agentResult.NeedFullSync {
 		reason := strings.TrimSpace(agentResult.Reason)
 		if !repairCompatibleUsersSyncReasons[reason] {
@@ -825,6 +997,22 @@ func (s *Store) MaterializeUsersSnapshotForAgent(ctx context.Context, nodeID int
 UPDATE nodes SET desired_users_version = ?, updated_at = ? WHERE id = ?;
 `, version, now, nodeID); err != nil {
 		return "", nil, err
+	}
+	// The desired version may have just moved: a pending delta targeting an
+	// older version carries superseded changes and would be applied (and
+	// accepted against its captured desired version) as-is. Cancel it; the
+	// next prepare re-creates the right job if drift remains.
+	pending, hasPending, err := getPendingUsersSyncJobExec(ctx, tx, nodeID)
+	if err != nil {
+		return "", nil, err
+	}
+	if hasPending {
+		if pPayload, pClass := classifyUsersSyncPayload(pending.PayloadJSON); pClass == usersSyncPayloadDelta &&
+			strings.TrimSpace(pPayload.TargetVersion) != version {
+			if err := cancelUsersSyncJobExec(ctx, tx, pending.ID, now, "stale delta"); err != nil {
+				return "", nil, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return "", nil, err

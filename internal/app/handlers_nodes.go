@@ -306,7 +306,14 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 		MaxAttempts: a.cfg.NodeJobMaxAttempts,
 		Attempt:     req.Attempt,
 	}
-	preJob, preOK, _ := a.nodes().GetJob(r.Context(), jobID)
+	preJob, preOK, preErr := a.nodes().GetJob(r.Context(), jobID)
+	if preErr != nil {
+		// A transient lookup error must not silently route a users_sync finish
+		// through the generic path, skipping applied-version validation and the
+		// delta-ready marker. The agent retries the finish.
+		http.Error(w, "finish failed", http.StatusInternalServerError)
+		return
+	}
 	var final string
 	var err error
 	if preOK && preJob.Kind == "users_sync" {
