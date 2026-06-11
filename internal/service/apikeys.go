@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -27,6 +28,7 @@ var KnownAPIKeyScopes = []string{
 
 var (
 	ErrAPIKeyInvalidScope = errors.New("invalid api key scope")
+	ErrAPIKeyInvalidInput = errors.New("invalid api key input")
 	ErrAPIKeyNotFound     = errors.New("api key not found")
 )
 
@@ -83,16 +85,30 @@ func NormalizeAPIKeyScopes(scopes []string) (string, error) {
 func (s *APIKeyService) Create(ctx context.Context, in CreateAPIKeyInput) (string, repo.APIKey, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		return "", repo.APIKey{}, errors.New("name required")
+		return "", repo.APIKey{}, fmt.Errorf("%w: name required", ErrAPIKeyInvalidInput)
+	}
+	if len(name) > 128 {
+		return "", repo.APIKey{}, fmt.Errorf("%w: name longer than 128 characters", ErrAPIKeyInvalidInput)
 	}
 	scopes, err := NormalizeAPIKeyScopes(in.Scopes)
 	if err != nil {
 		return "", repo.APIKey{}, err
 	}
-	if in.ExpiresAt != nil && !in.ExpiresAt.After(time.Now().UTC()) {
-		return "", repo.APIKey{}, errors.New("expires_at must be in the future")
+	if in.ExpiresAt != nil {
+		if !in.ExpiresAt.After(time.Now().UTC()) {
+			return "", repo.APIKey{}, fmt.Errorf("%w: expires_at must be in the future", ErrAPIKeyInvalidInput)
+		}
+		// RFC3339 cannot round-trip years above 9999: the value would store
+		// fine but fail to parse on read, silently turning the key into a
+		// never-expiring one.
+		if in.ExpiresAt.Year() > 9999 {
+			return "", repo.APIKey{}, fmt.Errorf("%w: expires_at year must be <= 9999", ErrAPIKeyInvalidInput)
+		}
 	}
-	if in.NodeID != nil && *in.NodeID > 0 {
+	if in.NodeID != nil && *in.NodeID <= 0 {
+		in.NodeID = nil
+	}
+	if in.NodeID != nil {
 		if _, err := s.store.GetNode(ctx, *in.NodeID); err != nil {
 			return "", repo.APIKey{}, err
 		}
@@ -107,23 +123,35 @@ func (s *APIKeyService) List(ctx context.Context, limit int) ([]repo.APIKey, err
 func (s *APIKeyService) Get(ctx context.Context, id int64) (repo.APIKey, error) {
 	k, err := s.store.GetAPIKey(ctx, id)
 	if err != nil {
-		return repo.APIKey{}, fmt.Errorf("%w: %d", ErrAPIKeyNotFound, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return repo.APIKey{}, fmt.Errorf("%w: %d", ErrAPIKeyNotFound, id)
+		}
+		return repo.APIKey{}, err
 	}
 	return k, nil
 }
 
 // Revoke marks the key revoked (idempotent for already-revoked keys; unknown
-// ids return ErrAPIKeyNotFound).
+// ids return ErrAPIKeyNotFound). The returned metadata always carries a
+// revoked_at so callers can audit even if a re-read would fail.
 func (s *APIKeyService) Revoke(ctx context.Context, id int64) (repo.APIKey, error) {
-	k, err := s.store.GetAPIKey(ctx, id)
+	k, err := s.Get(ctx, id)
 	if err != nil {
-		return repo.APIKey{}, fmt.Errorf("%w: %d", ErrAPIKeyNotFound, id)
+		return repo.APIKey{}, err
 	}
 	if k.RevokedAt != nil {
 		return k, nil
 	}
-	if err := s.store.RevokeAPIKey(ctx, id); err != nil {
+	if err := s.store.RevokeAPIKey(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// sql.ErrNoRows here means a concurrent revoke won the race — the key
+		// is revoked either way.
 		return repo.APIKey{}, err
 	}
-	return s.store.GetAPIKey(ctx, id)
+	if fresh, err := s.store.GetAPIKey(ctx, id); err == nil {
+		return fresh, nil
+	}
+	// Re-read failed but the revoke committed: report it as revoked now.
+	now := time.Now().UTC()
+	k.RevokedAt = &now
+	return k, nil
 }

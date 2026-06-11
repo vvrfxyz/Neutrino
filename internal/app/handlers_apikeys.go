@@ -34,6 +34,7 @@ func (a *App) handleAPIKeysV1(w http.ResponseWriter, r *http.Request) {
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"count": len(items), "items": items})
 	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 		var req struct {
 			Name      string   `json:"name"`
 			Scopes    []string `json:"scopes"`
@@ -61,11 +62,14 @@ func (a *App) handleAPIKeysV1(w http.ResponseWriter, r *http.Request) {
 		}
 		plain, meta, err := a.apikeys().Create(r.Context(), in)
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, repo.ErrNodeNotFound) {
-				status = http.StatusNotFound
+			switch {
+			case errors.Is(err, repo.ErrNodeNotFound):
+				http.Error(w, err.Error(), http.StatusNotFound)
+			case errors.Is(err, service.ErrAPIKeyInvalidScope), errors.Is(err, service.ErrAPIKeyInvalidInput):
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			default:
+				http.Error(w, "create failed", http.StatusInternalServerError)
 			}
-			http.Error(w, err.Error(), status)
 			return
 		}
 		auditAction(a, r, "apikey.create", "api_key", strconv.FormatInt(meta.ID, 10), map[string]any{
@@ -73,6 +77,9 @@ func (a *App) handleAPIKeysV1(w http.ResponseWriter, r *http.Request) {
 			"scopes":  meta.Scopes,
 			"node_id": meta.NodeID,
 		})
+		// The one response that ever carries the plaintext — keep it out of
+		// shared caches and the browser bfcache.
+		w.Header().Set("Cache-Control", "no-store")
 		a.writeJSON(w, http.StatusCreated, map[string]any{
 			"key":  plain, // shown exactly once; only the hash is stored
 			"item": meta,
@@ -130,6 +137,10 @@ func (a *App) renderAPIKeysPage(w http.ResponseWriter, r *http.Request, plainKey
 	if err != nil {
 		http.Error(w, "list failed", http.StatusInternalServerError)
 		return
+	}
+	if plainKey != "" {
+		// The one page render that ever carries the plaintext.
+		w.Header().Set("Cache-Control", "no-store")
 	}
 	current, _ := a.currentAdmin(r)
 	data := PageData{
