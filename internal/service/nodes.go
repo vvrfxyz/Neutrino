@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
 	"neutrino/internal/repo"
 	"neutrino/internal/templates"
+	"neutrino/internal/usersync"
 )
 
 type NodeService struct {
@@ -99,23 +99,15 @@ func SHA256Hex(s string) string {
 }
 
 func UsersDesiredVersion(users []repo.User) string {
-	type item struct {
-		UserID int64  `json:"user_id"`
-		Email  string `json:"email"`
-		Status string `json:"status"`
-		UUID   string `json:"uuid,omitempty"`
-	}
-	items := make([]item, 0, len(users))
+	items := make([]usersync.Item, 0, len(users))
 	for _, u := range users {
-		it := item{UserID: u.ID, Email: u.Username, Status: u.Status}
+		it := usersync.Item{UserID: u.ID, Email: u.Username, Status: u.Status}
 		if u.ActiveLink != nil {
 			it.UUID = u.ActiveLink.UUID
 		}
 		items = append(items, it)
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].UserID < items[j].UserID })
-	b, _ := json.Marshal(items)
-	return SHA256Hex(string(b))
+	return usersync.HashItems(items)
 }
 
 func ParseNodeExtra(raw string) (NodeExtra, error) {
