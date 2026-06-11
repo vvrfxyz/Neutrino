@@ -115,7 +115,12 @@ func buildSubscriptionUserinfo(u repo.User) string {
 		upload = u.InboundBytes
 		download = u.OutboundBytes
 	}
-	total := u.MonthlyLimitBytes + u.WindowCreditBytes
+	total := int64(0)
+	if u.MonthlyLimitBytes > 0 {
+		// Credit only extends a finite quota: an unlimited user (limit 0)
+		// holding a credit must keep total=0, not display a tiny finite cap.
+		total = u.MonthlyLimitBytes + u.WindowCreditBytes
+	}
 	if total < 0 {
 		total = 0
 	}
