@@ -439,3 +439,212 @@ func assertNeedFullSync(t *testing.T, err error, reason string) {
 		t.Fatalf("message should mention full repair: %q", je.Msg)
 	}
 }
+
+// A delta that renames an existing user's email passes every hash check (the
+// model is keyed by user_id) but would leave the old email live in Xray
+// forever; the agent must reject it as a full-repair condition.
+func TestExecUsersSyncDeltaRejectsEmailRename(t *testing.T) {
+	xray := &fakeRuntimeClient{}
+	a := newDeltaTestAgent(t, xray)
+	base := seedBaseline(t, a, baselineUsers())
+
+	targetItems := syncItems(baselineUsers())
+	for i := range targetItems {
+		if targetItems[i].UserID == 1 {
+			targetItems[i].Email = "alice-renamed@x"
+		}
+	}
+	payload := deltaPayloadJSON(t, usersync.JobPayload{
+		Schema: usersync.SchemaV1, Mode: usersync.ModeDelta,
+		BaseVersion: base, TargetVersion: usersync.HashItems(targetItems),
+		Changes: []usersync.Change{
+			{Action: usersync.ActionUpsert, User: usersync.Item{UserID: 1, Email: "alice-renamed@x", Status: "active", UUID: "u1"}},
+		},
+	})
+	_, err := a.execUsersSync(context.Background(), payload)
+	assertNeedFullSync(t, err, "delta_email_move")
+	if len(xray.upserted)+len(xray.removed) != 0 {
+		t.Fatalf("xray must not be touched on email rename")
+	}
+	if a.state.Snapshot().PendingUsersSync != nil {
+		t.Fatalf("no journal may be written on email rename")
+	}
+}
+
+// A delta moving one email between two user ids (upsert + remove sharing the
+// email) can delete the user the same delta just added, depending on payload
+// order. The agent must reject any email appearing in more than one change.
+func TestExecUsersSyncDeltaRejectsCrossUserEmailMove(t *testing.T) {
+	xray := &fakeRuntimeClient{}
+	a := newDeltaTestAgent(t, xray)
+	base := seedBaseline(t, a, baselineUsers())
+
+	targetItems := make([]usersync.Item, 0, len(baselineUsers()))
+	for _, it := range syncItems(baselineUsers()) {
+		switch it.UserID {
+		case 5:
+			continue // erin's id removed...
+		case 2:
+			it.Email = "erin@x" // ...her email reused by bob
+		}
+		targetItems = append(targetItems, it)
+	}
+	// Adverse ordering: upsert first, remove second.
+	payload := deltaPayloadJSON(t, usersync.JobPayload{
+		Schema: usersync.SchemaV1, Mode: usersync.ModeDelta,
+		BaseVersion: base, TargetVersion: usersync.HashItems(targetItems),
+		Changes: []usersync.Change{
+			{Action: usersync.ActionUpsert, User: usersync.Item{UserID: 2, Email: "erin@x", Status: "active", UUID: "u2"}},
+			{Action: usersync.ActionRemove, User: usersync.Item{UserID: 5, Email: "erin@x", Status: "active", UUID: "u5"}},
+		},
+	})
+	_, err := a.execUsersSync(context.Background(), payload)
+	assertNeedFullSync(t, err, "delta_email_move")
+	if len(xray.upserted)+len(xray.removed) != 0 {
+		t.Fatalf("xray must not be touched on cross-user email move")
+	}
+}
+
+// A re-delivered delta after a committed-but-unacknowledged success must
+// succeed idempotently instead of forcing a full repair.
+func TestExecUsersSyncDeltaIdempotentWhenAlreadyAtTarget(t *testing.T) {
+	xray := &fakeRuntimeClient{}
+	a := newDeltaTestAgent(t, xray)
+
+	targetItems := make([]usersync.Item, 0, len(baselineUsers())+1)
+	targetItems = append(targetItems, syncItems(baselineUsers())...)
+	targetItems = append(targetItems, usersync.Item{UserID: 4, Email: "dave@x", Status: "active", UUID: "u4"})
+	base := hashUsers(baselineUsers())
+	target := usersync.HashItems(targetItems)
+
+	// Baseline is already at the delta's *target* (previous attempt committed
+	// but the finish report was lost).
+	seedBaseline(t, a, fromSyncItems(targetItems))
+
+	payload := deltaPayloadJSON(t, usersync.JobPayload{
+		Schema: usersync.SchemaV1, Mode: usersync.ModeDelta,
+		BaseVersion: base, TargetVersion: target,
+		Changes: []usersync.Change{
+			{Action: usersync.ActionUpsert, User: usersync.Item{UserID: 4, Email: "dave@x", Status: "active", UUID: "u4"}},
+		},
+	})
+	out, err := a.execUsersSync(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("replayed delta must succeed idempotently: %v", err)
+	}
+	if out.AppliedVersion != target {
+		t.Fatalf("applied=%s want %s", out.AppliedVersion, target)
+	}
+	if len(xray.upserted)+len(xray.removed) != 0 {
+		t.Fatalf("idempotent replay must not touch xray")
+	}
+}
+
+type fakeUptimeRuntimeClient struct {
+	fakeRuntimeClient
+	uptimes  []uint32
+	probeIx  int
+	probeErr error
+}
+
+func (f *fakeUptimeRuntimeClient) SysUptime(_ context.Context) (uint32, bool, error) {
+	if f.probeErr != nil {
+		return 0, false, f.probeErr
+	}
+	if f.probeIx >= len(f.uptimes) {
+		return f.uptimes[len(f.uptimes)-1], true, nil
+	}
+	u := f.uptimes[f.probeIx]
+	f.probeIx++
+	return u, true, nil
+}
+
+// The runtime guard must retry a failed startup restore until it succeeds
+// (host reboot: xray's API is not up inside the first attempt's window).
+func TestXrayRuntimeGuardRetriesFailedRestore(t *testing.T) {
+	restoreErr := errors.New("xray api not ready")
+	xray := &fakeUptimeRuntimeClient{uptimes: []uint32{10}}
+	xray.upsertErrFor = map[string]error{"alice@x": restoreErr}
+	a := newDeltaTestAgent(t, xray)
+	seedBaseline(t, a, []UserSyncItem{{UserID: 1, Email: "alice@x", Status: "active", UUID: "u1"}})
+
+	g := &xrayRuntimeGuard{agent: a}
+	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+	ctx := context.Background()
+
+	g.attempt(ctx, "startup")
+	if g.restored {
+		t.Fatalf("restore must report failure while xray errors")
+	}
+	// Xray comes up; the next tick retries and succeeds.
+	xray.upsertErrFor = nil
+	g.tick(ctx)
+	if !g.restored {
+		t.Fatalf("tick must retry the failed restore")
+	}
+	found := false
+	for _, u := range xray.upserted {
+		if u == "alice@x=u1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("retry must re-add the committed baseline: %v", xray.upserted)
+	}
+}
+
+// An uptime regression means xray restarted and lost every hot-added user;
+// the guard must re-add the committed baseline.
+func TestXrayRuntimeGuardReaddsUsersAfterRestart(t *testing.T) {
+	xray := &fakeUptimeRuntimeClient{uptimes: []uint32{100, 200, 5, 20}}
+	a := newDeltaTestAgent(t, xray)
+	seedBaseline(t, a, []UserSyncItem{{UserID: 1, Email: "alice@x", Status: "active", UUID: "u1"}})
+
+	g := &xrayRuntimeGuard{agent: a}
+	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+	ctx := context.Background()
+
+	g.attempt(ctx, "startup")
+	if !g.restored {
+		t.Fatalf("startup restore failed")
+	}
+	baselineAdds := len(xray.upserted)
+
+	g.tick(ctx) // uptime 100: baseline reading
+	g.tick(ctx) // uptime 200: monotonic, no action
+	if len(xray.upserted) != baselineAdds {
+		t.Fatalf("monotonic uptime must not trigger re-adds")
+	}
+	g.tick(ctx) // uptime 5 < 200: restart detected
+	if len(xray.upserted) <= baselineAdds {
+		t.Fatalf("uptime regression must re-add synced users")
+	}
+	if !g.restored {
+		t.Fatalf("re-add after restart must mark restored")
+	}
+}
+
+// Probe errors prove nothing: the guard must keep its last reading and not
+// thrash re-adds while the API is briefly unreachable.
+func TestXrayRuntimeGuardIgnoresProbeErrors(t *testing.T) {
+	xray := &fakeUptimeRuntimeClient{uptimes: []uint32{100}}
+	a := newDeltaTestAgent(t, xray)
+	seedBaseline(t, a, []UserSyncItem{{UserID: 1, Email: "alice@x", Status: "active", UUID: "u1"}})
+
+	g := &xrayRuntimeGuard{agent: a}
+	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+	ctx := context.Background()
+
+	g.attempt(ctx, "startup")
+	g.tick(ctx) // uptime 100
+	adds := len(xray.upserted)
+	xray.probeErr = errors.New("api down")
+	g.tick(ctx)
+	g.tick(ctx)
+	if len(xray.upserted) != adds {
+		t.Fatalf("probe errors must not trigger re-adds")
+	}
+	if !g.haveUptime || g.lastUptime != 100 {
+		t.Fatalf("guard must keep its last good reading: have=%v last=%d", g.haveUptime, g.lastUptime)
+	}
+}

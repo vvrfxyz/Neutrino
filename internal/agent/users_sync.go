@@ -23,17 +23,98 @@ type userSyncApplier interface {
 	RemoveUser(ctx context.Context, email string) error
 }
 
-func (a *Agent) restoreSyncedUsersOnce(ctx context.Context) {
-	restoreCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+// xrayUptimeProber is the optional runtime capability the restart guard uses.
+// The production xrayapi.Client implements it; test fakes need not.
+type xrayUptimeProber interface {
+	SysUptime(ctx context.Context) (uptime uint32, ok bool, err error)
+}
+
+const (
+	xrayGuardInterval = 15 * time.Second
+	xrayGuardOpBudget = 60 * time.Second
+)
+
+// startXrayRuntimeGuard keeps the runtime user set consistent with the
+// committed baseline across xray restarts. It fixes two silent-outage modes
+// the one-shot startup restore could not:
+//  1. on host reboot the 20s restore raced xray's startup and was never
+//     retried — with delta mode the node then never self-healed, because the
+//     panel's applied version still matched desired and subsequent deltas
+//     only touch changed users;
+//  2. an externally restarted xray loses every hot-added API user with no
+//     signal the panel can see (applied == desired throughout).
+//
+// The guard retries the startup restore until it succeeds, then probes xray's
+// process uptime each tick; an uptime regression means a restart, and the
+// committed baseline (plus journal-tracked users via the next sync attempt)
+// is re-added under xrayUsersMu.
+func (a *Agent) startXrayRuntimeGuard(ctx context.Context) {
+	g := &xrayRuntimeGuard{agent: a}
+	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+
+	g.attempt(ctx, "startup")
+	ticker := time.NewTicker(xrayGuardInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		g.tick(ctx)
+	}
+}
+
+type xrayRuntimeGuard struct {
+	agent      *Agent
+	prober     xrayUptimeProber
+	canProbe   bool
+	restored   bool
+	lastUptime uint32
+	haveUptime bool
+}
+
+func (g *xrayRuntimeGuard) attempt(ctx context.Context, reason string) {
+	opCtx, cancel := context.WithTimeout(ctx, xrayGuardOpBudget)
 	defer cancel()
-	synced, err := a.restoreSyncedUsers(restoreCtx)
+	synced, err := g.agent.restoreSyncedUsers(opCtx)
 	if err != nil {
-		log.Printf("restore synced xray users failed reason=startup synced=%d err=%v", synced, err)
+		log.Printf("restore synced xray users failed reason=%s synced=%d err=%v (will retry)", reason, synced, err)
 		return
 	}
 	if synced > 0 {
-		log.Printf("restored synced xray users reason=startup synced=%d", synced)
+		log.Printf("restored synced xray users reason=%s synced=%d", reason, synced)
 	}
+	g.restored = true
+}
+
+func (g *xrayRuntimeGuard) tick(ctx context.Context) {
+	if !g.restored {
+		g.attempt(ctx, "startup_retry")
+		// A fresh restore establishes the current runtime; any uptime
+		// reading taken before it is meaningless.
+		g.haveUptime = false
+	}
+	if !g.canProbe || !g.restored {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, xrayGuardOpBudget)
+	uptime, ok, err := g.prober.SysUptime(probeCtx)
+	cancel()
+	if err != nil || !ok {
+		// Unreachable API proves nothing about a restart; keep the last
+		// reading and try again next tick.
+		return
+	}
+	if g.haveUptime && uptime < g.lastUptime {
+		log.Printf("xray restart detected (uptime %ds < %ds); re-adding synced users", uptime, g.lastUptime)
+		g.restored = false
+		g.haveUptime = false
+		g.attempt(ctx, "xray_restart")
+		return
+	}
+	g.lastUptime = uptime
+	g.haveUptime = true
 }
 
 func (a *Agent) restoreSyncedUsers(ctx context.Context) (synced int, err error) {
@@ -119,9 +200,16 @@ func needFullSyncFailure(mode, reason string) error {
 func (a *Agent) execUsersSync(ctx context.Context, payloadJSON string) (usersSyncOutcome, error) {
 	payload, class, perr := parseUsersSyncJobPayload(payloadJSON)
 	if perr != nil {
+		mode := "full"
+		reason := "invalid_payload"
+		if class == usersSyncJobDelta {
+			mode = "delta"
+			reason = "invalid_delta_payload"
+		}
 		return usersSyncOutcome{}, usersSyncFailure(false, perr.Error(), map[string]any{
+			"mode":           mode,
 			"need_full_sync": true,
-			"reason":         "invalid_delta_payload",
+			"reason":         reason,
 		})
 	}
 	switch class {
@@ -219,7 +307,6 @@ func (a *Agent) execUsersSyncFull(ctx context.Context) (usersSyncOutcome, error)
 	if pc == nil {
 		return usersSyncOutcome{}, usersSyncFailure(true, "panel client not ready", map[string]any{"mode": "full"})
 	}
-	snap := a.state.Snapshot()
 	users, responseVersion, err := pc.FetchUsers(ctx)
 	if err != nil {
 		return usersSyncOutcome{}, usersSyncFailure(true, err.Error(), map[string]any{"mode": "full"})
@@ -248,6 +335,10 @@ func (a *Agent) execUsersSyncFull(ctx context.Context) (usersSyncOutcome, error)
 	a.xrayUsersMu.Lock()
 	defer a.xrayUsersMu.Unlock()
 
+	// Snapshot under the lock: prevPending/prevUsers drive journaling and
+	// stale removal, and must reflect any sync that committed while the
+	// network fetch above was in flight.
+	snap := a.state.Snapshot()
 	prevPending := snap.PendingUsersSync
 	if err := a.journalPendingUsersSync(usersync.ModeFull, "", appliedVersion, users, prevPending); err != nil {
 		return usersSyncOutcome{}, usersSyncFailure(true, "journal users sync: "+err.Error(), map[string]any{"mode": "full"})
@@ -300,6 +391,22 @@ func (a *Agent) execUsersSyncDelta(ctx context.Context, payload usersync.JobPayl
 	defer a.xrayUsersMu.Unlock()
 
 	snap := a.state.Snapshot()
+	if snap.SyncedUsersVersion == payload.TargetVersion && snap.PendingUsersSync == nil {
+		// Already at target: the previous attempt committed but its finish
+		// report was lost. Succeed idempotently instead of failing
+		// base_version_mismatch and forcing a needless full repair.
+		return usersSyncOutcome{
+			AppliedVersion: payload.TargetVersion,
+			Result: map[string]any{
+				"mode":           "delta",
+				"base_version":   payload.BaseVersion,
+				"target_version": payload.TargetVersion,
+				"synced":         0,
+				"removed":        0,
+				"failed":         0,
+			},
+		}, nil
+	}
 	if snap.SyncedUsersVersion != payload.BaseVersion {
 		return usersSyncOutcome{}, needFullSyncFailure("delta", "base_version_mismatch")
 	}
@@ -324,6 +431,28 @@ func (a *Agent) execUsersSyncDelta(ctx context.Context, payload usersync.JobPayl
 		b, ok := baseByID[ch.User.UserID]
 		if !ok || b.Email != ch.User.Email || b.Status != ch.User.Status || b.UUID != ch.User.UUID {
 			return usersSyncOutcome{}, needFullSyncFailure("delta", "remove_base_mismatch")
+		}
+	}
+	// The in-memory model is keyed by user_id but the runtime is keyed by
+	// email, and the hash/validate checks below cannot see that mismatch: an
+	// upsert that renames a user's email would leave the old email live in
+	// Xray with no baseline or journal ever tracking it again (a permanent
+	// ghost), and two changes sharing one email could remove a user the same
+	// delta just added, depending on payload order. The panel's DiffItems
+	// never emits either shape, so reject them as full-repair conditions.
+	emailUses := make(map[string]int, len(payload.Changes))
+	for _, ch := range payload.Changes {
+		emailUses[strings.TrimSpace(ch.User.Email)]++
+	}
+	for _, ch := range payload.Changes {
+		if emailUses[strings.TrimSpace(ch.User.Email)] > 1 {
+			return usersSyncOutcome{}, needFullSyncFailure("delta", "delta_email_move")
+		}
+		if ch.Action != usersync.ActionUpsert {
+			continue
+		}
+		if b, ok := baseByID[ch.User.UserID]; ok && strings.TrimSpace(b.Email) != strings.TrimSpace(ch.User.Email) {
+			return usersSyncOutcome{}, needFullSyncFailure("delta", "delta_email_move")
 		}
 	}
 
@@ -373,8 +502,15 @@ func (a *Agent) execUsersSyncDelta(ctx context.Context, payload usersync.JobPayl
 	if len(failures) > 0 {
 		// Retryable: idempotent Upsert/Remove plus the retained journal and
 		// the unchanged committed baseline make the retry safe.
-		return usersSyncOutcome{}, usersSyncFailure(true,
-			fmt.Sprintf("delta sync incomplete: %d operation(s) failed (%s)", len(failures), strings.Join(failures, "; ")),
+		details := failures
+		if len(details) > 3 {
+			details = details[:3]
+		}
+		msg := fmt.Sprintf("delta sync incomplete: %d operation(s) failed (%s)", len(failures), strings.Join(details, "; "))
+		if len(failures) > len(details) {
+			msg += fmt.Sprintf("; +%d more", len(failures)-len(details))
+		}
+		return usersSyncOutcome{}, usersSyncFailure(true, msg,
 			map[string]any{
 				"mode":           "delta",
 				"base_version":   payload.BaseVersion,
@@ -382,7 +518,7 @@ func (a *Agent) execUsersSyncDelta(ctx context.Context, payload usersync.JobPayl
 				"synced":         synced,
 				"removed":        removed,
 				"failed":         len(failures),
-				"failures":       failures,
+				"failures":       details,
 			})
 	}
 	if err := a.state.Update(func(s *State) {

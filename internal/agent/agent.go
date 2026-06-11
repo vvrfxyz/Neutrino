@@ -172,7 +172,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	log.Printf("[agent] access-log timezone = %s (AGENT_ACCESS_LOG_TZ=%q)", a.cfg.AccessLogLocation().String(), a.cfg.AccessLogTZ)
 	log.Printf("agent: monthly-net location=%s", a.cfg.MonthLocation().String())
 	go a.startCertRenewer(ctx)
-	go a.restoreSyncedUsersOnce(ctx)
+	go a.startXrayRuntimeGuard(ctx)
 	go a.startJobRunner(ctx)
 	go a.startUsageLoop(ctx)
 	go a.startHeartbeat(ctx)

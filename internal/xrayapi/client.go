@@ -95,6 +95,28 @@ func (c *Client) RemoveUser(ctx context.Context, email string) error {
 	return nil
 }
 
+// SysUptime reports xray's process uptime in seconds via GetSysStats. ok is
+// false when the API is disabled (nothing to probe). A regression between two
+// readings means the process restarted and lost every hot-added API user.
+func (c *Client) SysUptime(ctx context.Context) (uptime uint32, ok bool, err error) {
+	if !c.Enabled() {
+		return 0, false, nil
+	}
+	conn, err := c.getConn()
+	if err != nil {
+		return 0, false, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+
+	stats := statscmd.NewStatsServiceClient(conn)
+	resp, err := stats.GetSysStats(ctx, &statscmd.SysStatsRequest{})
+	if err != nil {
+		return 0, false, err
+	}
+	return resp.GetUptime(), true, nil
+}
+
 func (c *Client) PullUserTraffic(ctx context.Context, email string) (uplink, downlink int64, err error) {
 	if !c.Enabled() {
 		return 0, 0, nil
