@@ -4,7 +4,7 @@ name: Build
   pull_request:
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "**"
   workflow_dispatch:
@@ -41,4 +41,15 @@ jobs:
 
       - name: Build node-agent
         run: go build -trimpath ./cmd/node-agent
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Shellcheck release scripts
+        run: |
+          shellcheck scripts/release/*.sh
+          scripts/release/lint_remote_bodies.sh
 
