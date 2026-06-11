@@ -236,37 +236,6 @@ WHERE node_id = ? AND purpose = 'agent_client' AND cert_sha256 = ?;
 	return n, nil
 }
 
-// RevokeNodeCertPinsExcept revokes all active pins for a node+purpose except the given certSHA256.
-// This is used after enroll/renew to keep a tight allowlist (at most one active client cert per node).
-func (s *Store) RevokeNodeCertPinsExcept(ctx context.Context, nodeID int64, purpose string, keepCertSHA256 string, reason string) (int64, error) {
-	if nodeID <= 0 {
-		return 0, fmt.Errorf("invalid node id")
-	}
-	purpose = strings.TrimSpace(purpose)
-	if purpose == "" {
-		purpose = "agent_client"
-	}
-	keepCertSHA256 = strings.TrimSpace(strings.ToLower(keepCertSHA256))
-	if keepCertSHA256 == "" {
-		return 0, fmt.Errorf("keep cert sha256 required")
-	}
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "auto_rotate"
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
-UPDATE node_cert_pins
-SET revoked_at = ?, revoked_reason = ?
-WHERE node_id = ? AND purpose = ? AND revoked_at IS NULL AND cert_sha256 != ?;
-`, now, reason, nodeID, purpose, keepCertSHA256)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
-}
-
 func (s *Store) ListNodeCertPins(ctx context.Context, nodeID int64, limit int) ([]NodeCertPin, error) {
 	if nodeID <= 0 {
 		return nil, fmt.Errorf("invalid node id")

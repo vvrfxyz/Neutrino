@@ -99,24 +99,6 @@ ON CONFLICT(node_id) DO UPDATE SET
 	return NodeEnrollCode{NodeID: nodeID, Code: code, ExpiresAt: exp, CreatedAt: now}, nil
 }
 
-// ConsumeNodeEnrollCode validates and marks the code as used. It is safe to call concurrently.
-func (s *Store) ConsumeNodeEnrollCode(ctx context.Context, nodeID int64, code string) error {
-	if nodeID <= 0 {
-		return fmt.Errorf("invalid node id")
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if err := consumeNodeEnrollCodeTx(ctx, tx, nodeID, code, time.Now().UTC()); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // ValidateNodeEnrollCode checks that a one-time code is currently usable without consuming it.
 // Callers must still use ConsumeNodeEnrollCode or CompleteNodeEnroll for the final atomic consume.
 func (s *Store) ValidateNodeEnrollCode(ctx context.Context, nodeID int64, code string) error {

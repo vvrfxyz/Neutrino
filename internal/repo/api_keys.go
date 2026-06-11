@@ -55,37 +55,6 @@ func (s *Store) CreateAPIKey(ctx context.Context, name, scopes string, nodeID *i
 	return plain, meta, nil
 }
 
-func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, scopes, node_id, expires_at, last_used_at, revoked_at, created_at
-FROM api_keys
-ORDER BY id DESC;
-`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]APIKey, 0, 8)
-	for rows.Next() {
-		var k APIKey
-		var nodeID sql.NullInt64
-		var exp, lastUsed, revoked sql.NullString
-		var createdAt string
-		if err := rows.Scan(&k.ID, &k.Name, &k.Scopes, &nodeID, &exp, &lastUsed, &revoked, &createdAt); err != nil {
-			return nil, err
-		}
-		if nodeID.Valid {
-			k.NodeID = &nodeID.Int64
-		}
-		k.ExpiresAt = parseOptionalRFC3339(exp)
-		k.LastUsedAt = parseOptionalRFC3339(lastUsed)
-		k.RevokedAt = parseOptionalRFC3339(revoked)
-		k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		out = append(out, k)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) RevokeAPIKey(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE api_keys

@@ -9,16 +9,6 @@ import (
 	"time"
 )
 
-// UpdateNodeLastSeen updates the node's last_seen_at and last_error fields
-func (s *Store) UpdateNodeLastSeen(ctx context.Context, nodeID int64, at time.Time, errMsg string) error {
-	_, err := s.db.ExecContext(ctx, `
-	UPDATE nodes
-	SET last_seen_at = ?, last_error = ?, updated_at = ?
-	WHERE id = ?;
-	`, at.Format(time.RFC3339), nullableString(errMsg), time.Now().UTC().Format(time.RFC3339), nodeID)
-	return err
-}
-
 // UpdateNodeAgentStatus updates last_error, and optionally last_seen_at (only on successful contact).
 func (s *Store) UpdateNodeAgentStatus(ctx context.Context, nodeID int64, lastSeenAt *time.Time, errMsg string) error {
 	var seen sql.NullString
@@ -292,33 +282,6 @@ func (s *Store) ListEnabledNodes(ctx context.Context) ([]Node, error) {
 		created_at, updated_at
 	FROM nodes
 	WHERE enabled = 1
-	ORDER BY id ASC;
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]Node, 0, 8)
-	for rows.Next() {
-		n, err := scanNode(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, n)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) ListManagedNodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.db.QueryContext(ctx, `
-	SELECT
-		id, name, core_type, protocol, host, port, transport, security, flow, sni, fp, public_key, short_id,
-		extra_json, enabled, managed, agent_url, last_seen_at, last_error,
-		observed_ip,
-		desired_users_version, applied_users_version, desired_xray_version, applied_xray_version, last_job_error_kind, last_job_error_at,
-		created_at, updated_at
-	FROM nodes
-	WHERE enabled = 1 AND managed = 1
 	ORDER BY id ASC;
 	`)
 	if err != nil {
