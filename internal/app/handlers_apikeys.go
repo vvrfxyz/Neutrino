@@ -115,3 +115,100 @@ func (a *App) handleAPIKeyByIDV1(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
+
+// SSR admin page: /apikeys (list + create form), /apikeys/{id}/revoke.
+
+type apikeysPageData struct {
+	Items       []repo.APIKey
+	ValidScopes []string
+	PlainKey    string
+	Error       string
+}
+
+func (a *App) renderAPIKeysPage(w http.ResponseWriter, r *http.Request, plainKey, errMsg string) {
+	items, err := a.apikeys().List(r.Context(), 0)
+	if err != nil {
+		http.Error(w, "list failed", http.StatusInternalServerError)
+		return
+	}
+	current, _ := a.currentAdmin(r)
+	data := PageData{
+		CurrentAdmin: current,
+		ActivePage:   "apikeys",
+		CSRFToken:    a.csrfTokenFor(r),
+		Content: apikeysPageData{
+			Items:       items,
+			ValidScopes: service.KnownAPIKeyScopes,
+			PlainKey:    plainKey,
+			Error:       errMsg,
+		},
+	}
+	if err := a.pages["apikeys"].ExecuteTemplate(w, "base.tmpl", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (a *App) handleAPIKeysPage(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		a.renderAPIKeysPage(w, r, "", "")
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			a.renderAPIKeysPage(w, r, "", "表单解析失败")
+			return
+		}
+		in := service.CreateAPIKeyInput{
+			Name:   strings.TrimSpace(r.FormValue("name")),
+			Scopes: r.Form["scopes"],
+		}
+		if v := strings.TrimSpace(r.FormValue("expires_days")); v != "" {
+			days, err := strconv.Atoi(v)
+			if err != nil || days <= 0 {
+				a.renderAPIKeysPage(w, r, "", "有效期必须是正整数天数")
+				return
+			}
+			t := time.Now().UTC().AddDate(0, 0, days)
+			in.ExpiresAt = &t
+		}
+		plain, meta, err := a.apikeys().Create(r.Context(), in)
+		if err != nil {
+			a.renderAPIKeysPage(w, r, "", "创建失败: "+err.Error())
+			return
+		}
+		auditAction(a, r, "apikey.create", "api_key", strconv.FormatInt(meta.ID, 10), map[string]any{
+			"name":    meta.Name,
+			"scopes":  meta.Scopes,
+			"node_id": meta.NodeID,
+		})
+		a.renderAPIKeysPage(w, r, plain, "")
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *App) handleAPIKeyPageRoutes(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/apikeys/"), "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[1] != "revoke" || r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	id, err := parseInt64Path(parts[0])
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	item, err := a.apikeys().Revoke(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, service.ErrAPIKeyNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "revoke failed", http.StatusInternalServerError)
+		return
+	}
+	auditAction(a, r, "apikey.revoke", "api_key", strconv.FormatInt(id, 10), map[string]any{
+		"name": item.Name,
+	})
+	http.Redirect(w, r, "/apikeys", http.StatusSeeOther)
+}

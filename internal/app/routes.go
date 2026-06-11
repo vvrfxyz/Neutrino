@@ -20,6 +20,8 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("/nodes/", a.adminOnly(a.csrfProtect(http.HandlerFunc(a.handleNodeRoutesPage))))
 	mux.Handle("/traffic", a.adminOnly(http.HandlerFunc(a.handleTrafficPage)))
 	mux.Handle("/enforcements", a.adminOnly(http.HandlerFunc(a.handleEnforcementsPage)))
+	mux.Handle("/apikeys", a.adminOnly(a.csrfProtect(http.HandlerFunc(a.handleAPIKeysPage))))
+	mux.Handle("/apikeys/", a.adminOnly(a.csrfProtect(http.HandlerFunc(a.handleAPIKeyPageRoutes))))
 	mux.Handle("/ops", a.adminOnly(http.HandlerFunc(a.handleOps)))
 	mux.Handle("/ops-v2", a.adminOnly(http.HandlerFunc(a.handleOpsV2)))
 	mux.Handle("/ops-v2/", a.adminOnly(http.HandlerFunc(a.handleOpsV2)))

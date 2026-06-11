@@ -215,6 +215,7 @@ func New(cfg config.Config, store *repo.Store) *App {
 		"traffic":      tplDir + "/traffic.tmpl",
 		"ops":          tplDir + "/ops.tmpl",
 		"enforcements": tplDir + "/enforcements.tmpl",
+		"apikeys":      tplDir + "/apikeys.tmpl",
 	}
 
 	// Extra files that specific pages need (e.g. HTMX partials included via {{template}}).

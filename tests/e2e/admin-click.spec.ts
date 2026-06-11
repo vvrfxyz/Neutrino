@@ -100,6 +100,7 @@ test('login, htmx sidebar navigation, history, and logout are clickable', async 
     { key: 'nodes', path: '/nodes', title: '节点管理' },
     { key: 'traffic', path: '/traffic', title: '流量分析' },
     { key: 'enforcements', path: '/enforcements', title: '执行记录' },
+    { key: 'apikeys', path: '/apikeys', title: 'API 密钥' },
     { key: 'ops', path: '/ops', title: '运维监控' },
     { key: 'users', path: '/users', title: '用户管理' },
   ];
