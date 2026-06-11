@@ -266,40 +266,49 @@ func (s *NodeService) SetEnabled(ctx context.Context, nodeID int64, enabled bool
 	return nil
 }
 
-func (s *NodeService) UsersForAgent(ctx context.Context, nodeID int64) ([]map[string]any, error) {
-	node, err := s.Get(ctx, nodeID)
+// MaterializeUsersForAgent serves the versioned full snapshot for
+// GET /agent/users: it materializes the current canonical DB users, persists
+// the snapshot, and updates desired_users_version atomically — never an
+// existing stale snapshot, and never enqueueing a job.
+func (s *NodeService) MaterializeUsersForAgent(ctx context.Context, nodeID int64) (string, []usersync.Item, error) {
+	return s.store.MaterializeUsersSnapshotForAgent(ctx, nodeID)
+}
+
+// FinishUsersSyncJob runs the users_sync terminal transition plus every
+// follow-up decision (version validation, delta-ready marker, stale-delta
+// cleanup, forced repair, follow-up reconcile) in one repo transaction.
+func (s *NodeService) FinishUsersSyncJob(ctx context.Context, nodeID, jobID int64, in repo.FinishNodeJobInput, appliedVersion string) (repo.FinishUsersSyncResult, error) {
+	return s.store.FinishUsersSyncJobForNode(ctx, nodeID, jobID, in, appliedVersion)
+}
+
+// refreshLifecycleNoSync runs the global lifecycle sweeps (expiry, quota
+// windows) without requesting any sync. It must run before — never inside —
+// the users-sync preparation transaction, and once per reconcile cycle.
+func (s *NodeService) refreshLifecycleNoSync(ctx context.Context) (changed bool, err error) {
+	expired, err := s.store.SweepExpiredUsers(ctx)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	if !node.Enabled {
-		return []map[string]any{}, nil
-	}
-	users, err := s.store.ListUsersForNode(ctx, node.ID)
+	reactivated, err := s.store.SweepQuotaWindows(ctx)
 	if err != nil {
-		return nil, err
+		return expired > 0, err
 	}
-	items := make([]map[string]any, 0, len(users))
-	for _, u := range users {
-		item := map[string]any{
-			"user_id": u.ID,
-			"email":   u.Username,
-			"status":  u.Status,
-		}
-		if u.ActiveLink != nil {
-			item["uuid"] = u.ActiveLink.UUID
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return expired > 0 || reactivated > 0, nil
 }
 
 func (s *NodeService) EnqueueUsersSyncForEnabledNodes(ctx context.Context) error {
+	// One lifecycle refresh per reconcile cycle. Changes are consumed by this
+	// very cycle (every enabled node is prepared below), so no extra global
+	// reconcile signal is needed here.
+	if _, err := s.refreshLifecycleNoSync(ctx); err != nil {
+		return err
+	}
 	nodes, err := s.store.ListEnabledNodes(ctx)
 	if err != nil {
 		return err
 	}
 	for _, n := range nodes {
-		if err := s.EnqueueUsersSyncForNode(ctx, n.ID); err != nil {
+		if _, err := s.store.PrepareUsersSync(ctx, n.ID, false, "reconcile"); err != nil {
 			log.Printf("users_sync reconcile node=%d err=%v", n.ID, err)
 		}
 	}
@@ -307,41 +316,59 @@ func (s *NodeService) EnqueueUsersSyncForEnabledNodes(ctx context.Context) error
 }
 
 func (s *NodeService) EnqueueUsersSyncForNode(ctx context.Context, nodeID int64) error {
-	return s.enqueueUsersSyncForNode(ctx, nodeID, false, "users_sync")
+	changed, err := s.refreshLifecycleNoSync(ctx)
+	if err != nil {
+		return err
+	}
+	res, err := s.store.PrepareUsersSync(ctx, nodeID, false, "reconcile")
+	if err != nil {
+		return err
+	}
+	log.Printf("users_sync reconcile node=%d desired=%s job_id=%d enqueued=%t mode=%s", nodeID, res.TargetVersion, res.JobID, res.Enqueued, res.Mode)
+	if changed && s.sync != nil {
+		// Lifecycle sweeps are global mutations discovered while preparing a
+		// single node; the other nodes must reconcile too. The Now variant is
+		// not throttled, so the signal cannot be silently dropped.
+		s.sync.RequestUsersSyncNow(ctx)
+	}
+	return nil
 }
 
 func (s *NodeService) EnqueueFullUsersSyncForNode(ctx context.Context, nodeID int64, reason string) error {
-	return s.enqueueUsersSyncForNode(ctx, nodeID, true, reason)
-}
-
-func (s *NodeService) enqueueUsersSyncForNode(ctx context.Context, nodeID int64, force bool, reason string) error {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		reason = "users_sync"
+		reason = "repair"
 	}
-	node, err := s.Get(ctx, nodeID)
+	res, err := s.store.PrepareUsersSync(ctx, nodeID, true, reason)
 	if err != nil {
 		return err
 	}
-	users := make([]repo.User, 0)
-	if node.Enabled {
-		users, err = s.store.ListUsersForNode(ctx, nodeID)
-		if err != nil {
-			return err
+	log.Printf("users_sync forced full node=%d desired=%s job_id=%d enqueued=%t reason=%s", nodeID, res.TargetVersion, res.JobID, res.Enqueued, reason)
+	return nil
+}
+
+// EnqueueUsersSyncBaselineBackfill sends one forced full users sync to every
+// enabled node that has never proven a schema-1 versioned baseline. It runs
+// at startup (after migrations) and is idempotent via the per-node
+// users_sync_baseline_backfill_at marker; a terminally failed backfill job
+// clears that marker so the next startup retries. Nodes that stay schema-0
+// (legacy agents) keep converging through ordinary full sync, and any later
+// accepted schema-1 full success sets the delta-ready marker without another
+// backfill.
+func (s *NodeService) EnqueueUsersSyncBaselineBackfill(ctx context.Context) error {
+	ids, err := s.store.ListNodesNeedingUsersSyncBackfill(ctx)
+	if err != nil {
+		return err
+	}
+	for _, nodeID := range ids {
+		if _, err := s.store.PrepareUsersSync(ctx, nodeID, true, "baseline_backfill"); err != nil {
+			log.Printf("users_sync baseline backfill node=%d err=%v", nodeID, err)
+			continue
+		}
+		if err := s.store.SetNodeUsersSyncBackfillAt(ctx, nodeID, time.Now().UTC()); err != nil {
+			log.Printf("users_sync baseline backfill mark node=%d err=%v", nodeID, err)
 		}
 	}
-	desiredVersion := UsersDesiredVersion(users)
-	if err := s.store.SetNodeDesiredUsersVersion(ctx, nodeID, desiredVersion); err != nil {
-		return err
-	}
-	if !force && node.Enabled && strings.TrimSpace(node.AppliedUsersVersion) == strings.TrimSpace(desiredVersion) {
-		return nil
-	}
-	jobID, enqueued, err := s.store.EnqueueNodeJob(ctx, nodeID, "users_sync", desiredVersion, "{}", 20, reason)
-	if err != nil {
-		return err
-	}
-	log.Printf("users_sync reconcile node=%d desired=%s job_id=%d enqueued=%t force=%t reason=%s", nodeID, desiredVersion, jobID, enqueued, force, reason)
 	return nil
 }
 

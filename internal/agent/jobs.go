@@ -83,19 +83,15 @@ func (a *Agent) execJob(ctx context.Context, job *NodeJob) jobResult {
 
 	switch strings.TrimSpace(job.Kind) {
 	case "users_sync":
-		applied, synced, removed, err := a.execUsersSync(runCtx)
+		outcome, err := a.execUsersSync(runCtx, job.PayloadJSON)
 		if err != nil {
 			return jobErr(err)
 		}
 		return jobResult{
-			Status:    "succeeded",
-			Retryable: false,
-			ResultJSON: map[string]any{
-				"synced":  synced,
-				"removed": removed,
-				"failed":  0,
-			},
-			AppliedVersion: applied,
+			Status:         "succeeded",
+			Retryable:      false,
+			ResultJSON:     outcome.Result,
+			AppliedVersion: outcome.AppliedVersion,
 		}
 	case "xray_apply":
 		var req XrayApplyRequest

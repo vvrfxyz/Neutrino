@@ -106,7 +106,7 @@ func (a *Agent) buildOnlineSnapshot(ctx context.Context, observedAt time.Time) (
 		observedAt = observedAt.UTC()
 	}
 
-	users := a.state.Snapshot().SyncedUsers
+	users := effectiveSyncedUsers(a.state.Snapshot())
 	if len(users) == 0 {
 		return &OnlineSnapshot{
 			ObservedAt: observedAt.Format(time.RFC3339),

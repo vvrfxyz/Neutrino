@@ -321,27 +321,31 @@ func (c *PanelClient) SetReportPayload(p NodeReportPayload) {
 	c.mu.Unlock()
 }
 
-func (c *PanelClient) FetchUsers(ctx context.Context) ([]UserSyncItem, error) {
+// FetchUsers returns the panel's full user snapshot plus its content version.
+// Old panels return no version (""); callers must then fall back to a locally
+// computed hash and use the full path only.
+func (c *PanelClient) FetchUsers(ctx context.Context) ([]UserSyncItem, string, error) {
 	url := fmt.Sprintf("%s/api/v1/nodes/%d/agent/users", c.baseURL, c.nodeID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("fetch users returned status %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("fetch users returned status %d", resp.StatusCode)
 	}
 	var result struct {
-		Users []UserSyncItem `json:"users"`
+		Users   []UserSyncItem `json:"users"`
+		Version string         `json:"version"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return result.Users, nil
+	return result.Users, strings.TrimSpace(result.Version), nil
 }
 
 func (c *PanelClient) ClaimJob(ctx context.Context, waitSec int) (*NodeJob, bool, error) {

@@ -83,17 +83,28 @@ func (a *App) handleAPINodeAgentUsers(w http.ResponseWriter, r *http.Request, no
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if err := a.users().RefreshLifecycleState(r.Context()); err != nil {
+	// Lifecycle refresh must not request users sync from inside this full
+	// snapshot path; if it changed global state, the other nodes are notified
+	// through the app's coalesced (unthrottled) sync signal afterwards.
+	lifecycle, err := a.users().RefreshLifecycleStateNoSync(r.Context())
+	if err != nil {
 		http.Error(w, "refresh users failed", http.StatusInternalServerError)
 		return
 	}
 
-	items, err := a.nodes().UsersForAgent(r.Context(), nodeID)
+	version, items, err := a.nodes().MaterializeUsersForAgent(r.Context(), nodeID)
 	if err != nil {
 		http.Error(w, "list users failed", http.StatusInternalServerError)
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"users": items})
+	if lifecycle.Changed() {
+		a.requestUsersSyncNow(r.Context())
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"schema":  1,
+		"version": version,
+		"users":   items,
+	})
 }
 
 func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nodeID int64) {
@@ -286,7 +297,7 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 			resultJSON = string(b)
 		}
 	}
-	final, err := a.nodes().FinishJob(r.Context(), nodeID, jobID, repo.FinishNodeJobInput{
+	finishInput := repo.FinishNodeJobInput{
 		Status:      status,
 		Retryable:   req.Retryable,
 		HTTPStatus:  req.HTTPStatus,
@@ -294,7 +305,19 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 		ErrorMsg:    req.Error,
 		MaxAttempts: a.cfg.NodeJobMaxAttempts,
 		Attempt:     req.Attempt,
-	})
+	}
+	preJob, preOK, _ := a.nodes().GetJob(r.Context(), jobID)
+	var final string
+	var err error
+	if preOK && preJob.Kind == "users_sync" {
+		// users_sync finishes run the terminal transition and every follow-up
+		// (version validation, delta-ready marker, stale-delta cleanup,
+		// forced repair) in one repo transaction.
+		res, ferr := a.nodes().FinishUsersSyncJob(r.Context(), nodeID, jobID, finishInput, req.AppliedVersion)
+		final, err = res.FinalStatus, ferr
+	} else {
+		final, err = a.nodes().FinishJob(r.Context(), nodeID, jobID, finishInput)
+	}
 	if err != nil {
 		if errors.Is(err, repo.ErrNodeJobNotRunning) {
 			http.Error(w, "job is not running for this attempt", http.StatusConflict)
@@ -357,8 +380,8 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 		}
 		if status == "succeeded" && strings.TrimSpace(req.AppliedVersion) != "" {
 			switch job.Kind {
-			case "users_sync":
-				_ = a.nodes().SetAppliedUsersVersion(r.Context(), nodeID, req.AppliedVersion)
+			// users_sync applied-version validation and follow-ups already ran
+			// inside FinishUsersSyncJob's transaction.
 			case "xray_apply":
 				_ = a.nodes().SetAppliedXrayVersion(r.Context(), nodeID, req.AppliedVersion)
 				if managedXraySuccessNeedsUsersRepair(job.Kind, req.ResultJSON) {
