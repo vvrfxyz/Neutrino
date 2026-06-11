@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed unterminated heredocs in `scripts/release/deploy_panel_remote.sh` (standalone path) and `scripts/release/deploy_stack_remote.sh` that swallowed every remote command after the compose-file write, making those deploy paths silent no-ops that still reported success; added `scripts/release/lint_remote_bodies.sh` so CI shellchecks the embedded remote bodies and catches this class of bug.
+- Added `go vet`, `go test ./...`, and shellcheck steps to the `build` workflow so the required CI check actually enforces the test suite; restricted `push` triggers of both workflows to `main` and tags to stop duplicate PR-branch runs.
+- Fixed the agent cert-renew install rollback so it never deletes the live mTLS key/cert/CA when a failure occurs before those files were replaced (previously a transient write error during routine renewal could destroy the node's mTLS identity); added unit coverage for each install/rollback failure step.
+- Fixed the node job timeout sweeper to bound every claimed job: it now honors the per-job `timeout_sec` (plus grace) and falls back to a global 10-minute timeout for kinds without a default, so an abandoned probe job can no longer permanently wedge a node's serial job pipeline. The sweep update is also fenced on the scanned attempt and `started_at` (mirroring job finish), so it no longer races a concurrent finish/re-claim or stamps stale `timeout` errors on the node.
+- Rewrote `CLAUDE.md` from the verified code surface and added `docs/CODE_REVIEW_2026-06-11.md` with the full findings of the 2026-06-11 deep review.
 - Cleaned the active documentation set by replacing outdated ops implementation plans with `docs/OPS_MONITORING_DESIGN.md`, removing completed handoff/refactor plans, updating backup/restore docs, and linking the Xboard-inspired upgrade roadmap.
 - Fixed `/ops` heartbeat presentation by keeping node `last_seen_at` tied to panel receive time, while separately rendering the probe's own runtime report time on the node card.
 - Added node natural-month RX/TX telemetry: node-agent now persists a local month accumulator, reports cumulative `month_rx_bytes` / `month_tx_bytes`, and panel stores the latest per-node month view for `/ops`.
