@@ -175,9 +175,9 @@ WHERE user_id = ?;
 }
 
 func (s *Store) GetUserBySubscriptionToken(ctx context.Context, token string) (User, SubscriptionToken, error) {
-	if _, err := s.SweepExpiredUsers(ctx); err != nil {
-		return User{}, SubscriptionToken{}, err
-	}
+	// No SweepExpiredUsers here: /sub is a public endpoint and a sweep is a
+	// full write transaction. Freshness is preserved by the status/expiry
+	// checks below plus the periodic enforcement sweep.
 	nowTime := time.Now().UTC()
 	var userID int64
 	var enabled int

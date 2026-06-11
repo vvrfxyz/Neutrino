@@ -25,6 +25,14 @@ func (a *App) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Public endpoint: rate-limit per client IP so invalid-token scans cannot
+	// hammer the DB.
+	if ip := a.clientIPFromRequest(r); ip != "" {
+		if !a.rl.Allow("sub:ip:"+ip, 120, time.Minute, time.Now()) {
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+	}
 	u, _, err := a.store.GetUserBySubscriptionToken(r.Context(), token)
 	if err != nil {
 		if errors.Is(err, repo.ErrUserNotFound) || errors.Is(err, repo.ErrUserInactive) {

@@ -2,8 +2,10 @@ package notify
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/smtp"
 	"strconv"
@@ -12,6 +14,11 @@ import (
 
 	"neutrino/internal/config"
 )
+
+// smtpTimeout bounds the entire SMTP exchange (dial + handshake + send).
+// SendMail runs inside the enforcement worker tick, so a black-holed SMTP
+// host must not be able to stall it indefinitely.
+const smtpTimeout = 15 * time.Second
 
 type Notifier struct {
 	cfg        config.Config
@@ -79,12 +86,63 @@ func (n *Notifier) SendMail(subject, body string, to []string) error {
 		return nil
 	}
 	addr := fmt.Sprintf("%s:%d", n.cfg.SMTPHost, n.cfg.SMTPPort)
-	auth := smtp.PlainAuth("", n.cfg.SMTPUser, n.cfg.SMTPPass, n.cfg.SMTPHost)
 	msg := strings.Builder{}
 	msg.WriteString("From: " + n.cfg.SMTPFrom + "\r\n")
 	msg.WriteString("To: " + strings.Join(to, ",") + "\r\n")
 	msg.WriteString("Subject: " + subject + "\r\n")
 	msg.WriteString("\r\n")
 	msg.WriteString(body)
-	return smtp.SendMail(addr, auth, n.cfg.SMTPFrom, to, []byte(msg.String()))
+	return sendMailWithTimeout(addr, n.cfg.SMTPHost, n.cfg.SMTPUser, n.cfg.SMTPPass, n.cfg.SMTPFrom, to, []byte(msg.String()))
+}
+
+// sendMailWithTimeout mirrors smtp.SendMail (STARTTLS when offered, optional
+// PLAIN auth) but bounds the whole exchange with a connection deadline, which
+// stdlib smtp.SendMail cannot do.
+func sendMailWithTimeout(addr, host, user, pass, from string, to []string, msg []byte) error {
+	conn, err := net.DialTimeout("tcp", addr, smtpTimeout)
+	if err != nil {
+		return err
+	}
+	if err := conn.SetDeadline(time.Now().Add(smtpTimeout)); err != nil {
+		_ = conn.Close()
+		return err
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	defer c.Close()
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return err
+		}
+	}
+	if user != "" {
+		if ok, _ := c.Extension("AUTH"); ok {
+			if err := c.Auth(smtp.PlainAuth("", user, pass, host)); err != nil {
+				return err
+			}
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		_ = w.Close()
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }

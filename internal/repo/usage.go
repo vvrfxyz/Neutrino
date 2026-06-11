@@ -295,6 +295,42 @@ ON CONFLICT(source, source_event_id) DO NOTHING;
 	return nil
 }
 
+// PruneUsageEventKeys deletes dedupe keys recorded before olderThan (keyed on
+// created_at = ingest time, not event time). Retention must comfortably exceed
+// the longest plausible agent replay window — the 26h active-user backdate cap
+// plus however long a disk-queued batch can wait before flushing — or replayed
+// events would be double-counted.
+func (s *Store) PruneUsageEventKeys(ctx context.Context, olderThan time.Time, batchSize int) (int64, error) {
+	if olderThan.IsZero() {
+		return 0, nil
+	}
+	if batchSize <= 0 || batchSize > 5000 {
+		batchSize = 1000
+	}
+	cutoff := olderThan.UTC().Format(time.RFC3339)
+	q := `
+DELETE FROM usage_event_keys
+WHERE rowid IN (
+	SELECT rowid
+	FROM usage_event_keys
+	WHERE created_at < ?
+	LIMIT ?
+);
+`
+	var total int64
+	for {
+		res, err := s.db.ExecContext(ctx, q, cutoff, batchSize)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < int64(batchSize) {
+			return total, nil
+		}
+	}
+}
+
 func (s *Store) ensureQuotaWindowTx(ctx context.Context, tx *sql.Tx, userID int64, cycleType, quotaTZ string, eventAt time.Time) (time.Time, time.Time, bool, error) {
 	var existingStart, existingEnd string
 	err := tx.QueryRowContext(ctx, `

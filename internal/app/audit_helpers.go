@@ -57,7 +57,7 @@ func (a *App) clientIPFromRequest(r *http.Request) string {
 	if remoteIP == "" || a == nil || !trustedProxyContains(a.cfg.TrustedProxyCIDRs, remoteIP) {
 		return remoteIP
 	}
-	if ip := forwardedClientIPFromRequest(r); ip != "" {
+	if ip := forwardedClientIPFromRequest(r, a.cfg.TrustedProxyCIDRs); ip != "" {
 		return ip
 	}
 	return remoteIP
@@ -77,14 +77,25 @@ func remoteIPFromRequest(r *http.Request) string {
 	return ""
 }
 
-func forwardedClientIPFromRequest(r *http.Request) string {
+// forwardedClientIPFromRequest selects the rightmost X-Forwarded-For entry
+// that is not itself a trusted proxy. Trusted proxies append the connecting
+// address to XFF, so entries left of the last untrusted hop are client
+// supplied and must not be believed — picking the leftmost entry would let a
+// client rotate fake IPs to bypass rate limiting and poison audit logs.
+func forwardedClientIPFromRequest(r *http.Request, trustedProxyCIDRs string) string {
 	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
 	if xff != "" {
-		for _, part := range strings.Split(xff, ",") {
-			ip := strings.TrimSpace(part)
-			if net.ParseIP(ip) != nil {
-				return ip
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(parts[i])
+			if net.ParseIP(ip) == nil {
+				// Malformed entry: nothing left of it is trustworthy.
+				break
 			}
+			if trustedProxyContains(trustedProxyCIDRs, ip) {
+				continue
+			}
+			return ip
 		}
 	}
 	if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(ip) != nil {

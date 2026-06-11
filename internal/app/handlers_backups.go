@@ -20,7 +20,11 @@ import (
 
 const (
 	maxBackupUploadBytes = 500 << 20
-	pendingRestoreSuffix = ".pending-restore"
+	// maxBackupRestoreBytes caps the decompressed size of an uploaded backup.
+	// Without it a gzip bomb (~1032:1) inside the 500MB upload cap could write
+	// hundreds of GB next to the live DB and fill the panel disk.
+	maxBackupRestoreBytes = 4 << 30
+	pendingRestoreSuffix  = ".pending-restore"
 )
 
 // requiredRestoreTables are sanity-checked on uploaded SQLite candidates so that we
@@ -101,6 +105,11 @@ func (a *App) handleAPICreateBackup(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "store backup record failed"})
 		return
 	}
+	auditAction(a, r, "backup.create", "backup", strconv.FormatInt(stored.ID, 10), map[string]any{
+		"file":       filepath.Base(stored.FilePath),
+		"size_bytes": stored.SizeBytes,
+		"sha256":     stored.SHA256,
+	})
 	a.writeJSON(w, http.StatusCreated, stored)
 }
 
@@ -126,6 +135,9 @@ func (a *App) handleAPIDeleteBackup(w http.ResponseWriter, r *http.Request, id i
 		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "delete failed"})
 		return
 	}
+	auditAction(a, r, "backup.delete", "backup", strconv.FormatInt(id, 10), map[string]any{
+		"file": filepath.Base(rec.FilePath),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -146,6 +158,12 @@ func (a *App) handleAPIDownloadBackup(w http.ResponseWriter, r *http.Request, id
 	}
 	defer f.Close()
 	stat, _ := f.Stat()
+	// Downloading a backup exports the entire DB (credentials included), so it
+	// is the most sensitive read in the panel — always audit it.
+	auditAction(a, r, "backup.download", "backup", strconv.FormatInt(id, 10), map[string]any{
+		"file":       filepath.Base(rec.FilePath),
+		"size_bytes": rec.SizeBytes,
+	})
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(rec.FilePath)+`"`)
 	if stat != nil {
@@ -194,7 +212,7 @@ func (a *App) handleAPIRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidate, err := materializeUploadedDB(rawTmpPath, stagingDir)
+	candidate, err := materializeUploadedDB(rawTmpPath, stagingDir, maxBackupRestoreBytes)
 	if err != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decompress failed: " + err.Error()})
 		return
@@ -212,6 +230,12 @@ func (a *App) handleAPIRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Staging a restore queues a full DB replacement for the next restart.
+	auditAction(a, r, "backup.restore.stage", "backup", "", map[string]any{
+		"filename":   hdr.Filename,
+		"size_bytes": fileSize(pending),
+	})
+
 	a.writeJSON(w, http.StatusAccepted, map[string]any{
 		"status":   "staged",
 		"pending":  pending,
@@ -222,9 +246,10 @@ func (a *App) handleAPIRestoreBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 // materializeUploadedDB reads rawPath, detects gzip magic, and returns the path
-// of the materialized .sqlite file (gunzipped if needed). The caller owns the
-// returned file and is expected to remove it.
-func materializeUploadedDB(rawPath, stagingDir string) (string, error) {
+// of the materialized .sqlite file (gunzipped if needed, refusing decompressed
+// output larger than maxDecompressed). The caller owns the returned file and is
+// expected to remove it.
+func materializeUploadedDB(rawPath, stagingDir string, maxDecompressed int64) (string, error) {
 	in, err := os.Open(rawPath)
 	if err != nil {
 		return "", err
@@ -256,11 +281,17 @@ func materializeUploadedDB(rawPath, stagingDir string) (string, error) {
 			_ = out.Close()
 			return "", fmt.Errorf("gzip: %w", err)
 		}
-		_, err = io.Copy(out, zr)
+		var copied int64
+		copied, err = io.Copy(out, io.LimitReader(zr, maxDecompressed+1))
 		_ = zr.Close()
 		if err != nil {
 			_ = out.Close()
 			return "", fmt.Errorf("gunzip: %w", err)
+		}
+		if copied > maxDecompressed {
+			_ = out.Close()
+			err = fmt.Errorf("decompressed backup exceeds %d bytes", maxDecompressed)
+			return "", err
 		}
 	} else {
 		if _, err = io.Copy(out, in); err != nil {

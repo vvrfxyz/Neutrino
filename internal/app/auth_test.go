@@ -76,13 +76,56 @@ func TestClientIPFromRequestIgnoresForwardedForWithoutTrustedProxy(t *testing.T)
 }
 
 func TestClientIPFromRequestTrustsForwardedForFromTrustedProxy(t *testing.T) {
+	// Rightmost-untrusted: the rightmost XFF entry was appended by the trusted
+	// proxy we accepted the connection from, so it is the real client. Entries
+	// left of it (here 198.51.100.99) are client-supplied and untrustworthy.
 	req := httptest.NewRequest("GET", "http://example.com", nil)
 	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set("X-Forwarded-For", "198.51.100.99, 10.0.0.5")
 
 	a := &App{cfg: config.Config{TrustedProxyCIDRs: "127.0.0.1/32"}}
+	if got := a.clientIPFromRequest(req); got != "10.0.0.5" {
+		t.Fatalf("clientIPFromRequest=%q, want rightmost untrusted forwarded ip", got)
+	}
+}
+
+func TestClientIPFromRequestSkipsTrustedHopsInForwardedFor(t *testing.T) {
+	// Two chained trusted proxies: 10.0.0.5 is itself trusted, so the client
+	// is the next entry to its left.
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.99, 10.0.0.5")
+
+	a := &App{cfg: config.Config{TrustedProxyCIDRs: "127.0.0.1/32,10.0.0.0/8"}}
 	if got := a.clientIPFromRequest(req); got != "198.51.100.99" {
-		t.Fatalf("clientIPFromRequest=%q, want forwarded client ip", got)
+		t.Fatalf("clientIPFromRequest=%q, want first untrusted hop from the right", got)
+	}
+}
+
+func TestClientIPFromRequestSpoofedLeftmostEntryCannotRotateIdentity(t *testing.T) {
+	// A client behind a trusted proxy controls the leftmost XFF entries; the
+	// resolved IP must stay pinned to the proxy-appended entry regardless.
+	a := &App{cfg: config.Config{TrustedProxyCIDRs: "127.0.0.1/32"}}
+	for _, spoofed := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
+		req := httptest.NewRequest("GET", "http://example.com", nil)
+		req.RemoteAddr = "127.0.0.1:54321"
+		req.Header.Set("X-Forwarded-For", spoofed+", 10.0.0.5")
+		if got := a.clientIPFromRequest(req); got != "10.0.0.5" {
+			t.Fatalf("spoofed=%s: clientIPFromRequest=%q, want 10.0.0.5", spoofed, got)
+		}
+	}
+}
+
+func TestClientIPFromRequestMalformedForwardedEntryStopsWalk(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "198.51.100.99, garbage, 10.0.0.5")
+
+	// 10.0.0.5 is trusted; the next entry is malformed, so nothing left of it
+	// can be believed and we fall back to the connecting proxy address.
+	a := &App{cfg: config.Config{TrustedProxyCIDRs: "127.0.0.1/32,10.0.0.0/8"}}
+	if got := a.clientIPFromRequest(req); got != "127.0.0.1" {
+		t.Fatalf("clientIPFromRequest=%q, want remote addr fallback", got)
 	}
 }
 

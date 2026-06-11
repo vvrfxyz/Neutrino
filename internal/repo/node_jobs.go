@@ -41,7 +41,22 @@ type NodeJobSummary struct {
 // node+kind+correlation so different targets do not overwrite each other.
 // If there is a running job of the same kind with the same desired_version, it returns it without enqueueing.
 func (s *Store) EnqueueNodeJob(ctx context.Context, nodeID int64, kind string, desiredVersion string, payloadJSON string, timeoutSec int, correlationID string) (jobID int64, enqueued bool, err error) {
-	return enqueueNodeJobExec(ctx, s.db, nodeID, kind, desiredVersion, payloadJSON, timeoutSec, correlationID)
+	// The dedupe is check-then-insert, so it must run inside a write
+	// transaction (_txlock=immediate) or two concurrent enqueues can both miss
+	// the pending SELECT and double-insert the same node+kind job.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	jobID, enqueued, err = enqueueNodeJobExec(ctx, tx, nodeID, kind, desiredVersion, payloadJSON, timeoutSec, correlationID)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	return jobID, enqueued, nil
 }
 
 func enqueueNodeJobExec(ctx context.Context, q execQueryContext, nodeID int64, kind, desiredVersion, payloadJSON string, timeoutSec int, correlationID string) (jobID int64, enqueued bool, err error) {
@@ -389,6 +404,12 @@ func (s *Store) FinishNodeJobForNode(ctx context.Context, nodeID int64, jobID in
 	in.Status = strings.TrimSpace(in.Status)
 	if in.Status == "" {
 		in.Status = "failed"
+	}
+	// Agents may only report a terminal outcome. Anything else (e.g. "pending"
+	// or "running") would corrupt the job state machine: a non-terminal status
+	// written here bypasses the claim path and its attempt accounting.
+	if in.Status != "succeeded" && in.Status != "failed" {
+		return "", ErrNodeJobInvalidStatus
 	}
 	if in.MaxAttempts <= 0 {
 		in.MaxAttempts = 5

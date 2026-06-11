@@ -82,7 +82,10 @@ type Config struct {
 	NodeMetricDetailRetentionHours int
 	NodeProbeResultRetentionDays   int
 	OpsAlertResolvedRetentionDays  int
-	PruneEverySec                  int
+	// Usage dedupe keys must outlive the longest agent replay window (26h
+	// backdate cap + disk-queue flush delay), so the floor is enforced in days.
+	UsageEventKeyRetentionDays int
+	PruneEverySec              int
 
 	TelegramBotToken     string
 	TelegramAdminChatIDs string
@@ -173,6 +176,7 @@ func Load() Config {
 		NodeMetricDetailRetentionHours: envInt("NODE_METRIC_DETAIL_RETENTION_HOURS", 72),
 		NodeProbeResultRetentionDays:   envInt("NODE_PROBE_RESULT_RETENTION_DAYS", 30),
 		OpsAlertResolvedRetentionDays:  envInt("OPS_ALERT_RESOLVED_RETENTION_DAYS", 90),
+		UsageEventKeyRetentionDays:     envInt("USAGE_EVENT_KEY_RETENTION_DAYS", 14),
 		PruneEverySec:                  envInt("PRUNE_EVERY_SEC", 3600),
 
 		TelegramBotToken:     env("TELEGRAM_BOT_TOKEN", ""),
