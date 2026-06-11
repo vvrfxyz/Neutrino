@@ -7,79 +7,91 @@ For authoritative constraints and runtime decisions, see `AGENTS.md`.
 ## Common Commands
 
 ```bash
-# Run the panel locally
-rtk go run ./cmd/server
+# rtk is a local wrapper around go commands (summarized output); plain `go` works too
+rtk go run ./cmd/server          # panel — must run from the repo root (see Caveats)
+rtk go run ./cmd/node-agent      # node agent
 
-# Run the node-agent locally
-rtk go run ./cmd/node-agent
-
-# Run the full test suite
-rtk go test ./...
-
-# Run a single package
-rtk go test ./internal/app
-
-# Run a single test
+rtk go test ./...                # full suite (~335 tests across 21 packages)
+rtk go test ./internal/app       # one package
 rtk go test ./internal/app -run TestName
+
+npm run test:e2e                 # Playwright e2e; boots the panel itself on 127.0.0.1:18080 with a temp DB
+
+cd frontend/ops-demo && npm ci && npm test   # vitest for the /ops-v2 preview SPA
+cd frontend/ops-demo && npm run build        # builds dist/ (required before ENABLE_OPS_V2=true serves /ops-v2)
 ```
+
+CI only compiles binaries and builds images — it runs **no tests**. Always run `rtk go test ./...` locally before pushing.
 
 ## Architecture Overview
 
-- Two Go entrypoints:
-  - `cmd/server`: the control plane / admin panel. It opens SQLite, runs migrations, seeds the admin credential, serves the SSR admin UI and `/api/v1/*`, and optionally starts a dedicated agent mTLS listener.
-  - `cmd/node-agent`: the per-node agent. It enrolls with the panel, maintains mTLS credentials, talks to local Xray, reports usage/runtime, and executes node jobs.
-- `internal/app` is the panel orchestration layer:
-  - `routes.go` defines the public/admin surface and the separate agent-only mTLS surface.
-  - SSR UI pages are currently `/users`, `/users/{id}`, `/nodes`, `/nodes/{id}/deploy`, `/traffic`, `/enforcements`, `/ops`, plus `/login`.
-  - `api_v1.go` handles user CRUD, user traffic/events, subscription and Telegram-bind endpoints, node CRUD, usage ingest, traffic summary, online users, and host metrics.
-  - `handlers_nodes.go` handles node report, enroll, job claim/finish, cert revoke/renew, and managed Xray deploy/rollback endpoints.
-  - `handlers_node_deploy_page.go` builds the node deployment page and the one-click bootstrap script that auto-checks / installs `docker compose` when needed.
-  - `StartWorkers` runs host metrics, host monthly network rollups, Telegram polling, quota/expiry/IP-limit enforcement, pruning, and node reconciliation / timeout sweeping.
-- `internal/repo` is the domain core:
-  - SQLite persistence, auth/session state, usage ingestion, quota windows, IP-limit enforcement, node desired/applied state, durable node jobs, audit logs, enforcement logs, subscription tokens, Telegram bindings, API key validation, and operational aggregates.
-- Panel-to-node sync is versioned and pull-based:
-  - The panel stores desired state in DB.
-  - It enqueues `node_jobs` (`users_sync`, `xray_apply`, `xray_rollback`).
-  - Node-agents long-poll claim/finish those jobs over the mTLS listener.
-  - The panel never shells into nodes directly.
-- `internal/agent` contains node runtime behavior:
-  - enrollment + certificate renewal,
-  - disk-backed queue/state for resilient usage delivery,
-  - Xray stats/access-log collection,
-  - runtime report submission (including node-local natural-month RX/TX probe totals),
-  - managed Xray bootstrap/apply/rollback using agent-local argv only,
-  - REALITY key auto-generation / persistence when env values are placeholders.
-- Subscription rendering is centralized in `internal/subscription`; `/sub/{token}` renders client-specific formats from the active link plus enabled nodes (or fallback proxy env config when no nodes are enabled).
-- Managed Xray templates live in `internal/templates`; panel-side code renders templates + vars only and never ships arbitrary shell commands or file paths.
+Two Go entrypoints plus one optional preview SPA:
+
+- `cmd/server`: control plane / admin panel. Startup order: `app.ApplyPendingRestore` (staged DB restore) → open + migrate SQLite → seed admin credential (fatal if `ALLOW_BASIC_AUTH=true` with default admin/admin123) → `StartWorkers` → optional agent mTLS listener (`PANEL_AGENT_MTLS_ADDR`, TLS ≥ 1.2, RequireAndVerifyClientCert) → main HTTP listener (`ADDR`, default :8080).
+- `cmd/node-agent`: per-node agent — enrolls with the panel, maintains mTLS credentials, manages local Xray, reports usage/runtime, executes node jobs.
+- `frontend/ops-demo`: React + Vite preview ops dashboard served at `/ops-v2` when `ENABLE_OPS_V2=true` and `frontend/ops-demo/dist` exists (dist is gitignored; built inside the panel Docker image).
+
+Panel layering: `internal/app` (HTTP/SSR/workers) → `internal/service` (orchestration: `UserService`, `NodeService`, `UsageService`, `OpsService`; `App` implements `service.SyncRequester` — `RequestUsersSync` is throttled to one enqueue/15s, `...Now` variants bypass) → `internal/repo` (SQLite domain core) → `internal/db` (schema + idempotent migrations; no version table). The service extraction is **partial**: node control-plane, cert, backup, ops-alert, and subscription handlers still call `repo.Store` directly.
+
+`internal/app`:
+- `routes.go` — SSR pages: `/login`, `/users` (+ `/users/table` HTMX partial), `/users/{id}`, `/nodes`, `/nodes/{id}/deploy`, `/traffic`, `/enforcements`, `/ops`, `/ops-v2` (flag-gated). Public: `/sub/{token}`, `/healthz`. API: `/api/v1/*` including `ops/config|nodes|alerts`, backups, and the admin WebSocket `/api/v1/stream` (session-only, same-origin checked).
+- `AgentRoutes` (separate mTLS listener): `/api/v1/usage`, `/api/v1/nodes/{id}/report`, `…/agent/users`, `…/jobs/claim?wait=N`, `…/jobs/{job}/finish`, `…/cert/renew`. Every agent handler re-checks client-cert CN `node-{id}` against the path id. `/api/v1/usage` is also registered on the main mux but can never authenticate there (mTLS-only middleware on a plain-HTTP listener) — the agent listener is the only live usage-ingest path.
+- `StartWorkers` (app.go) runs: host metrics sampler, host-net natural-month rollup (keyed by `PANEL_TZ`), Telegram polling, node reconciler (30s: users_sync + managed-xray convergence), job timeout sweeper (5s), ops WebSocket snapshot publisher (no DB work with 0 subscribers), metric-history queue (memory → disk spillover → drop + ops alert), and a 5s tick loop: lifecycle/quota/IP-limit enforcement + stale-node cleanup, pruning, ops-alert sync, pending-alert dispatch (Telegram/SMTP).
+- Auth ladder (`auth.go`): admin session cookie → optional Basic (only with non-default creds) → mTLS node identity (CN + per-node cert-pin allowlist; fixed scopes `nodes:report`, `usage:write`) → API key (`X-API-Key`, SHA-256 hash lookup, scope map in `requiredScope`). CSRF token = HMAC-SHA256(`CSRF_SECRET`, sessionID), enforced on SSR POSTs and session-authenticated API writes.
+
+`internal/repo` + `internal/db`: hand-written parameterized SQL; all timestamps UTC RFC3339 TEXT. DSN forces `_foreign_keys=on`, `_busy_timeout=15000`, `_txlock=immediate` (every `BeginTx` is a write transaction); WAL set during `Migrate`.
+
+Node job model (`internal/repo/node_jobs.go`): kinds `users_sync | xray_apply | xray_rollback | probe_dns | probe_tcp | probe_http` (`probe_ping` legacy alias). pending → running → succeeded/failed; at most one pending job per node+kind (probe kinds dedupe by correlation); claim is per-node serial; finish must echo the claimed `attempt` (fencing); retryable failures requeue up to `NODE_JOB_MAX_ATTEMPTS`. Desired/applied state versions are SHA-256 content hashes (sorted users list / xray payload), re-reconciled every 30s — the panel never shells into nodes.
+
+`internal/agent` (`Agent.Run`): localhost health server, cert-renewer state machine (12h check, renew within 7d of expiry, atomic install + PanelClient hot-swap, re-enroll fallback when expired), one-shot synced-user restore into Xray, job runner (25s long-poll claim), usage loop (1s tick), heartbeat (2s report incl. online-IP snapshot, monthly RX/TX keyed by `AGENT_MONTH_TZ` → `time.Local` → UTC).
+
+Usage pipeline invariants (do **not** break — see `docs/USAGE_PIPELINE_DESIGN.md` and the 2026-03-28 postmortem):
+- flush-before-sample: no new stats/access sampling while any disk-queued batch is pending;
+- ack state (`AckedStats`/epoch/access offset) advances only after `PushUsage` succeeds; crash replay relies on panel idempotency;
+- dedupe key `(source, source_event_id)` is enforced twice: `usage_event_keys` PK + unique index on `traffic_events`;
+- stats counters are epoch-rebased on regression; ingest guards: +5min future skew, 26h backdate cap for active users.
+
+Managed Xray: panel stores/ships only `{template, vars, rollback_on_fail}` (templates in `internal/templates/xray`); the agent renders with precedence job vars > non-placeholder env > agent-local fallbacks (REALITY keypair auto-generated and persisted in `reality.json`), skips no-op applies via canonical-JSON compare, then backup → test → rename → reload using agent-local argv only (`XRAY_TEST_ARGS_JSON` / `XRAY_RELOAD_ARGS_JSON`). Never `sh -c`, never panel-supplied commands or file paths.
+
+Subscription rendering is centralized in `internal/subscription`: `/sub/{token}` renders per-node URIs (vless_reality / hysteria2 / tuic) for `clash|singbox|v2rayn|shadowrocket` (UA auto-detect, `?target=` override), emits `Subscription-Userinfo` / `Profile-Update-Interval` headers; falls back to env-config proxy only for unrestricted users when no nodes are enabled.
+
+Node deletion is staged: enabled → disable + drain `users_sync` → actual DB delete only once desired/applied users version equals the empty-list hash.
 
 ## Operational Model
 
-- Admin auth is session-based by default; Basic Auth is an optional fallback via `ALLOW_BASIC_AUTH=true`, but only when the admin credential is no longer the default one.
-- `/api/v1/*` supports admin auth and pre-provisioned API keys. Scope mapping lives in `internal/app/auth.go`.
-- Node-agent control-plane auth is mTLS only. The dedicated mTLS listener serves usage ingest, node report, job claim/finish, and cert renew.
-- Usage ingestion is idempotent by `source + source_event_id`; quota, expiry, and IP-limit enforcement can deactivate users and trigger downstream user resync.
-- Node certs are checked both by CA trust and by per-node allowlist / pin validation, so single-node revoke does not require rotating the whole CA set.
+- Admin auth is session-based; Basic Auth is an optional fallback via `ALLOW_BASIC_AUTH=true`, only when the admin credential is non-default (enforced fatally at startup).
+- `/api/v1/*` supports admin auth and pre-provisioned API keys. Scope mapping lives in `internal/app/auth.go`. `POST /api/v1/usage` accepts node mTLS only.
+- Node-agent control-plane auth is mTLS only. Node certs are checked by CA trust **and** per-node allowlist/pin, so single-node revoke never requires CA rotation. Enroll uses one-time codes (default 10min TTL); disabled nodes may still drain `users_sync` jobs but cannot report or write usage.
+- Usage ingestion is idempotent; quota (`day|week|month` windows in per-user `quota_tz`), expiry, and IP-limit enforcement can deactivate users and trigger node resync. See `AGENTS.md` Data Rules for the authoritative semantics.
+- Raw `traffic_events` are pruned aggressively (access 7d, stats 2d by default); `traffic_rollups_hourly` is the only durable per-user history — charts read rollups only.
 
 ## Testing Notes
 
 - Unit tests are colocated with packages.
-- Functional coverage lives in `tests/functional` and covers both the normal HTTP server and the agent-side mTLS control plane.
-- Relevant integration-style areas already covered include user lifecycle, user detail traffic endpoints, subscription / Telegram bind flow, node deploy page behavior, and agent cert renew / job handling.
+- `tests/functional` boots the real app (HTTP httptest + a second mTLS httptest server with a generated CA and per-node client certs). Coverage: user lifecycle, traffic endpoints, usage idempotency + mTLS node-identity override, disabled-node drain semantics, managed-node job ordering, subscription failure modes/headers/UA detection, Telegram bind, backups + restore staging + `ApplyPendingRestore`, agent cert renew hot-swap, `/api/v1/stream` snapshot + WS/poll payload parity, sidebar HTMX invariants.
+- `tests/e2e/admin-click.spec.ts` (Playwright, chromium) click-drives login/sidebar, users workflow, nodes + deploy + managed-xray, traffic/ops/enforcements.
+- Neither Go tests nor Playwright/vitest run in CI (`build` + `docker` checks compile/build only).
 
 ## Important Files
 
-- `AGENTS.md`: hard constraints, deployment policy, runtime decisions.
-- `README.md`: current feature surface, auth model, API list, compose topology, and docs index.
+- `AGENTS.md`: hard constraints, data rules, deployment policy, branch protection.
+- `README.md`: most current doc — feature surface, auth model + scope map, full API list, compose topology, release policy.
 - `docs/DEPLOYMENT_OPERATION_MANUAL.md`: release / deploy flow, mTLS cert generation, panel-only / node-only rollout.
-- `docs/OPERATION_MANUAL.md`: admin/operator runbook for `/users`, `/nodes`, `/traffic`, `/enforcements`, `/ops`, and Telegram.
-- `docs/USAGE_PIPELINE_DESIGN.md`: invariants for the node-agent usage pipeline.
-- `docs/NODE_MONTHLY_USAGE_DESIGN.md`: semantics and failure model for node natural-month RX/TX telemetry.
-- `docs/OPS_MONITORING_DESIGN.md`: current `/ops` realtime monitoring, metric history, probe, and alert design.
-- `docs/XBOARD_LEARNINGS_UPGRADE_MODULES.md`: active upgrade module roadmap inspired by Xboard / Xboard-Node.
+- `docs/OPERATION_MANUAL.md`: admin/operator runbook.
+- `docs/USAGE_PIPELINE_DESIGN.md`: node-agent usage pipeline invariants.
+- `docs/NODE_MONTHLY_USAGE_DESIGN.md`: node natural-month RX/TX telemetry semantics.
+- `docs/OPS_MONITORING_DESIGN.md`: `/ops` + `/ops-v2` realtime monitoring, metric history, probes, alerts.
+- `docs/XBOARD_LEARNINGS_UPGRADE_MODULES.md`: active upgrade-module roadmap.
+- `docs/USER_SYNC_MODULE_PLAN.md`: delta user-sync plan (**not yet implemented** — no `internal/usersync` package exists).
+- `docs/POSTMORTEM_2026-03-28_NODE14_USAGE_DUPLICATION.md`: usage-duplication incident; its invariants are encoded in agent tests.
 
 ## Current Caveats
 
-- API key validation exists, but there is currently no UI or HTTP lifecycle management endpoint for creating / listing / revoking API keys.
+- API key validation exists, but there is no UI or HTTP lifecycle endpoint for creating/listing/revoking API keys (repo CRUD helpers are test-only).
+- SSR templates are parsed from the CWD-relative path `internal/app/templates` via `template.Must` — the panel panics at startup unless run from the repo root (tests chdir to root; Dockerfile relies on `WORKDIR /app`). `/ops-v2` assets are likewise read from `frontend/ops-demo/dist` at request time.
+- `CSRF_SECRET` is read directly via `os.Getenv` in `internal/app/app.go`, not through `internal/config`; malformed values silently degrade to an ephemeral per-process secret.
+- Dead code kept in tree: `internal/singboxapi`, `internal/cryptoutil`, and the S3/restore helpers in `internal/backup` (the live restore path is `handlers_backups.go` staging + `ApplyPendingRestore`).
+- Cross-layer error mapping partly relies on error-string matching — including the agent↔panel permanent-rejection contract for usage events (`internal/agent/panel_client.go`). Do not reword those panel error strings without updating the agent.
 
 ## Backup / Restore
 
