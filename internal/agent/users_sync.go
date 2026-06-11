@@ -2,14 +2,12 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
+
+	"neutrino/internal/usersync"
 )
 
 type UserSyncItem struct {
@@ -194,19 +192,24 @@ func staleSyncedUsers(prevUsers []UserSyncItem, currentUsers []UserSyncItem) []U
 	return stale
 }
 
-func hashUsers(users []UserSyncItem) string {
-	type item struct {
-		UserID int64  `json:"user_id"`
-		Email  string `json:"email"`
-		Status string `json:"status"`
-		UUID   string `json:"uuid,omitempty"`
-	}
-	items := make([]item, 0, len(users))
+// syncItems converts agent user structs to the canonical usersync items.
+// Conversion must happen before hashing, diffing, or applying changes.
+func syncItems(users []UserSyncItem) []usersync.Item {
+	items := make([]usersync.Item, 0, len(users))
 	for _, u := range users {
-		items = append(items, item{UserID: u.UserID, Email: u.Email, Status: u.Status, UUID: u.UUID})
+		items = append(items, usersync.Item{UserID: u.UserID, Email: u.Email, Status: u.Status, UUID: u.UUID})
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].UserID < items[j].UserID })
-	b, _ := json.Marshal(items)
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return items
+}
+
+func fromSyncItems(items []usersync.Item) []UserSyncItem {
+	users := make([]UserSyncItem, 0, len(items))
+	for _, it := range items {
+		users = append(users, UserSyncItem{UserID: it.UserID, Email: it.Email, Status: it.Status, UUID: it.UUID})
+	}
+	return users
+}
+
+func hashUsers(users []UserSyncItem) string {
+	return usersync.HashItems(syncItems(users))
 }
