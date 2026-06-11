@@ -153,11 +153,32 @@ func (c *PanelClient) PushUsage(ctx context.Context, events []UsageEvent) error 
 				if isPermanentUsageRejection(msg) {
 					continue
 				}
+				if isTransientUsageRejection(msg) {
+					// Time-dependent or panel-side failures: retrying the same
+					// batch can succeed later, so these must never count
+					// toward poison-batch quarantine.
+					return fmt.Errorf("panel rejected usage event %d: %s", i, msg)
+				}
 				return usageRejectionf("panel rejected usage event %d: %s", i, msg)
 			}
 		}
 	}
 	return nil
+}
+
+// isTransientUsageRejection matches per-event panel errors that are not
+// deterministic for the batch content: a future-skewed timestamp becomes valid
+// as time passes, and "record failed" covers transient panel-side failures
+// (e.g. a busy database). See isPermanentUsageRejection for the agent↔panel
+// error-string contract.
+func isTransientUsageRejection(msg string) bool {
+	switch strings.ToLower(strings.TrimSpace(msg)) {
+	case "invalid event timestamp",
+		"record failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func isPermanentUsageRejection(msg string) bool {

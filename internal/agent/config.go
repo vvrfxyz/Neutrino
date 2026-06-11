@@ -63,6 +63,9 @@ type Config struct {
 	// Consecutive panel rejections of the same queued batch before it is moved
 	// to the quarantine directory so the usage pipeline can make progress.
 	UsageQuarantineAfterRejects int
+	// Minimum wall-clock seconds since the first rejection before quarantine
+	// may trigger, so self-healing conditions don't cost a batch of data.
+	UsageQuarantineMinAgeSec int
 
 	// polling
 	StatsPollSec         int
@@ -98,6 +101,7 @@ func ConfigFromEnv() Config {
 		QueueMaxBytes:               getEnvInt64("QUEUE_MAX_BYTES", 200000000),
 		PushBatchMaxEvents:          getEnvInt("PUSH_BATCH_MAX_EVENTS", 500),
 		UsageQuarantineAfterRejects: getEnvInt("USAGE_QUARANTINE_AFTER_REJECTS", 5),
+		UsageQuarantineMinAgeSec:    getEnvInt("USAGE_QUARANTINE_MIN_AGE_SEC", 600),
 
 		PanelURL:     getEnv("PANEL_URL", ""),
 		PanelMTLSURL: getEnv("PANEL_MTLS_URL", ""),

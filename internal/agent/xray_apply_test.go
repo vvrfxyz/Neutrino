@@ -225,6 +225,47 @@ func TestExecXrayApplyReloadPendingPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+// The reload-pending flag must be persisted BEFORE the config is installed:
+// if the agent dies between the rename and a successful reload, the restarted
+// agent would otherwise see disk==desired with pending=false and skip the
+// retry without ever reloading xray.
+func TestExecXrayApplyPersistsReloadPendingBeforeReload(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	statePath := filepath.Join(dir, "state.json")
+	observedPath := filepath.Join(dir, "observed")
+
+	// The reload script runs exactly in the crash window (after rename,
+	// before reload success) and records whether the flag is already durable.
+	script := `#!/bin/sh
+if grep -q '"xray_reload_pending": true' ` + strconv.Quote(statePath) + `; then
+  echo yes > ` + strconv.Quote(observedPath) + `
+else
+  echo no > ` + strconv.Quote(observedPath) + `
+fi
+exit 0
+`
+	scriptPath := filepath.Join(dir, "reload.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write reload script: %v", err)
+	}
+
+	a := &Agent{xrayConfigPath: configPath, xrayReloadArgs: []string{"sh", scriptPath}, state: NewStateStore(statePath)}
+	if _, err := a.execXrayApply(context.Background(), XrayApplyRequest{Template: `{"port":443}`}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	observed, err := os.ReadFile(observedPath)
+	if err != nil {
+		t.Fatalf("read observed: %v", err)
+	}
+	if strings.TrimSpace(string(observed)) != "yes" {
+		t.Fatalf("reload-pending flag was not persisted before the reload ran")
+	}
+	if a.xrayReloadPending() {
+		t.Fatalf("flag must clear after successful reload")
+	}
+}
+
 func TestExecXrayApplyReportsRollbackReloadForRepair(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
