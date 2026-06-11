@@ -289,6 +289,39 @@ func TestSetUserStatusSweepsQuotaWindowsBeforeStatusCheck(t *testing.T) {
 	}
 }
 
+func TestSetUserStatusActivateLapsedDisabledUserMarksExpired(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	u := newActiveUser(t, s)
+	if _, err := s.SetUserStatus(ctx, u.ID, "disabled"); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+	// Lapse the plan while disabled: SweepExpiredUsers only touches
+	// status='active', so the disabled user keeps status='disabled'.
+	expiredAt := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if _, err := s.RawDB().ExecContext(ctx, `
+UPDATE users
+SET expires_at = ?
+WHERE id = ?;
+`, expiredAt, u.ID); err != nil {
+		t.Fatalf("expire user: %v", err)
+	}
+
+	_, err := s.SetUserStatus(ctx, u.ID, "active")
+	if !errors.Is(err, ErrUserInactive) {
+		t.Fatalf("expected ErrUserInactive, got %v", err)
+	}
+
+	got, err := s.GetUser(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.Status != "expired" {
+		t.Fatalf("expired mark must be committed: status=%s, want expired", got.Status)
+	}
+}
+
 func TestExtendUserPlan_ReactivatesExpiredUserLink(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -508,6 +541,46 @@ func TestResetUserQuota_ReactivatesOverLimitUser(t *testing.T) {
 	}
 	if got.Status != "active" || got.ActiveLink == nil {
 		t.Fatalf("expected active user with restored link, got %+v", got)
+	}
+}
+
+func TestResetUserQuota_TwiceWithinSameSecond(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	u, err := s.CreateUser(ctx, CreateUserInput{
+		Username:       "reset-same-second",
+		MonthlyLimitGB: 1,
+		CountingMode:   "double",
+		QuotaCycle:     "month",
+		QuotaTZ:        "UTC",
+		PlanDays:       30,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// window_start has second granularity; align to just after a second
+	// boundary so both resets land in the same RFC3339 second.
+	now := time.Now()
+	next := now.Truncate(time.Second).Add(time.Second)
+	time.Sleep(time.Until(next.Add(50 * time.Millisecond)))
+
+	if err := s.ResetUserQuota(ctx, u.ID, "first reset"); err != nil {
+		t.Fatalf("first ResetUserQuota: %v", err)
+	}
+	if err := s.ResetUserQuota(ctx, u.ID, "second reset"); err != nil {
+		t.Fatalf("second ResetUserQuota in same second: %v", err)
+	}
+
+	got, err := s.GetUser(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.Status != "active" {
+		t.Fatalf("user should stay active after double reset, got %s", got.Status)
+	}
+	if got.WindowEffective != 0 {
+		t.Fatalf("reset window should be empty, got effective=%d", got.WindowEffective)
 	}
 }
 

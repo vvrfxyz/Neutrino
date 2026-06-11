@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,5 +99,18 @@ func TestEnrollCodeErrorsCarrySentinel(t *testing.T) {
 	// Empty code → invalid.
 	if err := s.ValidateNodeEnrollCode(ctx, node.ID, ""); !errors.Is(err, ErrEnrollCodeInvalid) {
 		t.Fatalf("empty code: expected ErrEnrollCodeInvalid, got %v", err)
+	}
+
+	// Issued code → the exact code validates, a same-length wrong code does not.
+	issued, err := s.CreateNodeEnrollCode(ctx, node.ID, time.Minute)
+	if err != nil {
+		t.Fatalf("create enroll code: %v", err)
+	}
+	if err := s.ValidateNodeEnrollCode(ctx, node.ID, issued.Code); err != nil {
+		t.Fatalf("correct code should validate, got %v", err)
+	}
+	wrong := strings.Repeat("x", len(issued.Code))
+	if err := s.ValidateNodeEnrollCode(ctx, node.ID, wrong); !errors.Is(err, ErrEnrollCodeInvalid) {
+		t.Fatalf("wrong code: expected ErrEnrollCodeInvalid, got %v", err)
 	}
 }

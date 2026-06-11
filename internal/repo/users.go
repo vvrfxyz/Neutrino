@@ -284,11 +284,18 @@ WHERE id = ?;
 			return User{}, err
 		}
 		if now.After(expiresAt) {
+			// The pre-tx SweepExpiredUsers only converts status='active' users,
+			// so a disabled/over_limit user whose plan has lapsed reaches here.
+			// Persist the truthful 'expired' state (ExtendUserPlan recovers
+			// expired users), then report the activation failure.
 			if _, err := tx.ExecContext(ctx, `
 UPDATE users
 SET status = 'expired', removed_at = COALESCE(removed_at, ?)
 WHERE id = ?;
 `, nowStr, userID); err != nil {
+				return User{}, err
+			}
+			if err := tx.Commit(); err != nil {
 				return User{}, err
 			}
 			return User{}, ErrUserInactive

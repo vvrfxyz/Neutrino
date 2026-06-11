@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -133,7 +134,9 @@ WHERE node_id = ?;
 		}
 		return "", err
 	}
-	if strings.TrimSpace(dbCode) == "" || dbCode != code {
+	// The stored code stays plaintext because the deploy page re-displays it
+	// (handlers_node_deploy_page.go); the compare must still be constant-time.
+	if strings.TrimSpace(dbCode) == "" || subtle.ConstantTimeCompare([]byte(dbCode), []byte(code)) != 1 {
 		return "", fmt.Errorf("%w: invalid enroll_code", ErrEnrollCodeInvalid)
 	}
 	if usedAt.Valid && strings.TrimSpace(usedAt.String) != "" {
