@@ -1,6 +1,7 @@
 package hostnet
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
@@ -210,5 +211,40 @@ func TestClampInt64FromUint64_Saturates(t *testing.T) {
 	}
 	if got := ClampInt64FromUint64(math.MaxUint64); got != math.MaxInt64 {
 		t.Fatalf("max uint should clamp to MaxInt64, got %d", got)
+	}
+}
+
+func TestReadTotalsPrefersProcCounters(t *testing.T) {
+	procDir := t.TempDir()
+	writeProcFile(t, procDir, "net/dev", `Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+  eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0
+`)
+	writeProcFile(t, procDir, "net/route", `Iface	Destination	Gateway	Flags	RefCnt	Use	Metric	Mask	MTU	Window	IRTT
+eth0	00000000	01010101	0003	0	0	0	00000000	0	0	0
+`)
+
+	totals, source, err := ReadTotals(context.Background(), procDir)
+	if err != nil {
+		t.Fatalf("ReadTotals: %v", err)
+	}
+	if totals.RX != 1000 || totals.TX != 2000 {
+		t.Fatalf("totals = %+v, want RX=1000 TX=2000", totals)
+	}
+	if !strings.Contains(source, "source=proc:") {
+		t.Fatalf("source = %q, want source=proc:* marker", source)
+	}
+}
+
+func TestReadTotalsFallsBackWhenProcUnreadable(t *testing.T) {
+	// A bogus proc path must not error out the call: the gopsutil fallback
+	// takes over (or returns its own error on exotic CI hosts — either way,
+	// the proc failure itself must not surface).
+	totals, source, err := ReadTotals(context.Background(), filepath.Join(t.TempDir(), "missing"))
+	if err != nil {
+		t.Skipf("gopsutil fallback unavailable on this host: %v", err)
+	}
+	if source == "" {
+		t.Fatalf("expected non-empty source, totals=%+v", totals)
 	}
 }
