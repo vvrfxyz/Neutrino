@@ -44,6 +44,7 @@ type App struct {
 	alertService  *service.AlertService
 	backupService *service.BackupService
 	auditService  *service.AuditService
+	apiKeyService *service.APIKeyService
 
 	wsHub              *wsHub
 	metricHistoryQueue *nodeMetricHistoryQueue
@@ -262,6 +263,7 @@ func New(cfg config.Config, store *repo.Store) *App {
 	a.alertService = service.NewAlertService(store)
 	a.backupService = service.NewBackupService(store, cfg.DBPath, cfg.BackupDir)
 	a.auditService = service.NewAuditService(store)
+	a.apiKeyService = service.NewAPIKeyService(store)
 	a.wsHub = newWSHub()
 	a.metricHistoryQueue = newNodeMetricHistoryQueueFromConfig(store, cfg)
 	return a
@@ -291,6 +293,9 @@ func (a *App) ensureServices() {
 	}
 	if a.auditService == nil {
 		a.auditService = service.NewAuditService(a.store)
+	}
+	if a.apiKeyService == nil {
+		a.apiKeyService = service.NewAPIKeyService(a.store)
 	}
 	if a.metricHistoryQueue == nil {
 		a.metricHistoryQueue = newNodeMetricHistoryQueueFromConfig(a.store, a.cfg)
@@ -349,6 +354,11 @@ func (a *App) backups() *service.BackupService {
 func (a *App) audit() *service.AuditService {
 	a.ensureServices()
 	return a.auditService
+}
+
+func (a *App) apikeys() *service.APIKeyService {
+	a.ensureServices()
+	return a.apiKeyService
 }
 
 func loadCSRFSecret() []byte {
