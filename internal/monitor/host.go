@@ -26,6 +26,9 @@ type Snapshot struct {
 
 type TrafficFetcher func(context.Context) (int64, int64, error)
 
+// readNetTotals is a seam for tests; production always uses hostnet.ReadTotals.
+var readNetTotals = hostnet.ReadTotals
+
 type HostMonitor struct {
 	hostProcPath string
 	mu           sync.RWMutex
@@ -60,60 +63,70 @@ func (m *HostMonitor) Start(ctx context.Context, interval time.Duration, fetch T
 			return
 		case <-ticker.C:
 			now := time.Now().UTC()
-			proxyInTotal, proxyOutTotal := int64(0), int64(0)
-			if fetch != nil {
-				if in, out, err := fetch(ctx); err == nil {
-					proxyInTotal, proxyOutTotal = in, out
-				}
-			}
-			netInTotal, netOutTotal := int64(0), int64(0)
-			if totals, _, err := hostnet.ReadTotals(ctx, m.hostProcPath); err == nil {
-				rx, tx := totals.RX, totals.TX
-				netInTotal = rx
-				netOutTotal = tx
-			}
-			inBPS, outBPS := float64(0), float64(0)
-			if hasLast {
-				dt := now.Sub(lastTime).Seconds()
-				if dt > 0 {
-					inBPS = float64(netInTotal-lastNetIn) / dt
-					outBPS = float64(netOutTotal-lastNetOut) / dt
-					if inBPS < 0 {
-						inBPS = 0
-					}
-					if outBPS < 0 {
-						outBPS = 0
-					}
-				}
-			}
-			memBytes := uint64(0)
-			if vm, err := mem.VirtualMemoryWithContext(ctx); err == nil {
-				memBytes = vm.Used
-			}
-			cpuPercent := float64(0)
-			if cpuList, err := cpu.PercentWithContext(ctx, 0, false); err == nil && len(cpuList) > 0 {
-				cpuPercent = cpuList[0]
-			}
-			snap := Snapshot{
-				Timestamp:     now,
-				CPUPercent:    cpuPercent,
-				MemoryBytes:   memBytes,
-				InboundTotal:  netInTotal,
-				OutboundTotal: netOutTotal,
-				InboundBPS:    inBPS,
-				OutboundBPS:   outBPS,
-				ProxyInTotal:  proxyInTotal,
-				ProxyOutTotal: proxyOutTotal,
-			}
+			snap, netReadOK := m.sample(ctx, now, fetch, lastNetIn, lastNetOut, lastTime, hasLast)
 			m.mu.Lock()
 			m.samples = append(m.samples, snap)
 			if len(m.samples) > m.maxItems {
 				m.samples = m.samples[len(m.samples)-m.maxItems:]
 			}
 			m.mu.Unlock()
-			lastNetIn, lastNetOut, lastTime, hasLast = netInTotal, netOutTotal, now, true
+			// On a transient hostnet read failure the snapshot carries the
+			// previous totals; only a successful read advances the counters,
+			// otherwise the next delta would be computed against zero and
+			// record a huge false BPS spike.
+			if netReadOK {
+				lastNetIn, lastNetOut, lastTime, hasLast = snap.InboundTotal, snap.OutboundTotal, now, true
+			}
 		}
 	}
+}
+
+func (m *HostMonitor) sample(ctx context.Context, now time.Time, fetch TrafficFetcher, lastNetIn, lastNetOut int64, lastTime time.Time, hasLast bool) (Snapshot, bool) {
+	proxyInTotal, proxyOutTotal := int64(0), int64(0)
+	if fetch != nil {
+		if in, out, err := fetch(ctx); err == nil {
+			proxyInTotal, proxyOutTotal = in, out
+		}
+	}
+	netInTotal, netOutTotal := lastNetIn, lastNetOut
+	netReadOK := false
+	if totals, _, err := readNetTotals(ctx, m.hostProcPath); err == nil {
+		netInTotal, netOutTotal = totals.RX, totals.TX
+		netReadOK = true
+	}
+	inBPS, outBPS := float64(0), float64(0)
+	if netReadOK && hasLast {
+		dt := now.Sub(lastTime).Seconds()
+		if dt > 0 {
+			inBPS = float64(netInTotal-lastNetIn) / dt
+			outBPS = float64(netOutTotal-lastNetOut) / dt
+			if inBPS < 0 {
+				inBPS = 0
+			}
+			if outBPS < 0 {
+				outBPS = 0
+			}
+		}
+	}
+	memBytes := uint64(0)
+	if vm, err := mem.VirtualMemoryWithContext(ctx); err == nil {
+		memBytes = vm.Used
+	}
+	cpuPercent := float64(0)
+	if cpuList, err := cpu.PercentWithContext(ctx, 0, false); err == nil && len(cpuList) > 0 {
+		cpuPercent = cpuList[0]
+	}
+	return Snapshot{
+		Timestamp:     now,
+		CPUPercent:    cpuPercent,
+		MemoryBytes:   memBytes,
+		InboundTotal:  netInTotal,
+		OutboundTotal: netOutTotal,
+		InboundBPS:    inBPS,
+		OutboundBPS:   outBPS,
+		ProxyInTotal:  proxyInTotal,
+		ProxyOutTotal: proxyOutTotal,
+	}, netReadOK
 }
 
 func (m *HostMonitor) Query(rangeName string) []Snapshot {

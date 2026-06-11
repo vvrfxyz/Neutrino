@@ -113,6 +113,65 @@ func TestOpsServiceBuildNodeItemsIncludesBatchMetadata(t *testing.T) {
 	}
 }
 
+func TestOpsServiceCachedItemHealthGoesStaleWithoutNewReports(t *testing.T) {
+	ctx := context.Background()
+	store := newOpsServiceTestStore(t)
+	node, err := store.CreateNode(ctx, repo.CreateNodeInput{
+		Name:     "ops-stale-health-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	svc := NewOpsService(store)
+	// Simulate a cache entry kept alive by some other chatty node: the item
+	// was built while the node was "online", but its last report is now well
+	// past the stale threshold.
+	lastSeen := time.Now().UTC().Add(-opsNodeStaleAfter - time.Minute)
+	svc.cache.Set([]map[string]any{{
+		"id":           node.ID,
+		"enabled":      true,
+		"health":       "online",
+		"last_seen_at": lastSeen.Format(time.RFC3339),
+	}})
+	items, err := svc.BuildNodeItems(ctx)
+	if err != nil {
+		t.Fatalf("build cached items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if got := items[0]["health"]; got != "stale" {
+		t.Fatalf("cached item health should be recomputed to stale, got %v", got)
+	}
+}
+
+func TestNodeHealth(t *testing.T) {
+	now := time.Now().UTC()
+	recent := now.Add(-time.Second)
+	old := now.Add(-opsNodeStaleAfter - time.Second)
+	cases := []struct {
+		name     string
+		enabled  bool
+		lastSeen *time.Time
+		want     string
+	}{
+		{"disabled", false, &recent, "disabled"},
+		{"online", true, &recent, "online"},
+		{"stale", true, &old, "stale"},
+		{"unknown", true, nil, "unknown"},
+	}
+	for _, c := range cases {
+		if got := nodeHealth(c.enabled, c.lastSeen, now); got != c.want {
+			t.Fatalf("%s: nodeHealth=%q want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func cachedCPU(t *testing.T, items []map[string]any) float64 {
 	t.Helper()
 	if len(items) != 1 {

@@ -82,6 +82,11 @@ type Config struct {
 	NodeMetricDetailRetentionHours int
 	NodeProbeResultRetentionDays   int
 	OpsAlertResolvedRetentionDays  int
+	NodeJobTerminalRetentionDays   int
+	AuditLogRetentionDays          int
+	AlertSentRetentionDays         int
+	EnforcementLogRetentionDays    int
+	QuotaWindowRetentionDays       int
 	// Usage dedupe keys must outlive the longest agent replay window (26h
 	// backdate cap + disk-queue flush delay), so the floor is enforced in days.
 	UsageEventKeyRetentionDays int
@@ -176,6 +181,11 @@ func Load() Config {
 		NodeMetricDetailRetentionHours: envInt("NODE_METRIC_DETAIL_RETENTION_HOURS", 72),
 		NodeProbeResultRetentionDays:   envInt("NODE_PROBE_RESULT_RETENTION_DAYS", 30),
 		OpsAlertResolvedRetentionDays:  envInt("OPS_ALERT_RESOLVED_RETENTION_DAYS", 90),
+		NodeJobTerminalRetentionDays:   envInt("NODE_JOB_TERMINAL_RETENTION_DAYS", 7),
+		AuditLogRetentionDays:          envInt("AUDIT_LOG_RETENTION_DAYS", 90),
+		AlertSentRetentionDays:         envInt("ALERT_SENT_RETENTION_DAYS", 30),
+		EnforcementLogRetentionDays:    envInt("ENFORCEMENT_LOG_RETENTION_DAYS", 90),
+		QuotaWindowRetentionDays:       envInt("QUOTA_WINDOW_RETENTION_DAYS", 90),
 		UsageEventKeyRetentionDays:     envInt("USAGE_EVENT_KEY_RETENTION_DAYS", 14),
 		PruneEverySec:                  envInt("PRUNE_EVERY_SEC", 3600),
 

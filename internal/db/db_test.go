@@ -89,6 +89,84 @@ func TestAddColumnIfMissing_RejectsInvalidIdents(t *testing.T) {
 	}
 }
 
+func TestMigrateOldTrafficEventsWithoutSourceColumns(t *testing.T) {
+	conn, err := Open(filepath.Join(t.TempDir(), "old-traffic-events.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	// Simulate a pre-source-tracking database: traffic_events exists but has
+	// no source / source_event_id columns (they are compat-added by Migrate).
+	if _, err := conn.Exec(`
+PRAGMA foreign_keys = ON;
+CREATE TABLE users (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	username TEXT NOT NULL UNIQUE,
+	monthly_limit_bytes INTEGER NOT NULL,
+	counting_mode TEXT NOT NULL CHECK(counting_mode IN ('single','double')),
+	status TEXT NOT NULL DEFAULT 'active',
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL
+);
+CREATE TABLE traffic_events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
+	bytes INTEGER NOT NULL CHECK(bytes >= 0),
+	event_at TEXT NOT NULL
+);
+INSERT INTO users(username, monthly_limit_bytes, counting_mode, created_at, expires_at)
+VALUES ('old-user', 1000, 'double', '2026-01-01T00:00:00Z', '2026-12-31T00:00:00Z');
+INSERT INTO traffic_events(user_id, direction, bytes, event_at)
+VALUES (1, 'inbound', 100, '2026-01-01T00:00:00Z');
+`); err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+	if err := Migrate(conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, idx := range []string{"idx_traffic_events_source_at", "uniq_traffic_events_source_event"} {
+		var count int
+		if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?;`, idx).Scan(&count); err != nil {
+			t.Fatalf("query index %s: %v", idx, err)
+		}
+		if count != 1 {
+			t.Fatalf("index %s missing after migrate", idx)
+		}
+	}
+	var source string
+	if err := conn.QueryRow(`SELECT source FROM traffic_events WHERE id = 1;`).Scan(&source); err != nil {
+		t.Fatalf("read compat source column: %v", err)
+	}
+	if source != "manual" {
+		t.Fatalf("expected compat default source 'manual', got %q", source)
+	}
+}
+
+func TestMigrateFreshDBCreatesSourceIndexes(t *testing.T) {
+	t.Parallel()
+
+	conn, err := Open(filepath.Join(t.TempDir(), "fresh-indexes.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	if err := Migrate(conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, idx := range []string{"idx_traffic_events_source_at", "uniq_traffic_events_source_event"} {
+		var count int
+		if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?;`, idx).Scan(&count); err != nil {
+			t.Fatalf("query index %s: %v", idx, err)
+		}
+		if count != 1 {
+			t.Fatalf("index %s missing on fresh db", idx)
+		}
+	}
+}
+
 func TestMigrateUpgradesNodeJobsProbeKinds(t *testing.T) {
 	conn, err := Open(filepath.Join(t.TempDir(), "old-node-jobs.db"))
 	if err != nil {

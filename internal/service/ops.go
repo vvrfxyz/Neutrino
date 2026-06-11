@@ -36,6 +36,11 @@ func (s *OpsService) GetHostNetMonthlyUsage(ctx context.Context, at time.Time) (
 func (s *OpsService) BuildNodeItems(ctx context.Context) ([]map[string]any, error) {
 	if s.cache != nil {
 		if items, ok := s.cache.Get(); ok {
+			// Health is time-derived: a cached "online" item must flip to
+			// "stale" once the node stops reporting, even while other nodes
+			// keep the cache entry alive. Recompute it at read time from the
+			// item's last_seen_at instead of trusting the cached value.
+			refreshNodeItemsHealth(items, time.Now().UTC())
 			return items, nil
 		}
 	}
@@ -142,15 +147,7 @@ func (s *OpsService) buildSingleNodeItem(ctx context.Context, nodeID int64) (map
 }
 
 func (s *OpsService) buildNodeItem(n repo.Node, metrics repo.NodeRuntimeMetrics, monthly repo.NodeMonthlyUsage, jobSummary repo.NodeJobSummary, metadata repo.NodeMetadata, now time.Time) map[string]any {
-	health := "unknown"
-	switch {
-	case !n.Enabled:
-		health = "disabled"
-	case n.LastSeenAt != nil && now.Sub(*n.LastSeenAt) <= opsNodeStaleAfter:
-		health = "online"
-	case n.LastSeenAt != nil:
-		health = "stale"
-	}
+	health := nodeHealth(n.Enabled, n.LastSeenAt, now)
 
 	item := map[string]any{
 		"id":                    n.ID,
@@ -230,6 +227,31 @@ func fmtMaybeTime(t *time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func nodeHealth(enabled bool, lastSeenAt *time.Time, now time.Time) string {
+	switch {
+	case !enabled:
+		return "disabled"
+	case lastSeenAt != nil && now.Sub(*lastSeenAt) <= opsNodeStaleAfter:
+		return "online"
+	case lastSeenAt != nil:
+		return "stale"
+	}
+	return "unknown"
+}
+
+func refreshNodeItemsHealth(items []map[string]any, now time.Time) {
+	for _, item := range items {
+		enabled, _ := item["enabled"].(bool)
+		var lastSeen *time.Time
+		if raw, _ := item["last_seen_at"].(string); raw != "" {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				lastSeen = &t
+			}
+		}
+		item["health"] = nodeHealth(enabled, lastSeen, now)
+	}
 }
 
 type OpsLatestCache struct {

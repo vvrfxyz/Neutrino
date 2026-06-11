@@ -175,3 +175,43 @@ func TestProbeResultsAndCleanupOpsData(t *testing.T) {
 		t.Fatalf("unexpected cleanup counts: %+v", counts)
 	}
 }
+
+func TestCleanupOpsDataDrainsBacklogBeyondOneBatch(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	node, err := s.CreateNode(ctx, CreateNodeInput{
+		Name:     "cleanup-backlog-node",
+		CoreType: "xray",
+		Protocol: "vless_reality",
+		Host:     "cleanup-backlog.example.com",
+		Port:     443,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	old := now.AddDate(0, 0, -40)
+	const backlog = 7
+	for i := 0; i < backlog; i++ {
+		if _, err := s.InsertNodeProbeResult(ctx, node.ID, InsertNodeProbeResultInput{Kind: "probe_tcp", Target: "example.com:443", Success: true, CheckedAt: old.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatalf("insert probe %d: %v", i, err)
+		}
+	}
+	// batchSize=2 with a backlog of 7 needs 4 batches; a single call must
+	// drain the whole backlog instead of deleting one batch per prune tick.
+	counts, err := s.CleanupOpsData(ctx, now, 14, 72, 30, 30, 2)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if counts.ProbeResults != backlog {
+		t.Fatalf("expected %d probe results pruned in one call, got %d", backlog, counts.ProbeResults)
+	}
+	var remaining int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM node_probe_results WHERE node_id = ?;`, node.ID).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("expected backlog drained, %d rows remain", remaining)
+	}
+}
