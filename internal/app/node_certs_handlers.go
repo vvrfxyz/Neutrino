@@ -136,11 +136,11 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if _, err := a.store.GetNode(r.Context(), nodeID); err != nil {
+	if _, err := a.nodes().Get(r.Context(), nodeID); err != nil {
 		http.Error(w, "node not found", http.StatusNotFound)
 		return
 	}
-	if err := a.store.ValidateNodeEnrollCode(r.Context(), nodeID, req.EnrollCode); err != nil {
+	if err := a.nodes().ValidateEnrollCode(r.Context(), nodeID, req.EnrollCode); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
@@ -176,7 +176,7 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 	}
 	// Keep allowlist tight: install the new cert, consume the one-time code, and
 	// revoke any previously active certs atomically.
-	revoked, err := a.store.CompleteNodeEnroll(r.Context(), nodeID, req.EnrollCode, cert, now)
+	revoked, err := a.nodes().CompleteEnroll(r.Context(), nodeID, req.EnrollCode, cert, now)
 	if err != nil {
 		if errors.Is(err, repo.ErrEnrollCodeInvalid) {
 			http.Error(w, err.Error(), http.StatusForbidden)
@@ -185,9 +185,8 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 		http.Error(w, "enroll failed", http.StatusInternalServerError)
 		return
 	}
-	_ = a.store.InsertAuditLog(r.Context(), "node", fmt.Sprintf("%d", nodeID), "node.enroll", "node", fmt.Sprintf("%d", nodeID),
-		fmt.Sprintf(`{"ok":true,"cert_sha256":"%s","revoked_old":%d}`, certutil.CertSHA256Hex(cert), revoked),
-		a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
+	auditActionAs(a, r, "node", fmt.Sprintf("%d", nodeID), "node.enroll", "node", fmt.Sprintf("%d", nodeID),
+		map[string]any{"ok": true, "cert_sha256": certutil.CertSHA256Hex(cert), "revoked_old": revoked})
 	resp := signedCertResponse{
 		CABundlePEM: a.caBundlePEM(),
 		CertPEM:     certutil.CertToPEM(cert),
@@ -240,7 +239,7 @@ func (a *App) handleAPINodeCertRenew(w http.ResponseWriter, r *http.Request, nod
 		http.Error(w, "sign failed", http.StatusInternalServerError)
 		return
 	}
-	revoked, err := a.store.RenewNodeCertPin(r.Context(), nodeID, "agent_client", cert, now)
+	revoked, err := a.nodes().RenewCertPin(r.Context(), nodeID, "agent_client", cert, now)
 	if err != nil {
 		http.Error(w, "renew failed", http.StatusInternalServerError)
 		return
@@ -286,14 +285,11 @@ func (a *App) handleAPINodeCertRevoke(w http.ResponseWriter, r *http.Request, no
 		req.CertSHA256 = ""
 	}
 
-	n, err := a.store.RevokeNodeCertPin(r.Context(), nodeID, req.CertSHA256, req.Reason)
+	n, err := a.nodes().RevokeCertPin(r.Context(), nodeID, req.CertSHA256, req.Reason)
 	if err != nil {
 		http.Error(w, "revoke failed", http.StatusBadRequest)
 		return
 	}
-	if act := actorFromRequest(a, r); act.typ != "" {
-		detail, _ := json.Marshal(map[string]any{"cert_sha256": strings.TrimSpace(req.CertSHA256), "reason": strings.TrimSpace(req.Reason), "revoked": n})
-		_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.cert.revoke", "node", fmt.Sprintf("%d", nodeID), string(detail), a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-	}
+	auditAction(a, r, "node.cert.revoke", "node", fmt.Sprintf("%d", nodeID), map[string]any{"cert_sha256": strings.TrimSpace(req.CertSHA256), "reason": strings.TrimSpace(req.Reason), "revoked": n})
 	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "revoked": n})
 }

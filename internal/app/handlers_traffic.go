@@ -222,7 +222,7 @@ func (a *App) handleAPITrafficSummaryV1(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	summary, err := a.store.GetTrafficSummary(r.Context(), rangeParam, nodeID, userID)
+	summary, err := a.usage().TrafficSummary(r.Context(), rangeParam, nodeID, userID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("query failed: %v", err), http.StatusInternalServerError)
 		return

@@ -52,3 +52,15 @@ func (s *UsageService) RecordBatch(ctx context.Context, batch []repo.UsageInput)
 	}
 	return results, nil
 }
+
+func (s *UsageService) TrafficSummary(ctx context.Context, rangeParam string, nodeID, userID *int64) (repo.TrafficSummary, error) {
+	return s.store.GetTrafficSummary(ctx, rangeParam, nodeID, userID)
+}
+
+func (s *UsageService) TrafficSeries(ctx context.Context, userID int64, period string) ([]repo.TrafficBucket, error) {
+	return s.store.GetTrafficSeries(ctx, userID, period)
+}
+
+func (s *UsageService) UserEvents(ctx context.Context, userID int64, limit int, source string, nodeID *int64) ([]repo.UserEvent, error) {
+	return s.store.ListUserEventsFiltered(ctx, userID, limit, source, nodeID)
+}

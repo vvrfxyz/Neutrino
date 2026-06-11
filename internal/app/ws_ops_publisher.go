@@ -104,7 +104,7 @@ func (a *App) buildOpsSnapshot(ctx context.Context) (opsSnapshot, error) {
 	if onlines, err := a.ops().ListOnlineUsers(ctx, a.cfg.OnlineDisplayWindowSec); err == nil && len(onlines) > 0 {
 		out.Online = onlines
 	}
-	if alerts, err := a.store.ListOpsAlerts(ctx, "active", 200); err == nil && len(alerts) > 0 {
+	if alerts, err := a.alerts().List(ctx, "active", 200); err == nil && len(alerts) > 0 {
 		out.Alerts = alerts
 	}
 

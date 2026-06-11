@@ -42,7 +42,7 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 
 	// Best-effort observed IP and reported proxy params (for subscription rendering).
 	if ip := a.clientIPFromRequest(r); ip != "" {
-		_ = a.store.UpdateNodeObservedIP(r.Context(), nodeID, ip)
+		_ = a.nodes().UpdateObservedIP(r.Context(), nodeID, ip)
 	}
 	var rep repo.NodeReportInput
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "application/json") {
@@ -54,7 +54,7 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 		// If no JSON, keep backward compatibility (heartbeat with empty body).
 		_ = r.Body.Close()
 	}
-	reportedAt, err := a.store.ApplyNodeReportLatest(r.Context(), nodeID, rep)
+	reportedAt, err := a.nodes().ApplyReport(r.Context(), nodeID, rep)
 	if err != nil {
 		http.Error(w, "apply node report failed", http.StatusInternalServerError)
 		return
@@ -64,7 +64,7 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 	}
 
 	receivedAt := time.Now().UTC()
-	_ = a.store.UpdateNodeAgentStatus(r.Context(), nodeID, &receivedAt, "")
+	_ = a.nodes().UpdateAgentStatus(r.Context(), nodeID, &receivedAt, "")
 	_ = a.ops().RefreshNode(r.Context(), nodeID)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
@@ -107,11 +107,11 @@ func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nod
 		return
 	}
 	if ip := a.clientIPFromRequest(r); ip != "" {
-		_ = a.store.UpdateNodeObservedIP(r.Context(), nodeID, ip)
+		_ = a.nodes().UpdateObservedIP(r.Context(), nodeID, ip)
 	}
 	// Treat claim polling as heartbeat even when no job is returned.
 	now := time.Now().UTC()
-	_ = a.store.UpdateNodeAgentStatus(r.Context(), nodeID, &now, "")
+	_ = a.nodes().UpdateAgentStatus(r.Context(), nodeID, &now, "")
 	waitSec := int64(25)
 	if v := strings.TrimSpace(r.URL.Query().Get("wait")); v != "" {
 		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
@@ -127,7 +127,7 @@ func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nod
 
 	deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
 	for {
-		node, err := a.store.GetNode(r.Context(), nodeID)
+		node, err := a.nodes().Get(r.Context(), nodeID)
 		if err != nil {
 			http.Error(w, "claim failed", http.StatusInternalServerError)
 			return
@@ -136,14 +136,14 @@ func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nod
 		if !node.Enabled {
 			allowedKinds = []string{"users_sync"}
 		}
-		job, ok, err := a.store.ClaimNextNodeJobForNodeKinds(r.Context(), nodeID, allowedKinds)
+		job, ok, err := a.nodes().ClaimNextJob(r.Context(), nodeID, allowedKinds)
 		if err != nil {
 			http.Error(w, "claim failed", http.StatusInternalServerError)
 			return
 		}
 		if ok {
 			now = time.Now().UTC()
-			_ = a.store.UpdateNodeAgentStatus(r.Context(), nodeID, &now, "")
+			_ = a.nodes().UpdateAgentStatus(r.Context(), nodeID, &now, "")
 			_ = a.ops().RefreshNode(r.Context(), nodeID)
 			auditAction(a, r, "node.job.claim", "node_job", fmt.Sprintf("%d", job.ID), map[string]any{
 				"node_id":         nodeID,
@@ -286,7 +286,7 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 			resultJSON = string(b)
 		}
 	}
-	final, err := a.store.FinishNodeJobForNode(r.Context(), nodeID, jobID, repo.FinishNodeJobInput{
+	final, err := a.nodes().FinishJob(r.Context(), nodeID, jobID, repo.FinishNodeJobInput{
 		Status:      status,
 		Retryable:   req.Retryable,
 		HTTPStatus:  req.HTTPStatus,
@@ -308,7 +308,7 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 		return
 	}
 
-	job, ok, _ := a.store.GetNodeJob(r.Context(), jobID)
+	job, ok, _ := a.nodes().GetJob(r.Context(), jobID)
 	if ok {
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		if strings.HasPrefix(job.Kind, "probe_") {
@@ -342,7 +342,7 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 					success = status == "succeeded"
 				}
 				sourceJobID := jobID
-				_, _ = a.store.InsertNodeProbeResult(r.Context(), nodeID, repo.InsertNodeProbeResultInput{
+				_, _ = a.nodes().InsertProbeResult(r.Context(), nodeID, repo.InsertNodeProbeResultInput{
 					Kind:        kind,
 					Target:      target,
 					Success:     success,
@@ -352,22 +352,22 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 					CheckedAt:   checkedAt,
 					SourceJobID: &sourceJobID,
 				})
-				_ = a.syncProbeOpsAlert(r.Context(), nodeID, kind, target, success, defaultString(result.Error, req.Error), checkedAt)
+				_ = a.alerts().SyncProbeAlert(r.Context(), nodeID, kind, target, success, defaultString(result.Error, req.Error), checkedAt)
 			}
 		}
 		if status == "succeeded" && strings.TrimSpace(req.AppliedVersion) != "" {
 			switch job.Kind {
 			case "users_sync":
-				_ = a.store.SetNodeAppliedUsersVersion(r.Context(), nodeID, req.AppliedVersion)
+				_ = a.nodes().SetAppliedUsersVersion(r.Context(), nodeID, req.AppliedVersion)
 			case "xray_apply":
-				_ = a.store.SetNodeAppliedXrayVersion(r.Context(), nodeID, req.AppliedVersion)
+				_ = a.nodes().SetAppliedXrayVersion(r.Context(), nodeID, req.AppliedVersion)
 				if managedXraySuccessNeedsUsersRepair(job.Kind, req.ResultJSON) {
 					if err := a.nodes().EnqueueFullUsersSyncForNode(r.Context(), nodeID, "xray_apply_followup"); err != nil {
 						log.Printf("enqueue users_sync xray_apply follow-up node=%d: %v", nodeID, err)
 					}
 				}
 			case "xray_rollback":
-				_ = a.store.MarkNodeXrayRolledBack(r.Context(), nodeID, req.AppliedVersion)
+				_ = a.nodes().MarkXrayRolledBack(r.Context(), nodeID, req.AppliedVersion)
 				if managedXraySuccessNeedsUsersRepair(job.Kind, req.ResultJSON) {
 					if err := a.nodes().EnqueueFullUsersSyncForNode(r.Context(), nodeID, "xray_rollback_followup"); err != nil {
 						log.Printf("enqueue users_sync xray_rollback follow-up node=%d: %v", nodeID, err)
@@ -383,14 +383,14 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 			}
 		}
 		if status == "succeeded" {
-			_ = a.syncNodeJobOpsAlert(r.Context(), nodeID, job.Kind, "succeeded", "", time.Now().UTC())
+			_ = a.alerts().SyncNodeJobAlert(r.Context(), nodeID, job.Kind, "succeeded", "", time.Now().UTC())
 		} else {
 			kind := "retryable"
 			if !req.Retryable {
 				kind = "permanent"
 			}
-			_ = a.store.SetNodeJobError(r.Context(), nodeID, job.Kind, kind, summarizeNodeJobFailure(req.Error, req.ResultJSON))
-			_ = a.syncNodeJobOpsAlert(r.Context(), nodeID, job.Kind, final, summarizeNodeJobFailure(req.Error, req.ResultJSON), time.Now().UTC())
+			_ = a.nodes().SetJobError(r.Context(), nodeID, job.Kind, kind, summarizeNodeJobFailure(req.Error, req.ResultJSON))
+			_ = a.alerts().SyncNodeJobAlert(r.Context(), nodeID, job.Kind, final, summarizeNodeJobFailure(req.Error, req.ResultJSON), time.Now().UTC())
 		}
 	}
 
@@ -408,7 +408,7 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 func (a *App) handleAPINodeMetadata(w http.ResponseWriter, r *http.Request, nodeID int64) {
 	switch r.Method {
 	case http.MethodGet:
-		item, ok, err := a.store.GetNodeMetadata(r.Context(), nodeID)
+		item, ok, err := a.nodes().GetMetadata(r.Context(), nodeID)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -426,12 +426,12 @@ func (a *App) handleAPINodeMetadata(w http.ResponseWriter, r *http.Request, node
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		if err := a.store.UpsertNodeMetadata(r.Context(), nodeID, in); err != nil {
+		if err := a.nodes().UpsertMetadata(r.Context(), nodeID, in); err != nil {
 			http.Error(w, "metadata update failed", http.StatusBadRequest)
 			return
 		}
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
-		item, _, _ := a.store.GetNodeMetadata(r.Context(), nodeID)
+		item, _, _ := a.nodes().GetMetadata(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -459,7 +459,7 @@ func (a *App) handleAPINodeProbes(w http.ResponseWriter, r *http.Request, nodeID
 		return
 	}
 	body, _ := json.Marshal(req.Payload)
-	jobID, enqueued, err := a.store.EnqueueNodeJob(r.Context(), nodeID, kind, "", string(body), probeTimeoutSec(req.Payload.TimeoutMS), probe.CorrelationID(kind, req.Payload))
+	jobID, enqueued, err := a.nodes().EnqueueProbeJob(r.Context(), nodeID, kind, string(body), probeTimeoutSec(req.Payload.TimeoutMS), probe.CorrelationID(kind, req.Payload))
 	if err != nil {
 		http.Error(w, "enqueue probe failed", http.StatusBadRequest)
 		return
@@ -513,9 +513,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		if act := actorFromRequest(a, r); act.typ != "" {
-			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.enable", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-		}
+		auditAction(a, r, "node.enable", "node", fmt.Sprintf("%d", nodeID), nil)
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
@@ -525,9 +523,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		if act := actorFromRequest(a, r); act.typ != "" {
-			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.disable", "node", fmt.Sprintf("%d", nodeID), "", a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-		}
+		auditAction(a, r, "node.disable", "node", fmt.Sprintf("%d", nodeID), nil)
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
@@ -562,7 +558,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(parts) == 2 && parts[1] == "probe-results" && r.Method == http.MethodGet {
-		items, err := a.store.ListNodeProbeResults(r.Context(), nodeID, 100)
+		items, err := a.nodes().ListProbeResults(r.Context(), nodeID, 100)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -573,7 +569,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 	if len(parts) == 2 && parts[1] == "metrics" && r.Method == http.MethodGet {
 		rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
 		step := strings.TrimSpace(r.URL.Query().Get("step"))
-		items, err := a.store.ListNodeMetricSeries(r.Context(), nodeID, rangeName, step, time.Now().UTC())
+		items, err := a.nodes().ListMetricSeries(r.Context(), nodeID, rangeName, step, time.Now().UTC())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -588,7 +584,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(parts) == 3 && parts[1] == "metric-details" && parts[2] == "latest" && r.Method == http.MethodGet {
-		item, ok, err := a.store.GetLatestNodeMetricDetails(r.Context(), nodeID)
+		item, ok, err := a.nodes().GetLatestMetricDetails(r.Context(), nodeID)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -601,7 +597,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(parts) == 3 && parts[1] == "static-facts" && parts[2] == "latest" && r.Method == http.MethodGet {
-		item, ok, err := a.store.GetLatestNodeStaticFacts(r.Context(), nodeID)
+		item, ok, err := a.nodes().GetLatestStaticFacts(r.Context(), nodeID)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -614,7 +610,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(parts) == 3 && parts[1] == "static-facts" && parts[2] == "history" && r.Method == http.MethodGet {
-		items, err := a.store.ListNodeStaticFacts(r.Context(), nodeID, 100)
+		items, err := a.nodes().ListStaticFacts(r.Context(), nodeID, 100)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -642,10 +638,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 			http.Error(w, err.Error(), status)
 			return
 		}
-		if act := actorFromRequest(a, r); act.typ != "" {
-			detail, _ := json.Marshal(map[string]any{"desired_version": result.DesiredVersion, "job_id": result.JobID, "enqueued": result.Enqueued})
-			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.xray.deploy", "node", fmt.Sprintf("%d", nodeID), string(detail), a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-		}
+		auditAction(a, r, "node.xray.deploy", "node", fmt.Sprintf("%d", nodeID), map[string]any{"desired_version": result.DesiredVersion, "job_id": result.JobID, "enqueued": result.Enqueued})
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued, "desired_version": result.DesiredVersion})
 		return
 	}
@@ -683,10 +676,7 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 			http.Error(w, err.Error(), status)
 			return
 		}
-		if act := actorFromRequest(a, r); act.typ != "" {
-			detail, _ := json.Marshal(map[string]any{"job_id": result.JobID, "enqueued": result.Enqueued})
-			_ = a.store.InsertAuditLog(r.Context(), act.typ, act.id, "node.xray.rollback", "node", fmt.Sprintf("%d", nodeID), string(detail), a.clientIPFromRequest(r), r.UserAgent(), requestIDFromContext(r.Context()))
-		}
+		auditAction(a, r, "node.xray.rollback", "node", fmt.Sprintf("%d", nodeID), map[string]any{"job_id": result.JobID, "enqueued": result.Enqueued})
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued})
 		return
 	}

@@ -61,7 +61,7 @@ func (a *App) handleNodeDeployRotate(w http.ResponseWriter, r *http.Request, nod
 	if ttlMin <= 0 {
 		ttlMin = 10
 	}
-	if _, err := a.store.CreateNodeEnrollCode(r.Context(), nodeID, time.Duration(ttlMin)*time.Minute); err != nil {
+	if _, err := a.nodes().CreateEnrollCode(r.Context(), nodeID, time.Duration(ttlMin)*time.Minute); err != nil {
 		http.Error(w, "create enroll code failed", http.StatusInternalServerError)
 		return
 	}
@@ -69,13 +69,13 @@ func (a *App) handleNodeDeployRotate(w http.ResponseWriter, r *http.Request, nod
 }
 
 func (a *App) handleNodeDeployPage(w http.ResponseWriter, r *http.Request, nodeID int64) {
-	node, err := a.store.GetNode(r.Context(), nodeID)
+	node, err := a.nodes().Get(r.Context(), nodeID)
 	if err != nil {
 		http.Error(w, "node not found", http.StatusNotFound)
 		return
 	}
 
-	code, ok, err := a.store.GetNodeEnrollCode(r.Context(), nodeID)
+	code, ok, err := a.nodes().GetEnrollCode(r.Context(), nodeID)
 	if err != nil {
 		http.Error(w, "get enroll code failed", http.StatusInternalServerError)
 		return
@@ -116,8 +116,8 @@ func (a *App) handleNodeDeployPage(w http.ResponseWriter, r *http.Request, nodeI
 		script = buildNodeDeployScript(deployDir, panelPublic, panelMTLS, nodeID, code.Code, agentImage, xrayImage, vlessPort)
 	}
 
-	pins, _ := a.store.ListNodeCertPins(r.Context(), nodeID, 50)
-	jobs, _ := a.store.ListNodeJobs(r.Context(), nodeID, 50)
+	pins, _ := a.nodes().ListCertPins(r.Context(), nodeID, 50)
+	jobs, _ := a.nodes().ListJobs(r.Context(), nodeID, 50)
 
 	// Parse node.extra_json for managed xray config (best-effort; keep page usable on errors).
 	var managedXray nodeExtraXray

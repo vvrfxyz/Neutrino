@@ -1,4 +1,4 @@
-package app
+package service
 
 import (
 	"context"
@@ -13,13 +13,13 @@ import (
 
 func TestSyncProbeOpsAlertCreatesAndResolves(t *testing.T) {
 	ctx := context.Background()
-	a, nodeID := newOpsAlertTestApp(t)
+	svc, store, nodeID := newAlertTestService(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	if err := a.syncProbeOpsAlert(ctx, nodeID, "probe_tcp", "example.com:443", false, "timeout", now); err != nil {
+	if err := svc.SyncProbeAlert(ctx, nodeID, "probe_tcp", "example.com:443", false, "timeout", now); err != nil {
 		t.Fatalf("sync failed probe alert: %v", err)
 	}
-	alerts, err := a.store.ListOpsAlerts(ctx, "active", 10)
+	alerts, err := store.ListOpsAlerts(ctx, "active", 10)
 	if err != nil {
 		t.Fatalf("list active: %v", err)
 	}
@@ -27,10 +27,10 @@ func TestSyncProbeOpsAlertCreatesAndResolves(t *testing.T) {
 		t.Fatalf("active probe alert missing: %+v", alerts)
 	}
 
-	if err := a.syncProbeOpsAlert(ctx, nodeID, "probe_tcp", "example.com:443", true, "", now.Add(time.Minute)); err != nil {
+	if err := svc.SyncProbeAlert(ctx, nodeID, "probe_tcp", "example.com:443", true, "", now.Add(time.Minute)); err != nil {
 		t.Fatalf("sync recovered probe alert: %v", err)
 	}
-	alerts, err = a.store.ListOpsAlerts(ctx, "active", 10)
+	alerts, err = store.ListOpsAlerts(ctx, "active", 10)
 	if err != nil {
 		t.Fatalf("list active after recovery: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestSyncProbeOpsAlertCreatesAndResolves(t *testing.T) {
 
 func TestSyncNodeOpsAlertsCreatesAndResolvesHealthAlerts(t *testing.T) {
 	ctx := context.Background()
-	a, nodeID := newOpsAlertTestApp(t)
+	svc, store, nodeID := newAlertTestService(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
 	stale := map[string]any{
@@ -50,10 +50,10 @@ func TestSyncNodeOpsAlertsCreatesAndResolvesHealthAlerts(t *testing.T) {
 		"enabled": true,
 		"health":  "stale",
 	}
-	if err := a.syncNodeOpsAlerts(ctx, stale, now); err != nil {
+	if err := svc.SyncNodeAlerts(ctx, stale, now); err != nil {
 		t.Fatalf("sync stale alerts: %v", err)
 	}
-	alerts, err := a.store.ListOpsAlerts(ctx, "active", 10)
+	alerts, err := store.ListOpsAlerts(ctx, "active", 10)
 	if err != nil {
 		t.Fatalf("list active stale: %v", err)
 	}
@@ -74,10 +74,10 @@ func TestSyncNodeOpsAlertsCreatesAndResolvesHealthAlerts(t *testing.T) {
 			"queue_bytes":        int64(0),
 		},
 	}
-	if err := a.syncNodeOpsAlerts(ctx, healthy, now.Add(time.Minute)); err != nil {
+	if err := svc.SyncNodeAlerts(ctx, healthy, now.Add(time.Minute)); err != nil {
 		t.Fatalf("sync healthy alerts: %v", err)
 	}
-	alerts, err = a.store.ListOpsAlerts(ctx, "active", 10)
+	alerts, err = store.ListOpsAlerts(ctx, "active", 10)
 	if err != nil {
 		t.Fatalf("list active healthy: %v", err)
 	}
@@ -88,10 +88,10 @@ func TestSyncNodeOpsAlertsCreatesAndResolvesHealthAlerts(t *testing.T) {
 
 func TestSyncNodeOpsAlertsClearsGeneratedAlertsWhenDisabled(t *testing.T) {
 	ctx := context.Background()
-	a, nodeID := newOpsAlertTestApp(t)
+	svc, store, nodeID := newAlertTestService(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	if err := a.syncNodeOpsAlerts(ctx, map[string]any{
+	if err := svc.SyncNodeAlerts(ctx, map[string]any{
 		"id":      nodeID,
 		"name":    "edge-a",
 		"enabled": true,
@@ -108,7 +108,7 @@ func TestSyncNodeOpsAlertsClearsGeneratedAlertsWhenDisabled(t *testing.T) {
 	}, now); err != nil {
 		t.Fatalf("sync active alerts: %v", err)
 	}
-	alerts, err := a.store.ListOpsAlerts(ctx, "active", 20)
+	alerts, err := store.ListOpsAlerts(ctx, "active", 20)
 	if err != nil {
 		t.Fatalf("list active before disable: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSyncNodeOpsAlertsClearsGeneratedAlertsWhenDisabled(t *testing.T) {
 		t.Fatalf("expected active generated alerts before disable")
 	}
 
-	if err := a.syncNodeOpsAlerts(ctx, map[string]any{
+	if err := svc.SyncNodeAlerts(ctx, map[string]any{
 		"id":      nodeID,
 		"name":    "edge-a",
 		"enabled": false,
@@ -124,7 +124,7 @@ func TestSyncNodeOpsAlertsClearsGeneratedAlertsWhenDisabled(t *testing.T) {
 	}, now.Add(time.Minute)); err != nil {
 		t.Fatalf("sync disabled alerts: %v", err)
 	}
-	alerts, err = a.store.ListOpsAlerts(ctx, "active", 20)
+	alerts, err = store.ListOpsAlerts(ctx, "active", 20)
 	if err != nil {
 		t.Fatalf("list active after disable: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestSyncNodeOpsAlertsClearsGeneratedAlertsWhenDisabled(t *testing.T) {
 
 func TestSyncNodeOpsAlertsRaisesAndResolvesUsageQuarantine(t *testing.T) {
 	ctx := context.Background()
-	a, nodeID := newOpsAlertTestApp(t)
+	svc, store, nodeID := newAlertTestService(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
 	quarantined := map[string]any{
@@ -152,10 +152,10 @@ func TestSyncNodeOpsAlertsRaisesAndResolvesUsageQuarantine(t *testing.T) {
 			"quarantined_batches": int64(2),
 		},
 	}
-	if err := a.syncNodeOpsAlerts(ctx, quarantined, now); err != nil {
+	if err := svc.SyncNodeAlerts(ctx, quarantined, now); err != nil {
 		t.Fatalf("sync quarantined alerts: %v", err)
 	}
-	alerts, err := a.store.ListOpsAlerts(ctx, "active", 10)
+	alerts, err := store.ListOpsAlerts(ctx, "active", 10)
 	if err != nil {
 		t.Fatalf("list active: %v", err)
 	}
@@ -177,10 +177,10 @@ func TestSyncNodeOpsAlertsRaisesAndResolvesUsageQuarantine(t *testing.T) {
 			"quarantined_batches": int64(0),
 		},
 	}
-	if err := a.syncNodeOpsAlerts(ctx, cleared, now.Add(time.Minute)); err != nil {
+	if err := svc.SyncNodeAlerts(ctx, cleared, now.Add(time.Minute)); err != nil {
 		t.Fatalf("sync cleared alerts: %v", err)
 	}
-	alerts, err = a.store.ListOpsAlerts(ctx, "active", 10)
+	alerts, err = store.ListOpsAlerts(ctx, "active", 10)
 	if err != nil {
 		t.Fatalf("list active after clear: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSyncNodeOpsAlertsRaisesAndResolvesUsageQuarantine(t *testing.T) {
 	}
 }
 
-func newOpsAlertTestApp(t *testing.T) (*App, int64) {
+func newAlertTestService(t *testing.T) (*AlertService, *repo.Store, int64) {
 	t.Helper()
 	conn, err := db.Open(filepath.Join(t.TempDir(), "ops-alerts.db"))
 	if err != nil {
@@ -211,5 +211,5 @@ func newOpsAlertTestApp(t *testing.T) (*App, int64) {
 	if err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	return &App{store: store}, node.ID
+	return NewAlertService(store), store, node.ID
 }
