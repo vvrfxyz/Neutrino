@@ -13,6 +13,8 @@ singbox_users.json
 mtls/
 mtls-out*/
 mtls-out-*/
+# Cert *scripts* are source, only generated cert material is ignored.
+!scripts/mtls/
 .sisyphus/
 .buildx-cache/
 .claude/
