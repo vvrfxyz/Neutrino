@@ -17,16 +17,27 @@ import (
 	"neutrino/internal/subscription"
 )
 
+// UserAdmin is the slice of service.UserService the bot's admin commands
+// need. Mutations must go through the service (not repo.Store) so status
+// changes and quota resets trigger node users-sync — otherwise /disable
+// leaves the user connected on every node until the next full reconcile.
+type UserAdmin interface {
+	SetStatus(ctx context.Context, userID int64, status string) (repo.User, error)
+	ResetQuota(ctx context.Context, userID int64, reason string) error
+}
+
 type TelegramBot struct {
 	cfg        config.Config
 	store      *repo.Store
+	users      UserAdmin
 	httpClient *http.Client
 }
 
-func New(cfg config.Config, store *repo.Store) *TelegramBot {
+func New(cfg config.Config, store *repo.Store, users UserAdmin) *TelegramBot {
 	return &TelegramBot{
 		cfg:   cfg,
 		store: store,
+		users: users,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -215,7 +226,7 @@ func (b *TelegramBot) handleCommand(ctx context.Context, chatID, fromUserID int6
 			if err != nil {
 				return "user not found"
 			}
-			if _, err := b.store.SetUserStatus(ctx, u.ID, "active"); err != nil {
+			if _, err := b.users.SetStatus(ctx, u.ID, "active"); err != nil {
 				return "enable failed"
 			}
 			return "ok"
@@ -227,7 +238,7 @@ func (b *TelegramBot) handleCommand(ctx context.Context, chatID, fromUserID int6
 			if err != nil {
 				return "user not found"
 			}
-			if _, err := b.store.SetUserStatus(ctx, u.ID, "disabled"); err != nil {
+			if _, err := b.users.SetStatus(ctx, u.ID, "disabled"); err != nil {
 				return "disable failed"
 			}
 			return "ok"
@@ -239,7 +250,7 @@ func (b *TelegramBot) handleCommand(ctx context.Context, chatID, fromUserID int6
 			if err != nil {
 				return "user not found"
 			}
-			if err := b.store.ResetUserQuota(ctx, u.ID, "telegram_admin"); err != nil {
+			if err := b.users.ResetQuota(ctx, u.ID, "telegram_admin"); err != nil {
 				return "quota reset failed"
 			}
 			return "ok"

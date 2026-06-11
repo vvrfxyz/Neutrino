@@ -253,11 +253,13 @@ func New(cfg config.Config, store *repo.Store) *App {
 		pages:       pages,
 		notifier:    notify.New(cfg),
 		hostMonitor: monitor.NewHostMonitor(1440, cfg.HostProcPath),
-		telegram:    bot.New(cfg, store),
 		rl:          newRateLimiter(),
 		csrfSecret:  secret,
 	}
 	a.userService = service.NewUserService(store, a)
+	// The bot mutates users through UserService so admin commands trigger
+	// node users-sync; it must be constructed after the service.
+	a.telegram = bot.New(cfg, store, a.userService)
 	a.usageService = service.NewUsageService(store, cfg.OnlineWindowSec, cfg.IPLimitStrikes, a)
 	a.nodeService = service.NewNodeService(store, cfg.NodeStaleDeleteAfterSec, a)
 	a.opsService = service.NewOpsService(store)
