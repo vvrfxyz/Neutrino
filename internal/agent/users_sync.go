@@ -18,16 +18,8 @@ type UserSyncItem struct {
 	Status string `json:"status"`
 }
 
-type userSyncApplier interface {
-	UpsertUser(ctx context.Context, email, uuid string) error
-	RemoveUser(ctx context.Context, email string) error
-}
-
-// xrayUptimeProber is the optional runtime capability the restart guard uses.
-// The production xrayapi.Client implements it; test fakes need not.
-type xrayUptimeProber interface {
-	SysUptime(ctx context.Context) (uptime uint32, ok bool, err error)
-}
+// The kernel boundary interfaces this file used to define (UserApplier,
+// UptimeProber) now live in kernel.go (module 6).
 
 const (
 	xrayGuardInterval = 15 * time.Second
@@ -50,7 +42,7 @@ const (
 // is re-added under xrayUsersMu.
 func (a *Agent) startXrayRuntimeGuard(ctx context.Context) {
 	g := &xrayRuntimeGuard{agent: a}
-	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+	g.prober, g.canProbe = a.xray.(UptimeProber)
 
 	g.attempt(ctx, "startup")
 	ticker := time.NewTicker(xrayGuardInterval)
@@ -67,7 +59,7 @@ func (a *Agent) startXrayRuntimeGuard(ctx context.Context) {
 
 type xrayRuntimeGuard struct {
 	agent      *Agent
-	prober     xrayUptimeProber
+	prober     UptimeProber
 	canProbe   bool
 	restored   bool
 	lastUptime uint32
@@ -547,7 +539,7 @@ func (a *Agent) execUsersSyncDelta(ctx context.Context, payload usersync.JobPayl
 	}, nil
 }
 
-func applyUsersSync(ctx context.Context, xray userSyncApplier, prevUsers []UserSyncItem, currentUsers []UserSyncItem) (synced int, removed int, err error) {
+func applyUsersSync(ctx context.Context, xray UserApplier, prevUsers []UserSyncItem, currentUsers []UserSyncItem) (synced int, removed int, err error) {
 	failures := make([]string, 0, 4)
 	recordFailure := func(action string, email string, err error) {
 		log.Printf("%s user %s failed: %v", action, email, err)
@@ -610,7 +602,7 @@ func applyUsersSync(ctx context.Context, xray userSyncApplier, prevUsers []UserS
 	return synced, removed, nil
 }
 
-func restoreActiveUsers(ctx context.Context, xray userSyncApplier, users []UserSyncItem) (synced int, err error) {
+func restoreActiveUsers(ctx context.Context, xray UserApplier, users []UserSyncItem) (synced int, err error) {
 	failures := make([]string, 0, 4)
 	for _, u := range users {
 		email := strings.TrimSpace(u.Email)

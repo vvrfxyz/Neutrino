@@ -15,7 +15,8 @@ import (
 
 type Agent struct {
 	cfg            Config
-	xray           xrayRuntimeClient
+	xray           RuntimeClient
+	config         ConfigApplier
 	panel          *PanelClient
 	panelMu        sync.RWMutex
 	state          *StateStore
@@ -58,12 +59,6 @@ type Agent struct {
 type StatEntry struct {
 	Uplink   int64 `json:"uplink"`
 	Downlink int64 `json:"downlink"`
-}
-
-type xrayRuntimeClient interface {
-	userSyncApplier
-	PullUserTraffic(ctx context.Context, email string) (uplink, downlink int64, err error)
-	PullOnlineIPs(ctx context.Context, email string) ([]xrayapi.OnlineIP, error)
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -127,6 +122,8 @@ func New(cfg Config) (*Agent, error) {
 		realityPath:    filepath.Join(filepath.Dir(cfg.StatePath), "reality.json"),
 		startedAt:      time.Now().UTC(),
 	}
+	// Kernel boundary wiring (module 6): xray is today's only core.
+	a.config = xrayConfigApplier{a: a}
 	a.setPanelClient(panel)
 
 	// Ensure REALITY key material exists locally (private key stays on node; panel only receives public params).

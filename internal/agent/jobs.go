@@ -98,7 +98,7 @@ func (a *Agent) execJob(ctx context.Context, job *NodeJob) jobResult {
 		if err := json.Unmarshal([]byte(job.PayloadJSON), &req); err != nil {
 			return jobResult{Status: "failed", Retryable: false, Error: "invalid payload_json"}
 		}
-		out, err := a.execXrayApply(runCtx, req)
+		out, err := a.configApplier().ApplyConfig(runCtx, req)
 		if err != nil {
 			return jobErr(err)
 		}
@@ -108,7 +108,7 @@ func (a *Agent) execJob(ctx context.Context, job *NodeJob) jobResult {
 		if err := json.Unmarshal([]byte(job.PayloadJSON), &req); err != nil {
 			return jobResult{Status: "failed", Retryable: false, Error: "invalid payload_json"}
 		}
-		out, err := a.execXrayRollback(runCtx, req)
+		out, err := a.configApplier().RollbackConfig(runCtx, req)
 		if err != nil {
 			return jobErr(err)
 		}

@@ -98,12 +98,12 @@ Scope:
 
 ## Recommended Order
 
-1. Subscription Enhancement.
-2. Online Status.
-3. User Sync.
-4. Managed Xray Config Enhancement.
-5. Node Operations CLI.
-6. Kernel Boundary.
+1. Subscription Enhancement. — **partially done** (renderer registry shipped; aliases/query params/capability filtering remain)
+2. Online Status. — **done**
+3. User Sync. — **done** (`internal/usersync`, PR #10)
+4. Managed Xray Config Enhancement. — **done** (`internal/xraycfg` + deploy-page editors/preview, PR #11)
+5. Node Operations CLI. — **done** (`cmd/neutrinoctl`, PR #11)
+6. Kernel Boundary. — **done** (`internal/agent/kernel.go`: UserApplier / TrafficSampler / UptimeProber / RuntimeClient / ConfigApplier)
 
 Each module should be implemented as independently testable steps, with focused
 tests and explicit failure behavior. Do not add fallback paths that hide broken
