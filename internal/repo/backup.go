@@ -10,7 +10,7 @@ func (s *Store) InsertBackupRecord(ctx context.Context, rec BackupRecord) (Backu
 	if rec.Storage == "" {
 		rec.Storage = "local"
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	var id int64
 	err := s.db.QueryRowContext(ctx, `
 INSERT INTO backups(file_path, size_bytes, sha256, storage, object_key, created_at)

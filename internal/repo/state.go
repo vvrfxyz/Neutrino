@@ -24,7 +24,7 @@ WHERE key = ?;
 }
 
 func (s *Store) SetXrayState(ctx context.Context, key, value string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO xray_state(key, value, updated_at)
 VALUES (?, ?, ?)

@@ -108,7 +108,7 @@ LIMIT 1;
 		return 0, false, err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	// If a pending job exists, overwrite it with the latest desired_version and payload.
 	var pendingID int64
@@ -293,7 +293,7 @@ WHERE node_id = ? AND status = 'pending'
 		return NodeJob{}, false, err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	res, err := tx.ExecContext(ctx, `
 UPDATE node_jobs
 SET status = 'running', attempts = attempts + 1, started_at = ?, finished_at = NULL, http_status = NULL, result_json = NULL, last_error = NULL
@@ -462,7 +462,7 @@ func finishNodeJobExec(ctx context.Context, tx usersSyncQuerier, nodeID int64, j
 	if in.MaxAttempts <= 0 {
 		in.MaxAttempts = 5
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	// Determine current attempts to decide requeue. Consistent inside the tx.
 	// A finish request is only valid for the running attempt the agent claimed.

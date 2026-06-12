@@ -3,7 +3,6 @@ package repo
 import (
 	"context"
 	"fmt"
-	"time"
 )
 
 func (s *Store) SetNodeEnabled(ctx context.Context, nodeID int64, enabled bool) error {
@@ -14,7 +13,7 @@ func (s *Store) SetNodeEnabled(ctx context.Context, nodeID int64, enabled bool) 
 	if enabled {
 		v = 1
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	res, err := s.db.ExecContext(ctx, `
 UPDATE nodes
 SET enabled = ?, updated_at = ?

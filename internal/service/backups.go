@@ -2,22 +2,36 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"os"
 
 	"neutrino/internal/backup"
 	"neutrino/internal/repo"
 )
 
+// BackupStore is the narrow repo surface BackupService depends on. RawDB is
+// required because backup.CreateSQLiteBackup runs VACUUM INTO on the live
+// *sql.DB handle. *repo.Store satisfies it.
+type BackupStore interface {
+	ListBackups(ctx context.Context, limit int) ([]repo.BackupRecord, error)
+	GetBackup(ctx context.Context, id int64) (repo.BackupRecord, error)
+	InsertBackupRecord(ctx context.Context, rec repo.BackupRecord) (repo.BackupRecord, error)
+	DeleteBackup(ctx context.Context, id int64) error
+	RawDB() *sql.DB
+}
+
+var _ BackupStore = (*repo.Store)(nil)
+
 // BackupService owns backup record lifecycle: creating consistent SQLite
 // snapshots, listing/fetching/deleting records. Restore staging stays in the
 // HTTP layer because it is pure file plumbing around the upload.
 type BackupService struct {
-	store     *repo.Store
+	store     BackupStore
 	dbPath    string
 	backupDir string
 }
 
-func NewBackupService(store *repo.Store, dbPath, backupDir string) *BackupService {
+func NewBackupService(store BackupStore, dbPath, backupDir string) *BackupService {
 	return &BackupService{store: store, dbPath: dbPath, backupDir: backupDir}
 }
 

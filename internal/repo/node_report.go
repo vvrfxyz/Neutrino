@@ -18,7 +18,7 @@ func (s *Store) UpdateNodeObservedIP(ctx context.Context, nodeID int64, ip strin
 	if ip == "" {
 		return nil
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, `
 UPDATE nodes
 SET observed_ip = ?,
@@ -148,7 +148,7 @@ func (s *Store) ApplyNodeReportLatest(ctx context.Context, nodeID int64, in Node
 		sid = sid[:64]
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, `
 UPDATE nodes
 SET sni = COALESCE(NULLIF(?, ''), sni),

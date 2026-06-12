@@ -21,7 +21,7 @@ func (s *Store) UpdateNodeAgentStatus(ctx context.Context, nodeID int64, lastSee
 		last_error = ?,
 		updated_at = ?
 	WHERE id = ?;
-	`, seen, nullableString(errMsg), time.Now().UTC().Format(time.RFC3339), nodeID)
+	`, seen, nullableString(errMsg), nowRFC3339(), nodeID)
 	return err
 }
 
@@ -312,7 +312,7 @@ func (s *Store) CreateNode(ctx context.Context, in CreateNodeInput) (Node, error
 	if in.Managed {
 		managedInt = 1
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	var id int64
 	err = s.db.QueryRowContext(ctx, `
 	INSERT INTO nodes(name, core_type, protocol, host, port, transport, security, flow, sni, fp, public_key, short_id, extra_json, enabled, managed, agent_url, created_at, updated_at)
@@ -347,7 +347,7 @@ func (s *Store) UpdateNode(ctx context.Context, id int64, in CreateNodeInput) (N
 	if in.Managed {
 		managedInt = 1
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	_, err = s.db.ExecContext(ctx, `
 	UPDATE nodes
 	SET name = ?, core_type = ?, protocol = ?, host = ?, port = ?, transport = ?, security = ?, flow = ?, sni = ?, fp = ?, public_key = ?, short_id = ?, extra_json = ?, enabled = ?, managed = ?, agent_url = ?, updated_at = ?
@@ -398,7 +398,7 @@ func (s *Store) DeleteNode(ctx context.Context, id int64) error {
 	UPDATE api_keys
 	SET revoked_at = COALESCE(revoked_at, ?)
 	WHERE node_id = ?;
-	`, time.Now().UTC().Format(time.RFC3339), id); err != nil {
+	`, nowRFC3339(), id); err != nil {
 		return err
 	}
 

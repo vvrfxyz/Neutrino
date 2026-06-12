@@ -15,12 +15,59 @@ type SyncRequester interface {
 	RequestManagedXrayReload(ctx context.Context)
 }
 
+// LifecycleSweeper is the narrow store surface needed by the shared
+// refreshLifecycleNoSync helper (used by both UserService and NodeService).
+type LifecycleSweeper interface {
+	SweepExpiredUsers(ctx context.Context) (int, error)
+	SweepQuotaWindows(ctx context.Context) (int, error)
+}
+
+// UserStore is the narrow repo surface UserService depends on (including the
+// subscription-resolution methods in subscription.go). *repo.Store satisfies
+// it; tests can substitute a fake.
+type UserStore interface {
+	LifecycleSweeper
+
+	// User CRUD / status
+	ListUsers(ctx context.Context) ([]repo.User, error)
+	GetUser(ctx context.Context, userID int64) (repo.User, error)
+	CreateUser(ctx context.Context, in repo.CreateUserInput) (repo.User, error)
+	CreateProxyLink(ctx context.Context, userID int64) (repo.User, error)
+	SetUserStatus(ctx context.Context, userID int64, targetStatus string) (repo.User, error)
+	DeleteUser(ctx context.Context, userID int64) (string, error)
+	SetUserDeviceLimit(ctx context.Context, userID int64, deviceLimit int) (repo.User, error)
+
+	// Quota / plan
+	ResetUserQuota(ctx context.Context, userID int64, reason string) error
+	CreditUserQuota(ctx context.Context, userID int64, bytes int64) error
+	ExtendUserPlan(ctx context.Context, userID int64, days int) error
+
+	// Node access
+	ListNodes(ctx context.Context) ([]repo.Node, error)
+	SetUserNodeAccess(ctx context.Context, userID int64, nodeIDs []int64) error
+	ListUserNodeIDs(ctx context.Context, userID int64) ([]int64, error)
+	ListEnabledNodesForUser(ctx context.Context, userID int64) ([]repo.Node, error)
+
+	// Online sessions / events
+	ListUserOnlineStats(ctx context.Context, windowSec int) (map[int64]repo.UserOnlineStats, error)
+	ListUserOnlineSessions(ctx context.Context, userID int64, windowSec int) ([]repo.OnlineUser, error)
+	ListUserEventsFiltered(ctx context.Context, userID int64, limit int, source string, nodeID *int64) ([]repo.UserEvent, error)
+
+	// Subscription tokens
+	GetOrCreateSubscriptionToken(ctx context.Context, userID int64) (repo.SubscriptionToken, error)
+	GetSubscriptionTokenByUserID(ctx context.Context, userID int64) (repo.SubscriptionToken, error)
+	RotateSubscriptionToken(ctx context.Context, userID int64) (repo.SubscriptionToken, error)
+	GetUserBySubscriptionToken(ctx context.Context, token string) (repo.User, repo.SubscriptionToken, error)
+}
+
+var _ UserStore = (*repo.Store)(nil)
+
 type UserService struct {
-	store *repo.Store
+	store UserStore
 	sync  SyncRequester
 }
 
-func NewUserService(store *repo.Store, sync SyncRequester) *UserService {
+func NewUserService(store UserStore, sync SyncRequester) *UserService {
 	return &UserService{store: store, sync: sync}
 }
 
@@ -78,7 +125,7 @@ func (r LifecycleRefreshResult) Changed() bool {
 // so the sweeps (which open their own transactions) never run inside a
 // prepare transaction; callers must check Changed() and schedule a global
 // reconcile themselves. Shared by UserService and NodeService.
-func refreshLifecycleNoSync(ctx context.Context, store *repo.Store) (LifecycleRefreshResult, error) {
+func refreshLifecycleNoSync(ctx context.Context, store LifecycleSweeper) (LifecycleRefreshResult, error) {
 	expired, err := store.SweepExpiredUsers(ctx)
 	if err != nil {
 		return LifecycleRefreshResult{}, err

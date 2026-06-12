@@ -213,7 +213,7 @@ func (s *Store) RevokeNodeCertPin(ctx context.Context, nodeID int64, certSHA256 
 	if reason == "" {
 		reason = "manual"
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	var res sql.Result
 	var err error
 	if certSHA256 == "" {

@@ -25,14 +25,26 @@ type AlertSender interface {
 	SendMail(subject, body string, to []string) error
 }
 
+// AlertStore is the narrow repo surface AlertService depends on. *repo.Store
+// satisfies it.
+type AlertStore interface {
+	ListOpsAlerts(ctx context.Context, status string, limit int) ([]repo.OpsAlert, error)
+	UpsertOpsAlert(ctx context.Context, nodeID *int64, kind, severity, message, dedupeKey string, at time.Time) (int64, error)
+	ResolveOpsAlert(ctx context.Context, dedupeKey string, at time.Time) (bool, error)
+	ListPendingAlerts(ctx context.Context, limit int) ([]repo.Alert, error)
+	MarkAlertSent(ctx context.Context, alertID int64) error
+}
+
+var _ AlertStore = (*repo.Store)(nil)
+
 // AlertService owns ops-alert lifecycle: deriving node health alerts from the
 // ops snapshot, probe/job alert sync, manual upsert/resolve, and dispatching
 // pending alerts to the configured channels.
 type AlertService struct {
-	store *repo.Store
+	store AlertStore
 }
 
-func NewAlertService(store *repo.Store) *AlertService {
+func NewAlertService(store AlertStore) *AlertService {
 	return &AlertService{store: store}
 }
 

@@ -222,7 +222,7 @@ func (s *Store) CreateProxyLink(ctx context.Context, userID int64) (User, error)
 	linkUUID := uuid.NewString()
 	inboundTag := fmt.Sprintf("user-%d", userID)
 	link := s.buildVLESSLink(linkUUID, username)
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	if _, err := tx.ExecContext(ctx, `UPDATE proxy_links SET active = 0 WHERE user_id = ?`, userID); err != nil {
 		return User{}, err
@@ -531,7 +531,7 @@ func (s *Store) SetUserNodeAccess(ctx context.Context, userID int64, nodeIDs []i
 		return err
 	}
 	if len(nodeIDs) > 0 {
-		now := time.Now().UTC().Format(time.RFC3339)
+		now := nowRFC3339()
 		for _, nid := range nodeIDs {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO user_node_access(user_id, node_id, created_at) VALUES (?, ?, ?)`, userID, nid, now); err != nil {
 				return err
@@ -550,7 +550,7 @@ func (s *Store) setUserNodeAccessTx(ctx context.Context, tx *sql.Tx, userID int6
 	if len(nodeIDs) == 0 {
 		return nil
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	for _, nid := range nodeIDs {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO user_node_access(user_id, node_id, created_at) VALUES (?, ?, ?)`, userID, nid, now); err != nil {
 			return err

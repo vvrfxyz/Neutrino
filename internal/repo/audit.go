@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 )
 
 func (s *Store) InsertAuditLog(ctx context.Context, actorType, actor, action, targetType, targetID, detailJSON, clientIP, userAgent, requestID string) error {
@@ -16,7 +15,7 @@ func (s *Store) InsertAuditLog(ctx context.Context, actorType, actor, action, ta
 	if actorType == "" || actor == "" || action == "" || targetType == "" || targetID == "" {
 		return fmt.Errorf("invalid audit log")
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO audit_logs(actor_type, actor, action, target_type, target_id, detail_json, client_ip, user_agent, request_id, created_at)
 VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?);

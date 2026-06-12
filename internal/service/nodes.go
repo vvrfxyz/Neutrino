@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,13 +20,83 @@ import (
 	"neutrino/internal/xraycfg"
 )
 
+// NodeStore is the narrow repo surface NodeService depends on, spanning both
+// the admin-facing methods (nodes.go) and the agent-facing control-plane
+// methods (nodes_controlplane.go). *repo.Store satisfies it.
+type NodeStore interface {
+	LifecycleSweeper
+
+	// Node CRUD / enable
+	ListNodes(ctx context.Context) ([]repo.Node, error)
+	GetNode(ctx context.Context, nodeID int64) (repo.Node, error)
+	CreateNode(ctx context.Context, in repo.CreateNodeInput) (repo.Node, error)
+	UpdateNode(ctx context.Context, id int64, in repo.CreateNodeInput) (repo.Node, error)
+	DeleteNode(ctx context.Context, id int64) error
+	NodeDeleteWouldWidenAccess(ctx context.Context, id int64) (bool, error)
+	SetNodeEnabled(ctx context.Context, nodeID int64, enabled bool) error
+	DeleteStaleNodes(ctx context.Context, cutoff time.Time) ([]int64, error)
+	ListEnabledNodes(ctx context.Context) ([]repo.Node, error)
+
+	// Users sync
+	PrepareUsersSync(ctx context.Context, nodeID int64, forceFull bool, reason string) (repo.PrepareUsersSyncResult, error)
+	FinishUsersSyncJobForNode(ctx context.Context, nodeID, jobID int64, in repo.FinishNodeJobInput, appliedVersion string) (repo.FinishUsersSyncResult, error)
+	MaterializeUsersSnapshotForAgent(ctx context.Context, nodeID int64) (string, []usersync.Item, error)
+	ListNodesNeedingUsersSyncBackfill(ctx context.Context) ([]int64, error)
+	SetNodeUsersSyncBackfillAt(ctx context.Context, nodeID int64, at time.Time) error
+
+	// Node jobs / managed xray
+	EnqueueNodeJob(ctx context.Context, nodeID int64, kind string, desiredVersion string, payloadJSON string, timeoutSec int, correlationID string) (jobID int64, enqueued bool, err error)
+	ListNodeJobs(ctx context.Context, nodeID int64, limit int) ([]repo.NodeJob, error)
+	HasPendingOrRunningNodeJob(ctx context.Context, nodeID int64, kind string) (bool, error)
+	SweepTimedOutRunningJobs(ctx context.Context, timeoutByKind map[string]time.Duration, maxAttempts int) (int64, error)
+	UpsertNodeDesiredState(ctx context.Context, nodeID int64, kind string, desiredVersion string, payloadJSON string) error
+	GetNodeDesiredState(ctx context.Context, nodeID int64) (repo.NodeDesiredState, bool, error)
+	SetNodeDesiredXrayVersion(ctx context.Context, nodeID int64, version string) error
+	DeployManagedXray(ctx context.Context, nodeID int64, payloadJSON, desiredVersion string, timeoutSec int, correlationID string) (jobID int64, enqueued bool, err error)
+
+	// Control plane: report / agent status (nodes_controlplane.go)
+	ApplyNodeReportLatest(ctx context.Context, nodeID int64, in repo.NodeReportInput) (time.Time, error)
+	UpdateNodeObservedIP(ctx context.Context, nodeID int64, ip string) error
+	UpdateNodeAgentStatus(ctx context.Context, nodeID int64, lastSeenAt *time.Time, errMsg string) error
+
+	// Control plane: job claim/finish
+	ClaimNextNodeJobForNodeKinds(ctx context.Context, nodeID int64, allowedKinds []string) (repo.NodeJob, bool, error)
+	FinishNodeJobForNode(ctx context.Context, nodeID int64, jobID int64, in repo.FinishNodeJobInput) (finalStatus string, err error)
+	GetNodeJob(ctx context.Context, jobID int64) (repo.NodeJob, bool, error)
+	SetNodeAppliedUsersVersion(ctx context.Context, nodeID int64, version string) error
+	SetNodeAppliedXrayVersion(ctx context.Context, nodeID int64, version string) error
+	MarkNodeXrayRolledBack(ctx context.Context, nodeID int64, appliedVersion string) error
+	SetNodeJobError(ctx context.Context, nodeID int64, kind string, errKind string, errMsg string) error
+
+	// Control plane: probes / metadata / metrics history
+	InsertNodeProbeResult(ctx context.Context, nodeID int64, in repo.InsertNodeProbeResultInput) (int64, error)
+	ListNodeProbeResults(ctx context.Context, nodeID int64, limit int) ([]repo.NodeProbeResult, error)
+	GetNodeMetadata(ctx context.Context, nodeID int64) (repo.NodeMetadata, bool, error)
+	UpsertNodeMetadata(ctx context.Context, nodeID int64, in repo.UpsertNodeMetadataInput) error
+	ListNodeMetricSeries(ctx context.Context, nodeID int64, rangeName string, step string, now time.Time) ([]repo.NodeMetricSeriesPoint, error)
+	GetLatestNodeMetricDetails(ctx context.Context, nodeID int64) (repo.NodeMetricDetails, bool, error)
+	GetLatestNodeStaticFacts(ctx context.Context, nodeID int64) (repo.NodeStaticFacts, bool, error)
+	ListNodeStaticFacts(ctx context.Context, nodeID int64, limit int) ([]repo.NodeStaticFacts, error)
+
+	// Control plane: enrollment / cert pins
+	CreateNodeEnrollCode(ctx context.Context, nodeID int64, ttl time.Duration) (repo.NodeEnrollCode, error)
+	GetNodeEnrollCode(ctx context.Context, nodeID int64) (repo.NodeEnrollCode, bool, error)
+	ValidateNodeEnrollCode(ctx context.Context, nodeID int64, code string) error
+	CompleteNodeEnroll(ctx context.Context, nodeID int64, code string, cert *x509.Certificate, now time.Time) (int64, error)
+	RenewNodeCertPin(ctx context.Context, nodeID int64, purpose string, cert *x509.Certificate, now time.Time) (int64, error)
+	RevokeNodeCertPin(ctx context.Context, nodeID int64, certSHA256 string, reason string) (int64, error)
+	ListNodeCertPins(ctx context.Context, nodeID int64, limit int) ([]repo.NodeCertPin, error)
+}
+
+var _ NodeStore = (*repo.Store)(nil)
+
 type NodeService struct {
-	store               *repo.Store
+	store               NodeStore
 	staleDeleteAfterSec int
 	sync                SyncRequester
 }
 
-func NewNodeService(store *repo.Store, staleDeleteSec int, sync SyncRequester) *NodeService {
+func NewNodeService(store NodeStore, staleDeleteSec int, sync SyncRequester) *NodeService {
 	return &NodeService{store: store, staleDeleteAfterSec: staleDeleteSec, sync: sync}
 }
 

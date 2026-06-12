@@ -30,7 +30,7 @@ func (s *Store) UpsertNodeDesiredState(ctx context.Context, nodeID int64, kind s
 	if payloadJSON == "" {
 		payloadJSON = "{}"
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	return upsertNodeDesiredStateExec(ctx, s.db, nodeID, kind, desiredVersion, payloadJSON, now)
 }
 
@@ -95,7 +95,7 @@ func (s *Store) SetNodeDesiredUsersVersion(ctx context.Context, nodeID int64, ve
 UPDATE nodes
 SET desired_users_version = ?, updated_at = ?
 WHERE id = ?;
-`, strings.TrimSpace(version), time.Now().UTC().Format(time.RFC3339), nodeID)
+`, strings.TrimSpace(version), nowRFC3339(), nodeID)
 	return err
 }
 
@@ -107,7 +107,7 @@ func (s *Store) SetNodeAppliedUsersVersion(ctx context.Context, nodeID int64, ve
 UPDATE nodes
 SET applied_users_version = ?, last_error = NULL, last_job_error_kind = NULL, last_job_error_at = NULL, updated_at = ?
 WHERE id = ?;
-`, strings.TrimSpace(version), time.Now().UTC().Format(time.RFC3339), nodeID)
+`, strings.TrimSpace(version), nowRFC3339(), nodeID)
 	return err
 }
 
@@ -115,7 +115,7 @@ func (s *Store) SetNodeDesiredXrayVersion(ctx context.Context, nodeID int64, ver
 	if nodeID <= 0 {
 		return fmt.Errorf("invalid node id")
 	}
-	return setNodeDesiredXrayVersionExec(ctx, s.db, nodeID, strings.TrimSpace(version), time.Now().UTC().Format(time.RFC3339))
+	return setNodeDesiredXrayVersionExec(ctx, s.db, nodeID, strings.TrimSpace(version), nowRFC3339())
 }
 
 func (s *Store) SetNodeAppliedXrayVersion(ctx context.Context, nodeID int64, version string) error {
@@ -126,7 +126,7 @@ func (s *Store) SetNodeAppliedXrayVersion(ctx context.Context, nodeID int64, ver
 UPDATE nodes
 SET applied_xray_version = ?, last_error = NULL, last_job_error_kind = NULL, last_job_error_at = NULL, updated_at = ?
 WHERE id = ?;
-`, strings.TrimSpace(version), time.Now().UTC().Format(time.RFC3339), nodeID)
+`, strings.TrimSpace(version), nowRFC3339(), nodeID)
 	return err
 }
 
@@ -138,7 +138,7 @@ func (s *Store) MarkNodeXrayRolledBack(ctx context.Context, nodeID int64, applie
 	if appliedVersion == "" {
 		appliedVersion = "rollback"
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -191,7 +191,7 @@ func (s *Store) DeployManagedXray(ctx context.Context, nodeID int64, payloadJSON
 	}
 	defer tx.Rollback()
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	if err := upsertNodeDesiredStateExec(ctx, tx, nodeID, "xray_apply", desiredVersion, payloadJSON, now); err != nil {
 		return 0, false, err
 	}
@@ -216,7 +216,7 @@ func (s *Store) SetNodeJobError(ctx context.Context, nodeID int64, kind string, 
 	if errKind == "" {
 		errKind = "retryable"
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, `
 UPDATE nodes
 SET last_error = ?, last_job_error_kind = ?, last_job_error_at = ?, updated_at = ?

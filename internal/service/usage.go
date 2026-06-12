@@ -5,14 +5,26 @@ import (
 	"neutrino/internal/repo"
 )
 
+// UsageStore is the narrow repo surface UsageService depends on. *repo.Store
+// satisfies it.
+type UsageStore interface {
+	EnforceIPLimit(ctx context.Context, windowSec, strikes int) ([]repo.User, error)
+	RecordUsageBatchIdempotent(ctx context.Context, in []repo.UsageInput) ([]repo.UsageBatchItemResult, error)
+	GetTrafficSummary(ctx context.Context, rangeParam string, nodeID *int64, userID *int64) (repo.TrafficSummary, error)
+	GetTrafficSeries(ctx context.Context, userID int64, period string) ([]repo.TrafficBucket, error)
+	ListUserEventsFiltered(ctx context.Context, userID int64, limit int, source string, nodeID *int64) ([]repo.UserEvent, error)
+}
+
+var _ UsageStore = (*repo.Store)(nil)
+
 type UsageService struct {
-	store           *repo.Store
+	store           UsageStore
 	onlineWindowSec int
 	ipLimitStrikes  int
 	sync            SyncRequester
 }
 
-func NewUsageService(store *repo.Store, onlineWindowSec, ipLimitStrikes int, sync SyncRequester) *UsageService {
+func NewUsageService(store UsageStore, onlineWindowSec, ipLimitStrikes int, sync SyncRequester) *UsageService {
 	return &UsageService{
 		store:           store,
 		onlineWindowSec: onlineWindowSec,

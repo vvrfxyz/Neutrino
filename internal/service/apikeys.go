@@ -32,14 +32,27 @@ var (
 	ErrAPIKeyNotFound     = errors.New("api key not found")
 )
 
+// APIKeyStore is the narrow repo surface APIKeyService depends on. GetNode is
+// used to validate the optional node binding at create time. *repo.Store
+// satisfies it.
+type APIKeyStore interface {
+	CreateAPIKey(ctx context.Context, name, scopes string, nodeID *int64, expiresAt *time.Time) (string, repo.APIKey, error)
+	ListAPIKeys(ctx context.Context, limit int) ([]repo.APIKey, error)
+	GetAPIKey(ctx context.Context, id int64) (repo.APIKey, error)
+	RevokeAPIKey(ctx context.Context, id int64) error
+	GetNode(ctx context.Context, nodeID int64) (repo.Node, error)
+}
+
+var _ APIKeyStore = (*repo.Store)(nil)
+
 // APIKeyService owns API key lifecycle: create (returns the plaintext exactly
 // once), list/get metadata, and revoke. Keys are stored as SHA-256 hashes;
 // no method ever returns the hash or plaintext after creation.
 type APIKeyService struct {
-	store *repo.Store
+	store APIKeyStore
 }
 
-func NewAPIKeyService(store *repo.Store) *APIKeyService {
+func NewAPIKeyService(store APIKeyStore) *APIKeyService {
 	return &APIKeyService{store: store}
 }
 

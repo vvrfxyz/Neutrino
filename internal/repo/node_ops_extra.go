@@ -84,7 +84,7 @@ func (s *Store) UpsertNodeMetadata(ctx context.Context, nodeID int64, in UpsertN
 	if in.RenewAt != nil && !in.RenewAt.IsZero() {
 		renewAt = sql.NullString{String: in.RenewAt.UTC().Format(time.RFC3339), Valid: true}
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO node_metadata(node_id, provider, region, country, city, latitude, longitude, tags_json, monthly_cost_cents, currency, renew_cycle, renew_at, note, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

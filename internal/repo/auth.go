@@ -20,7 +20,7 @@ func ensureAdminCredential(ctx context.Context, db *sql.DB, username, password s
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	query := `
 INSERT INTO admin_accounts(id, username, password_hash, created_at, updated_at)
 VALUES (1, ?, ?, ?, ?)
@@ -115,7 +115,7 @@ WHERE session_id = ?;
 UPDATE admin_sessions
 SET last_seen_at = ?
 WHERE session_id = ?;
-`, time.Now().UTC().Format(time.RFC3339), sessionID)
+`, nowRFC3339(), sessionID)
 	return username, true, nil
 }
 

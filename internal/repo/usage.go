@@ -97,7 +97,7 @@ func (s *Store) RecordUsage(ctx context.Context, in UsageInput) (User, error) {
 }
 
 func (s *Store) SweepExpiredUsers(ctx context.Context) (int, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -284,7 +284,7 @@ func (s *Store) reserveUsageEventKeyTx(ctx context.Context, tx *sql.Tx, in Usage
 INSERT INTO usage_event_keys(source, source_event_id, user_id, node_id, event_at, created_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(source, source_event_id) DO NOTHING;
-`, in.Source, in.SourceEventID, in.UserID, nodeID, in.At.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+`, in.Source, in.SourceEventID, in.UserID, nodeID, in.At.Format(time.RFC3339), nowRFC3339())
 	if err != nil {
 		return err
 	}
@@ -456,7 +456,7 @@ func (s *Store) recordTrafficRollupHourlyTx(ctx context.Context, tx *sql.Tx, in 
 
 	bucket := in.At.UTC().Truncate(time.Hour)
 	bucketStart := bucket.Format(time.RFC3339)
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	var inInc, outInc int64
 	if in.Direction == "inbound" {
@@ -603,7 +603,7 @@ WHERE user_id = ? AND window_start = ?;
 		return nil
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	res, err := tx.ExecContext(ctx, `
 UPDATE users
 SET status = 'over_limit', removed_at = ?
@@ -1116,7 +1116,7 @@ WHERE user_id = ? AND window_start = ?;
 		return nil
 	}
 	ratio := (float64(effective) / float64(totalLimit)) * 100.0
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	insertAlert := func(th string, message string) error {
 		dedupeKey := fmt.Sprintf("quota:%s:%d:%s", th, userID, cycleKey)
@@ -1193,6 +1193,6 @@ func (s *Store) MarkAlertSent(ctx context.Context, alertID int64) error {
 UPDATE alerts
 SET sent_at = ?
 WHERE id = ?;
-`, time.Now().UTC().Format(time.RFC3339), alertID)
+`, nowRFC3339(), alertID)
 	return err
 }

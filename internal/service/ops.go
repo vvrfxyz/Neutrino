@@ -12,12 +12,34 @@ import (
 
 const opsNodeStaleAfter = 120 * time.Second
 
+// OpsStore is the narrow repo surface OpsService depends on. *repo.Store
+// satisfies it.
+type OpsStore interface {
+	ListEnforcementLogs(ctx context.Context, limit int) ([]repo.EnforcementLog, error)
+	ListOnlineUsers(ctx context.Context, windowSec int) ([]repo.OnlineUser, error)
+	GetHostNetMonthlyUsage(ctx context.Context, at time.Time) (repo.HostNetMonthlyUsage, bool, error)
+
+	// Node snapshot building
+	ListNodes(ctx context.Context) ([]repo.Node, error)
+	GetNode(ctx context.Context, nodeID int64) (repo.Node, error)
+	ListNodeRuntimeMetrics(ctx context.Context) (map[int64]repo.NodeRuntimeMetrics, error)
+	GetNodeRuntimeMetrics(ctx context.Context, nodeID int64) (repo.NodeRuntimeMetrics, bool, error)
+	ListLatestNodeMonthlyUsage(ctx context.Context) (map[int64]repo.NodeMonthlyUsage, error)
+	GetLatestNodeMonthlyUsage(ctx context.Context, nodeID int64) (repo.NodeMonthlyUsage, bool, error)
+	ListNodeJobSummaries(ctx context.Context) (map[int64]repo.NodeJobSummary, error)
+	GetNodeJobSummary(ctx context.Context, nodeID int64) (pending int, runningKind string, runningDesired string, runningStartedAt string, runningCorrelation string, err error)
+	ListNodeMetadata(ctx context.Context) (map[int64]repo.NodeMetadata, error)
+	GetNodeMetadata(ctx context.Context, nodeID int64) (repo.NodeMetadata, bool, error)
+}
+
+var _ OpsStore = (*repo.Store)(nil)
+
 type OpsService struct {
-	store *repo.Store
+	store OpsStore
 	cache *OpsLatestCache
 }
 
-func NewOpsService(store *repo.Store) *OpsService {
+func NewOpsService(store OpsStore) *OpsService {
 	return &OpsService{store: store, cache: NewOpsLatestCache(5 * time.Second)}
 }
 

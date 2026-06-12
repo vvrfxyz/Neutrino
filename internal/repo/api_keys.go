@@ -33,7 +33,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, name, scopes string, nodeID *i
 	}
 	plain := "nk_" + raw
 	hash := hashAPIKey(plain)
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	var exp sql.NullString
 	if expiresAt != nil {
 		exp = sql.NullString{String: expiresAt.UTC().Format(time.RFC3339), Valid: true}
@@ -64,7 +64,7 @@ func (s *Store) RevokeAPIKey(ctx context.Context, id int64) error {
 UPDATE api_keys
 SET revoked_at = ?
 WHERE id = ? AND revoked_at IS NULL;
-`, time.Now().UTC().Format(time.RFC3339), id)
+`, nowRFC3339(), id)
 	if err != nil {
 		return err
 	}
@@ -164,7 +164,7 @@ LIMIT 1;
 	if exp != nil && time.Now().UTC().After(*exp) {
 		return APIKeyAuth{}, false, nil
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), id)
+	_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, nowRFC3339(), id)
 
 	scopeMap := map[string]struct{}{}
 	for _, part := range strings.Split(scopes, ",") {

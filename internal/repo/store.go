@@ -258,6 +258,10 @@ type UsageInput struct {
 
 var ErrDuplicateEvent = errors.New("duplicate event")
 
+// nowRFC3339 returns the current UTC time in the canonical storage format.
+// All timestamps in the DB are UTC RFC3339 TEXT (see CLAUDE.md).
+func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
 func (s *Store) RawDB() *sql.DB {
 	return s.db
 }

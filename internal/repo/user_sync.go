@@ -134,7 +134,7 @@ SELECT users_json FROM node_user_sync_snapshots WHERE node_id = ? AND version = 
 	}
 	var items []usersync.Item
 	if err := json.Unmarshal([]byte(usersJSON), &items); err != nil {
-		return nil, false, fmt.Errorf("%w: node=%d version=%s: %v", errUserSyncSnapshotCorrupt, nodeID, version, err)
+		return nil, false, fmt.Errorf("%w: node=%d version=%s: %w", errUserSyncSnapshotCorrupt, nodeID, version, err)
 	}
 	return items, true, nil
 }
@@ -333,7 +333,7 @@ FROM nodes WHERE id = ?;
 		return PrepareUsersSyncResult{}, fmt.Errorf("canonical users for node %d invalid: %w", nodeID, err)
 	}
 	targetVersion := usersync.HashItems(target)
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 
 	if err := upsertNodeUserSyncSnapshotExec(ctx, tx, nodeID, targetVersion, target, now); err != nil {
 		return PrepareUsersSyncResult{}, err
@@ -751,13 +751,13 @@ SELECT kind, desired_version, payload_json FROM node_jobs WHERE id = ? AND node_
 		// Retry already scheduled; no terminal follow-ups. The requeue may have
 		// returned this job to pending behind a newer one enqueued while it ran
 		// — restore the single-pending-slot invariant before committing.
-		if err := reconcileUsersSyncPendingSlotExec(ctx, tx, nodeID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		if err := reconcileUsersSyncPendingSlotExec(ctx, tx, nodeID, nowRFC3339()); err != nil {
 			return out, err
 		}
 		return out, tx.Commit()
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	applied := strings.TrimSpace(appliedVersion)
 
 	var currentDesiredNS sql.NullString
@@ -989,7 +989,7 @@ func (s *Store) MaterializeUsersSnapshotForAgent(ctx context.Context, nodeID int
 		return "", nil, fmt.Errorf("canonical users for node %d invalid: %w", nodeID, err)
 	}
 	version := usersync.HashItems(items)
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	if err := upsertNodeUserSyncSnapshotExec(ctx, tx, nodeID, version, items, now); err != nil {
 		return "", nil, err
 	}
