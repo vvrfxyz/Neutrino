@@ -118,7 +118,7 @@
       <form method="post" action="/users/{{$d.User.ID}}/device_limit" class="flex flex-col gap-2 sm:flex-row sm:items-center">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <input name="device_limit" type="number" min="1" value="{{$d.User.DeviceLimit}}" required
-               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+               class="min-w-0 flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
         <button type="submit" class="w-full rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">更新</button>
       </form>
     </div>
@@ -128,7 +128,7 @@
             x-data x-on:submit.prevent="if(await $store.confirm.ask('重置配额','确认重置当前周期配额窗口？',true)) $el.submit()">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <input name="reason" type="text" placeholder="原因(可选)"
-               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+               class="min-w-0 flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
         <button type="submit" class="w-full rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700 sm:w-auto">重置</button>
       </form>
     </div>
@@ -137,7 +137,7 @@
       <form method="post" action="/users/{{$d.User.ID}}/quota_credit" class="flex flex-col gap-2 sm:flex-row sm:items-center">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <input name="credit_gb" type="number" min="1" placeholder="GB"
-               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+               class="min-w-0 flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
         <button type="submit" class="w-full rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">补偿</button>
       </form>
     </div>
@@ -146,7 +146,7 @@
       <form method="post" action="/users/{{$d.User.ID}}/plan_extend" class="flex flex-col gap-2 sm:flex-row sm:items-center">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <input name="extend_days" type="number" min="1" placeholder="天数"
-               class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+               class="min-w-0 flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
         <button type="submit" class="w-full rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 sm:w-auto">延期</button>
       </form>
     </div>
