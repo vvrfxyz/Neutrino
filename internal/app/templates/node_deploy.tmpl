@@ -163,6 +163,46 @@
       </button>
     </div>
 
+    <!-- Custom outbounds / routes (module 4) -->
+    <div class="mt-4 border-t border-slate-100 pt-4" id="custom-xray-config">
+      <h3 class="text-sm font-semibold text-slate-900">自定义出站与路由</h3>
+      <p class="text-xs text-slate-400 mt-0.5 mb-3">
+        结构化白名单子集：出站协议限 freedom / blackhole / socks / http；路由按 domain / ip / port / network / protocol 匹配，目标为 direct、blocked 或上方自定义出站的 tag。
+        保存时面板校验，agent 下发前再次校验并合并进渲染配置。需要节点 agent 为支持版本——旧 agent 会显式失败而不是静默丢弃。
+      </p>
+      <div x-show="customMsg" x-transition class="mb-2 text-sm" :class="customMsgErr ? 'text-red-600' : 'text-emerald-700'" x-text="customMsg"></div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-medium text-slate-500">custom_outbounds（JSON 数组）</label>
+          <textarea x-model="customOutboundsText" x-on:input="refreshPreview()" rows="7" spellcheck="false" aria-label="自定义出站 JSON"
+                    placeholder='[
+  {"tag": "up", "protocol": "socks", "address": "10.0.0.2", "port": 1080}
+]'
+                    class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 font-mono text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-500">custom_routes（JSON 数组）</label>
+          <textarea x-model="customRoutesText" x-on:input="refreshPreview()" rows="7" spellcheck="false" aria-label="自定义路由 JSON"
+                    placeholder='[
+  {"outbound_tag": "up", "domains": ["geosite:openai", "domain:example.com"]},
+  {"outbound_tag": "blocked", "protocols": ["bittorrent"]}
+]'
+                    class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 font-mono text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+        </div>
+      </div>
+      <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+        <button type="button" x-on:click="previewRendered()"
+                class="inline-flex w-full items-center justify-center gap-1 rounded-md bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-slate-800 sm:w-auto">
+          <i data-lucide="eye" class="w-3 h-3"></i> 校验并预览渲染配置
+        </button>
+        <span class="text-xs text-slate-400">预览展示 agent 将安装的最终配置；节点本机变量以 ${VAR} 占位显示。</span>
+      </div>
+      <div x-show="renderPreview" x-transition class="mt-2">
+        <pre x-text="renderPreview" id="render-preview"
+             class="w-full max-h-96 overflow-auto px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 font-mono text-xs text-slate-600"></pre>
+      </div>
+    </div>
+
     <details class="mt-3">
       <summary class="text-xs text-slate-400 cursor-pointer hover:text-slate-600">预览 extra_json</summary>
       <textarea readonly x-text="extraPreview"
@@ -374,6 +414,9 @@ function nodeDeployPage() {
   const nodeID = {{toJSON $d.NodeID}};
   const initialVars = {{toJSON $d.ManagedXray.Vars}};
   const initialRollback = {{toJSON $d.ManagedXray.RollbackOnFail}};
+  const initialTemplate = {{toJSON $d.ManagedXray.Template}};
+  const initialCustomOutbounds = {{toJSON $d.ManagedXray.CustomOutbounds}};
+  const initialCustomRoutes = {{toJSON $d.ManagedXray.CustomRoutes}};
 
   function varsToRows(vars) {
     const out = [];
@@ -383,11 +426,19 @@ function nodeDeployPage() {
     return out;
   }
 
+  function customText(arr) {
+    return (arr && arr.length) ? JSON.stringify(arr, null, 2) : '';
+  }
+
   return {
     managedMsg: '', managedMsgErr: false,
+    customMsg: '', customMsgErr: false,
     rollbackOnFail: !!initialRollback,
     rollbackBackup: '',
     varsRows: varsToRows(initialVars),
+    customOutboundsText: customText(initialCustomOutbounds),
+    customRoutesText: customText(initialCustomRoutes),
+    renderPreview: '',
     extraPreview: '',
     jobItems: [],
     _timeFormatter: null,
@@ -425,12 +476,46 @@ function nodeDeployPage() {
       return out;
     },
 
+    // parseCustomArray turns a textarea's JSON into an array; '' -> [].
+    // Throws a labeled Error so save/preview surface where the typo is.
+    parseCustomArray(text, label) {
+      const t = (text || '').trim();
+      if (!t) return [];
+      let v;
+      try { v = JSON.parse(t); } catch (e) { throw new Error(label + ' 不是合法 JSON: ' + e.message); }
+      if (!Array.isArray(v)) throw new Error(label + ' 必须是 JSON 数组');
+      return v;
+    },
+
     buildExtraJSON(vars, rollbackOnFail) {
-      return JSON.stringify({ xray: { vars: vars || {}, rollback_on_fail: !!rollbackOnFail } }, null, 2);
+      const xray = { vars: vars || {}, rollback_on_fail: !!rollbackOnFail };
+      if ((initialTemplate || '').trim()) xray.template = initialTemplate;
+      const outs = this.parseCustomArray(this.customOutboundsText, 'custom_outbounds');
+      const rts = this.parseCustomArray(this.customRoutesText, 'custom_routes');
+      if (outs.length) xray.custom_outbounds = outs;
+      if (rts.length) xray.custom_routes = rts;
+      return JSON.stringify({ xray }, null, 2);
     },
 
     refreshPreview() {
-      this.extraPreview = this.buildExtraJSON(this.collectVars(), this.rollbackOnFail);
+      try {
+        this.extraPreview = this.buildExtraJSON(this.collectVars(), this.rollbackOnFail);
+      } catch (e) {
+        this.extraPreview = '// ' + e.message;
+      }
+    },
+
+    async previewRendered() {
+      try {
+        this.customMsg = ''; this.customMsgErr = false;
+        const extraJSON = this.buildExtraJSON(this.collectVars(), this.rollbackOnFail);
+        const out = await this.apiJSON('POST', '/api/v1/nodes/' + nodeID + '/managed/xray/preview', { extra_json: extraJSON });
+        this.renderPreview = out.preview || '';
+        this.customMsg = '校验通过。'; this.customMsgErr = false;
+      } catch (e) {
+        this.renderPreview = '';
+        this.customMsg = e.message; this.customMsgErr = true;
+      }
     },
 
     addVar() {
@@ -472,13 +557,17 @@ function nodeDeployPage() {
     },
 
     async clearExtra() {
-      const ok = await Alpine.store('confirm').ask('清空 extra_json', '将回到默认：vars 依赖节点本机 env，rollback_on_fail=true', true);
+      const ok = await Alpine.store('confirm').ask('清空 extra_json', '将回到默认：vars 依赖节点本机 env，rollback_on_fail=true，并移除自定义出站/路由', true);
       if (!ok) return;
       try {
         this.setMsg('清空中...', false);
         await this.apiJSON('PATCH', '/api/v1/nodes/' + nodeID, this.nodePatchPayload(""));
         this.rollbackOnFail = true;
         this.varsRows = [];
+        this.customOutboundsText = '';
+        this.customRoutesText = '';
+        this.renderPreview = '';
+        this.customMsg = '';
         this.refreshPreview();
         this.setMsg('已清空 extra_json。', false);
       } catch (e) { this.setMsg(e.message, true); }

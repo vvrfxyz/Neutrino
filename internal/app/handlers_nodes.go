@@ -656,6 +656,38 @@ func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request
 	}
 
 	// Managed config deployment endpoints (panel-managed config -> desired state + job).
+	if len(parts) == 4 && parts[1] == "managed" && parts[2] == "xray" && parts[3] == "preview" && r.Method == http.MethodPost {
+		var req struct {
+			// Optional draft extra_json so the UI can preview unsaved edits.
+			ExtraJSON *string `json:"extra_json"`
+		}
+		body, err := readAllLimit(r.Body, 256*1024)
+		if err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(string(body)) != "" {
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+		}
+		preview, err := a.nodes().PreviewManagedXray(r.Context(), nodeID, req.ExtraJSON)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, repo.ErrNodeNotFound) {
+				status = http.StatusNotFound
+			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || errors.Is(err, service.ErrNodeNotManaged) || errors.Is(err, service.ErrNodeCoreTypeNotXray) {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "preview": string(preview)})
+		return
+	}
 	if len(parts) == 4 && parts[1] == "managed" && parts[2] == "xray" && parts[3] == "deploy" && r.Method == http.MethodPost {
 		result, err := a.nodes().DeployManagedXray(r.Context(), nodeID)
 		if err != nil {

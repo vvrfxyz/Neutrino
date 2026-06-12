@@ -12,12 +12,20 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"neutrino/internal/xraycfg"
 )
 
 type XrayApplyRequest struct {
 	Template       string            `json:"template"`
 	Vars           map[string]string `json:"vars"`
 	RollbackOnFail bool              `json:"rollback_on_fail,omitempty"`
+	// Structured custom config (module 4). The agent re-validates against the
+	// xraycfg allowlist — it never trusts the panel — and merges after var
+	// expansion. The template carries xraycfg.Marker when these are present so
+	// old agents fail loudly instead of applying a config missing the customs.
+	CustomOutbounds []xraycfg.Outbound `json:"custom_outbounds,omitempty"`
+	CustomRoutes    []xraycfg.Route    `json:"custom_routes,omitempty"`
 }
 
 type XrayRollbackRequest struct {
@@ -72,8 +80,18 @@ func (a *Agent) execXrayApply(ctx context.Context, req XrayApplyRequest) (map[st
 		return os.Getenv(k)
 	})
 	renderedBytes := []byte(rendered)
+	if stripped, hadMarker := xraycfg.StripMarker(rendered); hadMarker {
+		renderedBytes = []byte(stripped)
+	}
 	if !json.Valid(renderedBytes) {
 		return nil, JobError{Retryable: false, Msg: "rendered config is not valid json"}
+	}
+	if len(req.CustomOutbounds) > 0 || len(req.CustomRoutes) > 0 {
+		merged, err := xraycfg.MergeIntoRendered(renderedBytes, req.CustomOutbounds, req.CustomRoutes)
+		if err != nil {
+			return nil, JobError{Retryable: false, Msg: "custom config rejected: " + err.Error()}
+		}
+		renderedBytes = merged
 	}
 
 	// Smart restart: when the canonical form of the new config matches the

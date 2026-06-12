@@ -57,6 +57,7 @@ Neutrino 是一个基于 **Go + SQLite + SSR Templates + HTMX/Alpine.js** 的代
 - runtime 历史样本异步批量写入；内存队列满时先落 panel 本地磁盘队列，磁盘也不可用时才丢历史样本并写 ops alert。
 - 安全 probe job 支持 `probe_dns` / `probe_tcp` / `probe_http`，`probe_ping` 仅保留为 legacy alias。
 - 托管 Xray 仅下发模板与变量；真正执行的 reload / test argv 固定在节点本地环境变量中
+- 托管 Xray 支持结构化自定义出站 / 路由（`custom_outbounds` / `custom_routes`，白名单子集：freedom/blackhole/socks/http + domain/ip/port/network/protocol 匹配，禁止 `ext:` / `regexp:`）；面板保存时校验、部署前可预览渲染结果，agent 下发前再次校验后合并进配置
 - 节点部署页可直接生成一键脚本；脚本会优先检查并自动安装 `docker compose`
 
 ### 流量与订阅
@@ -150,6 +151,7 @@ API Key 生命周期管理（需要管理员 session 或 `admin`/`*` scope 的�
 - `GET|PUT|PATCH|DELETE /api/v1/nodes/{id}`
 - `POST /api/v1/nodes/{id}/enable`
 - `POST /api/v1/nodes/{id}/disable`
+- `POST /api/v1/nodes/{id}/managed/xray/preview`
 - `POST /api/v1/nodes/{id}/managed/xray/deploy`
 - `POST /api/v1/nodes/{id}/managed/xray/rollback`
 - `GET /api/v1/nodes/{id}/jobs`

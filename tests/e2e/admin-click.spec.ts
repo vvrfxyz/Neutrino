@@ -214,6 +214,22 @@ test('nodes and deploy workflow are clickable from rendered controls', async ({ 
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.locator('#managed-xray')).toContainText('已保存 extra_json');
 
+  // Custom outbounds/routes: validate + preview, then save them into extra_json.
+  await page.getByLabel('自定义出站 JSON').fill('[{"tag":"pw-up","protocol":"socks","address":"10.0.0.9","port":1080}]');
+  await page.getByLabel('自定义路由 JSON').fill('[{"outbound_tag":"pw-up","domains":["geosite:openai"]}]');
+  await page.getByRole('button', { name: '校验并预览渲染配置' }).click();
+  await expect(page.locator('#custom-xray-config')).toContainText('校验通过');
+  await expect(page.locator('#render-preview')).toContainText('pw-up');
+  await expect(page.locator('#render-preview')).toContainText('geosite:openai');
+  await page.getByRole('button', { name: '保存配置' }).click();
+  await expect(page.locator('#managed-xray')).toContainText('已保存 extra_json');
+
+  // Invalid custom config must be rejected by the preview with an error.
+  await page.getByLabel('自定义路由 JSON').fill('[{"outbound_tag":"ghost","ports":"443"}]');
+  await page.getByRole('button', { name: '校验并预览渲染配置' }).click();
+  await expect(page.locator('#custom-xray-config')).toContainText('ghost');
+  await page.getByLabel('自定义路由 JSON').fill('');
+
   await page.getByRole('button', { name: 'Deploy Xray' }).click();
   await clickConfirmOK(page);
   await expect(page.locator('#managed-xray')).toContainText('已提交');
