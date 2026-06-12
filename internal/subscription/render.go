@@ -32,12 +32,18 @@ type RenderOptions struct {
 	// NameFilter keeps only nodes whose display name contains one of the
 	// "|"-separated keywords (case-insensitive). Empty keeps everything.
 	NameFilter string
+	// Preset picks a built-in profile shape for profile-emitting targets
+	// (clash today): default | global | minimal. Empty means default.
+	// Plain URI-list targets (v2rayn/shadowrocket) and the singbox outbound
+	// fragment ignore it — same philosophy as the protocol capability set:
+	// what a target cannot express is dropped, not an error.
+	Preset string
 }
 
 // Renderer turns a list of per-node proxy URIs into a client-specific payload.
 type Renderer struct {
 	ContentType string
-	Render      func(uris []string) (string, error)
+	Render      func(uris []string, preset string) (string, error)
 	// Protocols is the client capability set: node protocols this target can
 	// express. Nodes outside it are dropped instead of emitting entries the
 	// client cannot parse (or dangling group references in clash YAML).
@@ -53,7 +59,7 @@ var renderers = map[string]Renderer{
 	"v2rayn": {
 		ContentType: "text/plain; charset=utf-8",
 		Protocols:   allProtocols,
-		Render: func(uris []string) (string, error) {
+		Render: func(uris []string, _ string) (string, error) {
 			raw := strings.Join(uris, "\n")
 			return base64.StdEncoding.EncodeToString([]byte(raw)), nil
 		},
@@ -61,7 +67,7 @@ var renderers = map[string]Renderer{
 	"shadowrocket": {
 		ContentType: "text/plain; charset=utf-8",
 		Protocols:   allProtocols,
-		Render: func(uris []string) (string, error) {
+		Render: func(uris []string, _ string) (string, error) {
 			return strings.Join(uris, "\n"), nil
 		},
 	},
@@ -69,14 +75,16 @@ var renderers = map[string]Renderer{
 		ContentType: "text/yaml; charset=utf-8",
 		// The YAML is Mihomo/Clash.Meta-shaped; Meta cores speak all three.
 		Protocols: allProtocols,
-		Render: func(uris []string) (string, error) {
-			return renderClashYAML(uris), nil
+		Render: func(uris []string, preset string) (string, error) {
+			return renderClashYAML(uris, preset), nil
 		},
 	},
 	"singbox": {
 		ContentType: "application/json",
 		Protocols:   allProtocols,
-		Render:      renderSingBoxJSON,
+		Render: func(uris []string, _ string) (string, error) {
+			return renderSingBoxJSON(uris)
+		},
 	},
 }
 
@@ -97,6 +105,41 @@ func Targets() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// presetNames is the built-in profile preset registry. Presets are fixed
+// shapes compiled into the panel — never user-supplied URLs or rule text —
+// so a subscription link can pick a profile style without opening an
+// injection surface.
+//
+//   - default: full split-routing profile (external geosite rule-providers).
+//   - global:  no external rule-providers; LAN/private direct, all else PROXY.
+//   - minimal: nodes + PROXY/AUTO groups + MATCH only, for users who keep
+//     their own rules client-side.
+var presetNames = map[string]bool{"default": true, "global": true, "minimal": true}
+
+// Presets returns the canonical preset names (sorted), for docs/UI.
+func Presets() []string {
+	out := make([]string, 0, len(presetNames))
+	for name := range presetNames {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NormalizePreset canonicalizes a ?preset= value. Empty means default;
+// unknown names are an error so a typo never silently serves the wrong
+// profile shape.
+func NormalizePreset(raw string) (string, error) {
+	p := strings.ToLower(strings.TrimSpace(raw))
+	if p == "" {
+		return "default", nil
+	}
+	if !presetNames[p] {
+		return "", fmt.Errorf("unsupported preset: %s", p)
+	}
+	return p, nil
 }
 
 func resolveRenderer(target string) (Renderer, bool) {
@@ -122,6 +165,10 @@ func RenderWithOptions(target string, user repo.User, activeLink *repo.ProxyLink
 	}
 
 	wantProtocols, err := normalizeProtocolFilter(opts.Protocols)
+	if err != nil {
+		return "", "", err
+	}
+	preset, err := NormalizePreset(opts.Preset)
 	if err != nil {
 		return "", "", err
 	}
@@ -173,7 +220,7 @@ func RenderWithOptions(target string, user repo.User, activeLink *repo.ProxyLink
 		return "", "", fmt.Errorf("no available nodes")
 	}
 
-	payload, err := renderer.Render(uris)
+	payload, err := renderer.Render(uris, preset)
 	if err != nil {
 		return "", "", err
 	}
@@ -344,52 +391,91 @@ func renderNodeURI(node repo.Node, user repo.User, activeLink *repo.ProxyLink) s
 	}
 }
 
-func renderClashYAML(uris []string) string {
-	lines := []string{
-		"# Generated for Mihomo / Clash.Meta. Legacy Clash does not support VLESS REALITY.",
-		"mixed-port: 7890",
-		"allow-lan: true",
-		"mode: rule",
-		"log-level: info",
-		"ipv6: true",
-		"unified-delay: true",
-		"tcp-concurrent: true",
-		"global-client-fingerprint: chrome",
-		"profile:",
-		"  store-selected: true",
-		"  store-fake-ip: true",
-		"dns:",
-		"  enable: true",
-		"  listen: 0.0.0.0:1053",
-		"  ipv6: true",
-		"  enhanced-mode: fake-ip",
-		"  fake-ip-range: 198.18.0.1/16",
-		"  default-nameserver:",
-		"    - 223.5.5.5",
-		"    - 119.29.29.29",
-		"    - 1.1.1.1",
-		"  nameserver:",
-		"    - https://dns.alidns.com/dns-query",
-		"    - https://doh.pub/dns-query",
-		"  fallback:",
-		"    - https://dns.google/dns-query",
-		"    - https://cloudflare-dns.com/dns-query",
-		"  fallback-filter:",
-		"    geoip: true",
-		"    geoip-code: CN",
-		"    ipcidr:",
-		"      - 240.0.0.0/4",
-		"  fake-ip-filter:",
-		"    - '*.lan'",
-		"    - '*.local'",
-		"    - '*.localhost'",
-		"    - time.*.com",
-		"    - ntp.*.com",
-		"    - '*.msftconnecttest.com'",
-		"    - '*.msftncsi.com'",
-		"    - localhost.ptlogin2.qq.com",
-		"proxies:",
+// clashBasePrelude is the general-settings header every clash preset shares.
+var clashBasePrelude = []string{
+	"# Generated for Mihomo / Clash.Meta. Legacy Clash does not support VLESS REALITY.",
+	"mixed-port: 7890",
+	"allow-lan: true",
+	"mode: rule",
+	"log-level: info",
+	"ipv6: true",
+	"unified-delay: true",
+	"tcp-concurrent: true",
+	"global-client-fingerprint: chrome",
+	"profile:",
+	"  store-selected: true",
+	"  store-fake-ip: true",
+}
+
+// clashDNSPrelude is the opinionated fake-ip DNS block. The minimal preset
+// omits it so client-side DNS choices are left alone.
+var clashDNSPrelude = []string{
+	"dns:",
+	"  enable: true",
+	"  listen: 0.0.0.0:1053",
+	"  ipv6: true",
+	"  enhanced-mode: fake-ip",
+	"  fake-ip-range: 198.18.0.1/16",
+	"  default-nameserver:",
+	"    - 223.5.5.5",
+	"    - 119.29.29.29",
+	"    - 1.1.1.1",
+	"  nameserver:",
+	"    - https://dns.alidns.com/dns-query",
+	"    - https://doh.pub/dns-query",
+	"  fallback:",
+	"    - https://dns.google/dns-query",
+	"    - https://cloudflare-dns.com/dns-query",
+	"  fallback-filter:",
+	"    geoip: true",
+	"    geoip-code: CN",
+	"    ipcidr:",
+	"      - 240.0.0.0/4",
+	"  fake-ip-filter:",
+	"    - '*.lan'",
+	"    - '*.local'",
+	"    - '*.localhost'",
+	"    - time.*.com",
+	"    - ntp.*.com",
+	"    - '*.msftconnecttest.com'",
+	"    - '*.msftncsi.com'",
+	"    - localhost.ptlogin2.qq.com",
+}
+
+func renderClashYAML(uris []string, preset string) string {
+	lines := append([]string{}, clashBasePrelude...)
+	if preset != "minimal" {
+		lines = append(lines, clashDNSPrelude...)
 	}
+	lines = append(lines, "proxies:")
+	lines, proxyNames := appendClashProxies(lines, uris)
+	switch preset {
+	case "global":
+		// No external rule-providers: LAN/private stays direct, everything
+		// else goes through PROXY. Usable where rule-set CDNs are unreachable.
+		lines = appendClashCoreProxyGroups(lines, proxyNames)
+		lines = append(lines, "rules:")
+		for _, rule := range clashLanDirectRules {
+			lines = append(lines, "  - "+rule)
+		}
+		lines = append(lines, "  - MATCH,PROXY")
+	case "minimal":
+		// Bare nodes + core groups + MATCH, for users who keep their own
+		// rules client-side or merge this into an existing profile.
+		lines = appendClashCoreProxyGroups(lines, proxyNames)
+		lines = append(lines, "rules:", "  - MATCH,PROXY")
+	default:
+		lines = appendClashProxyGroups(lines, proxyNames)
+		lines = appendClashRuleProviders(lines)
+		lines = append(lines, "rules:")
+		for _, rule := range clashDefaultRules {
+			lines = append(lines, "  - "+rule)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func appendClashProxies(lines []string, uris []string) ([]string, []string) {
 	proxyNames := make([]string, 0, len(uris))
 	for i, uri := range uris {
 		p := parseProxyURI(uri)
@@ -448,19 +534,20 @@ func renderClashYAML(uris []string) string {
 			)
 		}
 	}
-	lines = appendClashProxyGroups(lines, proxyNames)
-	lines = appendClashRuleProviders(lines)
-	lines = append(lines, "rules:")
-	for _, rule := range clashDefaultRules {
-		lines = append(lines, "  - "+rule)
-	}
-	return strings.Join(lines, "\n")
+	return lines, proxyNames
 }
 
-func appendClashProxyGroups(lines []string, proxyNames []string) []string {
+// appendClashCoreProxyGroups emits the two groups every preset relies on:
+// PROXY (manual select) and AUTO (latency url-test).
+func appendClashCoreProxyGroups(lines []string, proxyNames []string) []string {
 	lines = append(lines, "proxy-groups:")
 	lines = appendClashProxyGroup(lines, "PROXY", "select", append([]string{"AUTO", "DIRECT"}, proxyNames...), "", 0, 0)
 	lines = appendClashProxyGroup(lines, "AUTO", "url-test", proxyNames, "https://www.gstatic.com/generate_204", 300, 50)
+	return lines
+}
+
+func appendClashProxyGroups(lines []string, proxyNames []string) []string {
+	lines = appendClashCoreProxyGroups(lines, proxyNames)
 	selectProxyOptions := append([]string{"PROXY", "AUTO"}, proxyNames...)
 	selectProxyOptions = append(selectProxyOptions, "DIRECT")
 	for _, name := range []string{"AI", "Streaming", "Telegram", "Google"} {
@@ -536,8 +623,9 @@ func appendClashRuleProviders(lines []string) []string {
 	return lines
 }
 
-var clashDefaultRules = []string{
-	"RULE-SET,reject,REJECT",
+// clashLanDirectRules keeps loopback/RFC1918/link-local traffic direct
+// without any external rule-provider; shared by default and global presets.
+var clashLanDirectRules = []string{
 	"DOMAIN-SUFFIX,local,DIRECT",
 	"DOMAIN-SUFFIX,lan,DIRECT",
 	"DOMAIN-SUFFIX,localhost,DIRECT",
@@ -549,6 +637,10 @@ var clashDefaultRules = []string{
 	"IP-CIDR6,::1/128,DIRECT,no-resolve",
 	"IP-CIDR6,fc00::/7,DIRECT,no-resolve",
 	"IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+}
+
+var clashDefaultRules = append(
+	append([]string{"RULE-SET,reject,REJECT"}, clashLanDirectRules...),
 	"RULE-SET,private,DIRECT",
 	"RULE-SET,openai,AI",
 	"RULE-SET,telegram,Telegram",
@@ -563,7 +655,7 @@ var clashDefaultRules = []string{
 	"RULE-SET,cn,DIRECT",
 	"RULE-SET,geoip-cn,DIRECT,no-resolve",
 	"MATCH,Final",
-}
+)
 
 func quoteClashYAML(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "''") + "'"

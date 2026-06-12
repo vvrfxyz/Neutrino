@@ -91,10 +91,19 @@ func (a *App) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	if types := strings.TrimSpace(q.Get("types")); types != "" {
 		protocols = strings.Split(types, ",")
 	}
+	// Validate ?preset= before rendering: render errors for node-restricted
+	// users are masked as 503 below, but a preset typo is the caller's bug
+	// and must surface as a 400 regardless of restrictions.
+	preset, err := subscription.NormalizePreset(q.Get("preset"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	payload, contentType, err := subscription.RenderWithOptions(target, u, u.ActiveLink, nodes, subscription.RenderOptions{
 		AllowActiveLinkFallback: !restrictedToNodes,
 		Protocols:               protocols,
 		NameFilter:              q.Get("filter"),
+		Preset:                  preset,
 	})
 	if err != nil {
 		if restrictedToNodes {

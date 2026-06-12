@@ -27,7 +27,7 @@ Scope:
 - Target aliases such as `mihomo` for Clash.Meta/Mihomo output.
 - `flag`, `types`, and simple keyword `filter` query parameters.
 - Minimal client capability filtering.
-- Later: safe built-in profile presets.
+- Safe built-in profile presets (`preset=default|global|minimal`). — done
 
 ### 2. Online Status
 
@@ -98,7 +98,7 @@ Scope:
 
 ## Recommended Order
 
-1. Subscription Enhancement. — **done** (renderer registry + capability sets, `mihomo`/`clashmeta`/`stash` aliases, `flag`/`types`/`filter` query params; profile presets remain future work)
+1. Subscription Enhancement. — **done** (renderer registry + capability sets, `mihomo`/`clashmeta`/`stash` aliases, `flag`/`types`/`filter` query params, built-in `preset=default|global|minimal` profile presets)
 2. Online Status. — **done**
 3. User Sync. — **done** (`internal/usersync`, PR #10)
 4. Managed Xray Config Enhancement. — **done** (`internal/xraycfg` + deploy-page editors/preview, PR #11)

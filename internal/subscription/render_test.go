@@ -160,7 +160,7 @@ func TestRenderClashUsesActualProxyNamesInGroup(t *testing.T) {
 	out := renderClashYAML([]string{
 		"vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=example.com&fp=chrome&pbk=abc&sid=12#edge-a",
 		"vless://22222222-2222-2222-2222-222222222222@example.org:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=example.org&fp=chrome&pbk=def&sid=34#edge-b",
-	})
+	}, "default")
 	if !strings.Contains(out, "      - 'edge-a'") || !strings.Contains(out, "      - 'edge-b'") {
 		t.Fatalf("expected clash proxy group to reference actual proxy names, got:\n%s", out)
 	}
@@ -172,7 +172,7 @@ func TestRenderClashUsesActualProxyNamesInGroup(t *testing.T) {
 func TestRenderClashIncludesMihomoRules(t *testing.T) {
 	out := renderClashYAML([]string{
 		"vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=example.com&fp=chrome&pbk=abc&sid=12#edge-a",
-	})
+	}, "default")
 	for _, want := range []string{
 		"# Generated for Mihomo / Clash.Meta. Legacy Clash does not support VLESS REALITY.",
 		"mixed-port: 7890",
@@ -391,5 +391,96 @@ func TestRenderMihomoAliasAndUA(t *testing.T) {
 	}
 	if got := DetectTargetFromUA("mihomo/1.18.0"); got != "clash" {
 		t.Fatalf("mihomo UA detected as %q", got)
+	}
+}
+
+func TestNormalizePreset(t *testing.T) {
+	for raw, want := range map[string]string{
+		"": "default", "default": "default", "GLOBAL": "global",
+		" minimal ": "minimal",
+	} {
+		got, err := NormalizePreset(raw)
+		if err != nil || got != want {
+			t.Fatalf("NormalizePreset(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	if _, err := NormalizePreset("fancy"); err == nil {
+		t.Fatalf("unknown preset should error")
+	}
+}
+
+func TestRenderClashPresets(t *testing.T) {
+	uris := []string{
+		"vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=example.com&fp=chrome&pbk=abc&sid=12#edge-a",
+	}
+
+	global := renderClashYAML(uris, "global")
+	for _, want := range []string{
+		"  - name: 'PROXY'",
+		"  - name: 'AUTO'",
+		"  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+		"  - MATCH,PROXY",
+		"  enhanced-mode: fake-ip", // global keeps the DNS block
+	} {
+		if !strings.Contains(global, want) {
+			t.Fatalf("global preset missing %q:\n%s", want, global)
+		}
+	}
+	for _, banned := range []string{"rule-providers:", "RULE-SET,", "MATCH,Final", "- name: 'AI'"} {
+		if strings.Contains(global, banned) {
+			t.Fatalf("global preset must not contain %q:\n%s", banned, global)
+		}
+	}
+
+	minimal := renderClashYAML(uris, "minimal")
+	for _, want := range []string{"  - name: 'PROXY'", "  - name: 'AUTO'", "  - MATCH,PROXY", "  - name: 'edge-a'"} {
+		if !strings.Contains(minimal, want) {
+			t.Fatalf("minimal preset missing %q:\n%s", want, minimal)
+		}
+	}
+	for _, banned := range []string{"rule-providers:", "RULE-SET,", "dns:", "IP-CIDR,"} {
+		if strings.Contains(minimal, banned) {
+			t.Fatalf("minimal preset must not contain %q:\n%s", banned, minimal)
+		}
+	}
+
+	// All presets share the same proxies section.
+	def := renderClashYAML(uris, "default")
+	for _, out := range []string{def, global, minimal} {
+		if !strings.Contains(out, "    server: 'example.com'") {
+			t.Fatalf("preset output missing proxy server:\n%s", out)
+		}
+	}
+}
+
+func TestRenderWithOptionsPreset(t *testing.T) {
+	u := repo.User{ID: 1, Username: "alice", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(24 * time.Hour)}
+	link := &repo.ProxyLink{UUID: "11111111-1111-1111-1111-111111111111"}
+	nodes := []repo.Node{{ID: 1, Name: "n1", Protocol: "vless_reality", CoreType: "xray", Host: "example.com", Port: 443, PublicKey: "pbk", ShortID: "sid", Enabled: true}}
+
+	out, _, err := RenderWithOptions("clash", u, link, nodes, RenderOptions{Preset: "global"})
+	if err != nil {
+		t.Fatalf("preset=global err=%v", err)
+	}
+	if !strings.Contains(out, "  - MATCH,PROXY") || strings.Contains(out, "rule-providers:") {
+		t.Fatalf("preset=global did not change clash shape:\n%s", out)
+	}
+
+	// Unknown preset is a render error (handler maps it to 400).
+	if _, _, err := RenderWithOptions("clash", u, link, nodes, RenderOptions{Preset: "nope"}); err == nil {
+		t.Fatalf("unknown preset should error")
+	}
+
+	// URI-list targets ignore presets: same bytes for any preset value.
+	plain, _, err := RenderWithOptions("shadowrocket", u, link, nodes, RenderOptions{})
+	if err != nil {
+		t.Fatalf("shadowrocket err=%v", err)
+	}
+	withPreset, _, err := RenderWithOptions("shadowrocket", u, link, nodes, RenderOptions{Preset: "minimal"})
+	if err != nil {
+		t.Fatalf("shadowrocket preset err=%v", err)
+	}
+	if plain != withPreset {
+		t.Fatalf("shadowrocket output must be preset-independent")
 	}
 }
