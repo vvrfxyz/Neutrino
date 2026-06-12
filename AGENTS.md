@@ -39,7 +39,7 @@
 - Deploy servers by pulling pinned tags produced by the workflow; remote servers must not build release images directly.
 - Release scripts deploy published tags only; do not build release images outside GitHub Actions unless explicitly requested.
 - Current production panel server: `<panel-host>` (`root@<panel-ip>`), using the embedded `/data/docker-compose.yml` stack with app files in `/data/neutrino`.
-- `main` is protected: required status checks are `build` and `docker` with strict branch freshness, linear history, required conversation resolution, no force pushes, and no branch deletion.
+- `main` is protected: required status checks are `build`, `docker`, and `e2e` (Playwright) with strict branch freshness, linear history, required conversation resolution, no force pushes, and no branch deletion.
 - `main` has PR review rules enabled with `required_approving_review_count=0`; admins are not subject to branch protection (`enforce_admins=false`).
 
 ## Data Rules
