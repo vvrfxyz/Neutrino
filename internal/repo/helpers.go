@@ -79,7 +79,10 @@ func trafficBucketKey(t time.Time, period string) string {
 	case "daily":
 		return t.Format("2006-01-02T00:00:00Z")
 	case "monthly":
-		return t.Format("2006-01-01T00:00:00Z")
+		// Truncate to month start explicitly: a literal day inside a Format
+		// layout would be parsed as a placeholder (the old "2006-01-01"
+		// layout rendered year-month-month).
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	default:
 		return t.Format(time.RFC3339)
 	}
