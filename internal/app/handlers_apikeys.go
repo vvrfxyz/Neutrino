@@ -1,11 +1,14 @@
 package app
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"neutrino/internal/repo"
@@ -129,6 +132,69 @@ func (a *App) handleAPIKeyByIDV1(w http.ResponseWriter, r *http.Request) {
 
 // SSR admin page: /apikeys (list + create form), /apikeys/{id}/revoke.
 
+// oneTimePlainKeys hands the just-created plaintext key from the create POST
+// to the redirected GET exactly once (PRG: refreshing after create must
+// re-render the page, not re-submit the form and mint another key).
+type oneTimePlainKeys struct {
+	mu      sync.Mutex
+	entries map[string]oneTimePlainKey
+}
+
+type oneTimePlainKey struct {
+	plainKey  string
+	sessionID string
+	expiresAt time.Time
+}
+
+const plainKeyStashTTL = 2 * time.Minute
+
+func (s *oneTimePlainKeys) put(sessionID, plainKey string) (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	nonce := hex.EncodeToString(buf)
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]oneTimePlainKey)
+	}
+	for k, e := range s.entries {
+		if now.After(e.expiresAt) {
+			delete(s.entries, k)
+		}
+	}
+	s.entries[nonce] = oneTimePlainKey{
+		plainKey:  plainKey,
+		sessionID: sessionID,
+		expiresAt: now.Add(plainKeyStashTTL),
+	}
+	return nonce, nil
+}
+
+func (s *oneTimePlainKeys) pop(nonce, sessionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[nonce]
+	if !ok {
+		return ""
+	}
+	delete(s.entries, nonce)
+	if time.Now().After(e.expiresAt) || e.sessionID != sessionID {
+		return ""
+	}
+	return e.plainKey
+}
+
+func sessionIDFromRequest(r *http.Request) string {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c == nil {
+		return ""
+	}
+	return c.Value
+}
+
 type apikeysPageData struct {
 	Items       []repo.APIKey
 	ValidScopes []string
@@ -166,7 +232,11 @@ func (a *App) renderAPIKeysPage(w http.ResponseWriter, r *http.Request, plainKey
 func (a *App) handleAPIKeysPage(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.renderAPIKeysPage(w, r, "", "")
+		plain := ""
+		if nonce := strings.TrimSpace(r.URL.Query().Get("new")); nonce != "" {
+			plain = a.apiKeyPlainStash.pop(nonce, sessionIDFromRequest(r))
+		}
+		a.renderAPIKeysPage(w, r, plain, "")
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			a.renderAPIKeysPage(w, r, "", "表单解析失败")
@@ -201,7 +271,16 @@ func (a *App) handleAPIKeysPage(w http.ResponseWriter, r *http.Request) {
 			"scopes":  meta.Scopes,
 			"node_id": meta.NodeID,
 		})
-		a.renderAPIKeysPage(w, r, plain, "")
+		// PRG: stash the plaintext for the redirected GET so a browser
+		// refresh re-renders the page instead of re-minting a key.
+		nonce, stashErr := a.apiKeyPlainStash.put(sessionIDFromRequest(r), plain)
+		if stashErr != nil {
+			// Out of entropy is effectively unreachable; rather than lose the
+			// one-time plaintext, fall back to rendering it directly.
+			a.renderAPIKeysPage(w, r, plain, "")
+			return
+		}
+		http.Redirect(w, r, "/apikeys?new="+nonce, http.StatusSeeOther)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
