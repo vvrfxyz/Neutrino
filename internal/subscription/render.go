@@ -26,13 +26,25 @@ func BuildSubscriptionURL(baseURL, token, target string) string {
 
 type RenderOptions struct {
 	AllowActiveLinkFallback bool
+	// Protocols restricts output to these node protocols (panel names:
+	// vless_reality | hysteria2 | tuic). Empty means all the target supports.
+	Protocols []string
+	// NameFilter keeps only nodes whose display name contains one of the
+	// "|"-separated keywords (case-insensitive). Empty keeps everything.
+	NameFilter string
 }
 
 // Renderer turns a list of per-node proxy URIs into a client-specific payload.
 type Renderer struct {
 	ContentType string
 	Render      func(uris []string) (string, error)
+	// Protocols is the client capability set: node protocols this target can
+	// express. Nodes outside it are dropped instead of emitting entries the
+	// client cannot parse (or dangling group references in clash YAML).
+	Protocols map[string]bool
 }
+
+var allProtocols = map[string]bool{"vless_reality": true, "hysteria2": true, "tuic": true}
 
 // renderers is the target registry. Keys are canonical lowercase target names;
 // aliases map onto the same Renderer. DetectTargetFromUA must only return keys
@@ -40,6 +52,7 @@ type Renderer struct {
 var renderers = map[string]Renderer{
 	"v2rayn": {
 		ContentType: "text/plain; charset=utf-8",
+		Protocols:   allProtocols,
 		Render: func(uris []string) (string, error) {
 			raw := strings.Join(uris, "\n")
 			return base64.StdEncoding.EncodeToString([]byte(raw)), nil
@@ -47,25 +60,33 @@ var renderers = map[string]Renderer{
 	},
 	"shadowrocket": {
 		ContentType: "text/plain; charset=utf-8",
+		Protocols:   allProtocols,
 		Render: func(uris []string) (string, error) {
 			return strings.Join(uris, "\n"), nil
 		},
 	},
 	"clash": {
 		ContentType: "text/yaml; charset=utf-8",
+		// The YAML is Mihomo/Clash.Meta-shaped; Meta cores speak all three.
+		Protocols: allProtocols,
 		Render: func(uris []string) (string, error) {
 			return renderClashYAML(uris), nil
 		},
 	},
 	"singbox": {
 		ContentType: "application/json",
+		Protocols:   allProtocols,
 		Render:      renderSingBoxJSON,
 	},
 }
 
 // targetAliases maps accepted spellings onto canonical registry keys.
 var targetAliases = map[string]string{
-	"sing-box": "singbox",
+	"sing-box":   "singbox",
+	"mihomo":     "clash",
+	"clashmeta":  "clash",
+	"clash.meta": "clash",
+	"stash":      "clash",
 }
 
 // Targets returns the canonical renderer names (sorted), for docs/UI.
@@ -100,6 +121,12 @@ func RenderWithOptions(target string, user repo.User, activeLink *repo.ProxyLink
 		return "", "", fmt.Errorf("unsupported target: %s", target)
 	}
 
+	wantProtocols, err := normalizeProtocolFilter(opts.Protocols)
+	if err != nil {
+		return "", "", err
+	}
+	nameKeywords := normalizeNameFilter(opts.NameFilter)
+
 	// Prefer per-node URIs when available.
 	// The user's stored "active link" can become stale after config changes; it is used only as a fallback
 	// when no node URIs can be rendered yet.
@@ -118,16 +145,31 @@ func RenderWithOptions(target string, user repo.User, activeLink *repo.ProxyLink
 		uris = append(uris, uri)
 	}
 
-	// Render node URIs first.
+	// Render node URIs first, applying the capability set and query filters.
 	for _, node := range nodes {
+		if renderer.Protocols != nil && !renderer.Protocols[node.Protocol] {
+			continue
+		}
+		if wantProtocols != nil && !wantProtocols[node.Protocol] {
+			continue
+		}
+		if !nodeNameMatches(node, nameKeywords) {
+			continue
+		}
 		uri := renderNodeURI(node, user, activeLink)
 		addURI(uri)
 	}
-	// Fallback to active link only if nodes are not renderable (e.g. missing pbk/sid report).
-	if opts.AllowActiveLinkFallback && len(uris) == 0 && activeLink != nil {
+	// Fallback to active link only if nodes are not renderable (e.g. missing
+	// pbk/sid report) AND the caller did not narrow the selection — an explicit
+	// filter that matches nothing must say so, not serve unrelated config.
+	filtered := wantProtocols != nil || len(nameKeywords) > 0
+	if opts.AllowActiveLinkFallback && !filtered && len(uris) == 0 && activeLink != nil {
 		addURI(activeLink.Link)
 	}
 	if len(uris) == 0 {
+		if filtered {
+			return "", "", fmt.Errorf("no nodes match the requested filter")
+		}
 		return "", "", fmt.Errorf("no available nodes")
 	}
 
@@ -136,6 +178,71 @@ func RenderWithOptions(target string, user repo.User, activeLink *repo.ProxyLink
 		return "", "", err
 	}
 	return payload, renderer.ContentType, nil
+}
+
+// protocolFilterAliases accepts common client-side spellings for panel
+// protocol names in the ?types= parameter.
+var protocolFilterAliases = map[string]string{
+	"vless":         "vless_reality",
+	"vless_reality": "vless_reality",
+	"reality":       "vless_reality",
+	"hysteria2":     "hysteria2",
+	"hy2":           "hysteria2",
+	"tuic":          "tuic",
+}
+
+func normalizeProtocolFilter(in []string) (map[string]bool, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]bool, len(in))
+	for _, raw := range in {
+		p := strings.ToLower(strings.TrimSpace(raw))
+		if p == "" {
+			continue
+		}
+		canonical, ok := protocolFilterAliases[p]
+		if !ok {
+			return nil, fmt.Errorf("unsupported protocol type: %s", p)
+		}
+		out[canonical] = true
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func normalizeNameFilter(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, "|")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func nodeNameMatches(node repo.Node, keywords []string) bool {
+	if len(keywords) == 0 {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(node.Name))
+	if name == "" {
+		name = fmt.Sprintf("node-%d", node.ID)
+	}
+	for _, kw := range keywords {
+		if strings.Contains(name, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // canonicalProxyURIKey normalizes a proxy URI for comparison.

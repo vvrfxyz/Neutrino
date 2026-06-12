@@ -17,7 +17,8 @@ func DetectTargetFromUA(ua string) string {
 	switch {
 	case strings.Contains(lower, "stash"):
 		return "clash"
-	case strings.Contains(lower, "clash"):
+	case strings.Contains(lower, "mihomo"),
+		strings.Contains(lower, "clash"):
 		return "clash"
 	case strings.Contains(lower, "sing-box"),
 		strings.Contains(lower, "singbox"),
