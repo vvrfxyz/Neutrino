@@ -46,6 +46,7 @@ type App struct {
 
 	wsHub              *wsHub
 	metricHistoryQueue *nodeMetricHistoryQueue
+	apiKeyPlainStash   oneTimePlainKeys
 
 	usersSyncMu      sync.Mutex
 	lastUsersSyncReq time.Time

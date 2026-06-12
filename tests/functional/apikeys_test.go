@@ -150,7 +150,8 @@ func TestFunctional_APIKeysAdminPage(t *testing.T) {
 		}
 	}
 
-	// Create via the SSR form; the plaintext key renders exactly once.
+	// Create via the SSR form; PRG redirects to /apikeys?new=<nonce> where the
+	// plaintext renders exactly once (the client follows the 303).
 	form := url.Values{}
 	form.Set("name", "panel-made")
 	form.Add("scopes", "nodes:read")
@@ -159,9 +160,29 @@ func TestFunctional_APIKeysAdminPage(t *testing.T) {
 	if createResp.StatusCode != http.StatusOK {
 		t.Fatalf("form create status=%d", createResp.StatusCode)
 	}
+	finalURL := createResp.Request.URL
+	if finalURL.Path != "/apikeys" || finalURL.Query().Get("new") == "" {
+		t.Fatalf("create did not PRG-redirect, final url=%s", finalURL)
+	}
 	createBody := decodeBodyText(t, createResp)
 	if !strings.Contains(createBody, "nk_") || !strings.Contains(createBody, "panel-made") {
 		t.Fatalf("create page missing key or name")
+	}
+
+	// A browser refresh after PRG re-GETs the same URL: the one-time stash is
+	// spent, so the plaintext must not reappear and no second key is minted.
+	refresh := env.request(t, http.MethodGet, finalURL.Path+"?"+finalURL.RawQuery, nil, true, "")
+	defer refresh.Body.Close()
+	if b := decodeBodyText(t, refresh); strings.Contains(b, "nk_") {
+		t.Fatalf("plaintext key survived a refresh of the PRG URL")
+	}
+	var keyCount int
+	if err := env.store.RawDB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM api_keys WHERE name='panel-made'`).Scan(&keyCount); err != nil {
+		t.Fatalf("count keys: %v", err)
+	}
+	if keyCount != 1 {
+		t.Fatalf("expected exactly 1 key after create+refresh, got %d", keyCount)
 	}
 
 	// Subsequent page loads must NOT re-show the plaintext.
