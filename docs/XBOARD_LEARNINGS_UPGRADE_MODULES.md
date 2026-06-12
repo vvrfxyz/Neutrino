@@ -98,7 +98,7 @@ Scope:
 
 ## Recommended Order
 
-1. Subscription Enhancement. — **partially done** (renderer registry shipped; aliases/query params/capability filtering remain)
+1. Subscription Enhancement. — **done** (renderer registry + capability sets, `mihomo`/`clashmeta`/`stash` aliases, `flag`/`types`/`filter` query params; profile presets remain future work)
 2. Online Status. — **done**
 3. User Sync. — **done** (`internal/usersync`, PR #10)
 4. Managed Xray Config Enhancement. — **done** (`internal/xraycfg` + deploy-page editors/preview, PR #11)

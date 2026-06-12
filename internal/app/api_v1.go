@@ -77,12 +77,24 @@ func (a *App) handleSubscription(w http.ResponseWriter, r *http.Request) {
 			Enabled:   true,
 		}}
 	}
-	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	q := r.URL.Query()
+	// ?target= is canonical; ?flag= is the Xboard-style spelling clients
+	// already emit. target wins when both are present.
+	target := strings.TrimSpace(q.Get("target"))
+	if target == "" {
+		target = strings.TrimSpace(q.Get("flag"))
+	}
 	if target == "" {
 		target = subscription.DetectTargetFromUA(r.Header.Get("User-Agent"))
 	}
+	var protocols []string
+	if types := strings.TrimSpace(q.Get("types")); types != "" {
+		protocols = strings.Split(types, ",")
+	}
 	payload, contentType, err := subscription.RenderWithOptions(target, u, u.ActiveLink, nodes, subscription.RenderOptions{
 		AllowActiveLinkFallback: !restrictedToNodes,
+		Protocols:               protocols,
+		NameFilter:              q.Get("filter"),
 	})
 	if err != nil {
 		if restrictedToNodes {

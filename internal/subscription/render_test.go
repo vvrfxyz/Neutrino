@@ -333,3 +333,63 @@ func TestRenderNodeURIBracketsIPv6Host(t *testing.T) {
 		t.Fatalf("parsed host/port: %q/%d", p.Host, p.Port)
 	}
 }
+
+func TestRenderQueryFilters(t *testing.T) {
+	u := repo.User{ID: 1, Username: "alice", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(24 * time.Hour)}
+	link := &repo.ProxyLink{UUID: "11111111-1111-1111-1111-111111111111", Link: "vless://x@h:443?security=none#alice"}
+	nodes := []repo.Node{
+		{ID: 1, Name: "HK 01", Protocol: "vless_reality", CoreType: "xray", Host: "hk.example.com", Port: 443, PublicKey: "pbk", ShortID: "sid", Enabled: true},
+		{ID: 2, Name: "JP 01", Protocol: "hysteria2", CoreType: "xray", Host: "jp.example.com", Port: 443, Enabled: true},
+		{ID: 3, Name: "US 01", Protocol: "tuic", CoreType: "xray", Host: "us.example.com", Port: 443, Enabled: true},
+	}
+
+	// types= keeps only the requested protocols (with alias spellings).
+	out, _, err := RenderWithOptions("shadowrocket", u, link, nodes, RenderOptions{Protocols: []string{"hy2"}})
+	if err != nil {
+		t.Fatalf("types filter: %v", err)
+	}
+	if !strings.Contains(out, "hysteria2://") || strings.Contains(out, "vless://") || strings.Contains(out, "tuic://") {
+		t.Fatalf("types filter leaked other protocols:\n%s", out)
+	}
+
+	// filter= keyword on the node name, case-insensitive, | for OR.
+	out, _, err = RenderWithOptions("shadowrocket", u, link, nodes, RenderOptions{NameFilter: "hk|us"})
+	if err != nil {
+		t.Fatalf("name filter: %v", err)
+	}
+	if !strings.Contains(out, "hk.example.com") || !strings.Contains(out, "us.example.com") || strings.Contains(out, "jp.example.com") {
+		t.Fatalf("name filter wrong selection:\n%s", out)
+	}
+
+	// A filter that matches nothing is an explicit error — never the stale
+	// active-link fallback.
+	_, _, err = RenderWithOptions("shadowrocket", u, link, nodes, RenderOptions{AllowActiveLinkFallback: true, NameFilter: "nowhere"})
+	if err == nil || !strings.Contains(err.Error(), "filter") {
+		t.Fatalf("empty filter result should error, got %v", err)
+	}
+
+	// Unknown types value is a client error, not a silent no-op.
+	_, _, err = RenderWithOptions("shadowrocket", u, link, nodes, RenderOptions{Protocols: []string{"wireguard"}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported protocol type") {
+		t.Fatalf("unknown type should error, got %v", err)
+	}
+}
+
+func TestRenderMihomoAliasAndUA(t *testing.T) {
+	u := repo.User{ID: 1, Username: "alice", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(24 * time.Hour)}
+	link := &repo.ProxyLink{UUID: "11111111-1111-1111-1111-111111111111"}
+	nodes := []repo.Node{{ID: 1, Name: "n1", Protocol: "vless_reality", CoreType: "xray", Host: "example.com", Port: 443, PublicKey: "pbk", ShortID: "sid", Enabled: true}}
+
+	for _, alias := range []string{"mihomo", "clashmeta", "clash.meta", "stash"} {
+		out, ct, err := Render(alias, u, link, nodes)
+		if err != nil {
+			t.Fatalf("alias %s: %v", alias, err)
+		}
+		if !strings.Contains(ct, "yaml") || !strings.Contains(out, "proxies:") {
+			t.Fatalf("alias %s did not produce clash yaml", alias)
+		}
+	}
+	if got := DetectTargetFromUA("mihomo/1.18.0"); got != "clash" {
+		t.Fatalf("mihomo UA detected as %q", got)
+	}
+}
