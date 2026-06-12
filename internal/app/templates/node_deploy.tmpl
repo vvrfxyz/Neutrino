@@ -165,13 +165,161 @@
 
     <!-- Custom outbounds / routes (module 4) -->
     <div class="mt-4 border-t border-slate-100 pt-4" id="custom-xray-config">
-      <h3 class="text-sm font-semibold text-slate-900">自定义出站与路由</h3>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-sm font-semibold text-slate-900">自定义出站与路由</h3>
+        <div class="inline-flex rounded-md border border-slate-200 p-0.5 text-xs" role="group" aria-label="编辑模式">
+          <button type="button" x-on:click="setCustomMode('form')"
+                  :class="customMode === 'form' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-700'"
+                  class="px-2.5 py-1 rounded font-medium transition-colors">表单</button>
+          <button type="button" x-on:click="setCustomMode('json')"
+                  :class="customMode === 'json' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-700'"
+                  class="px-2.5 py-1 rounded font-medium transition-colors">JSON</button>
+        </div>
+      </div>
       <p class="text-xs text-slate-400 mt-0.5 mb-3">
-        结构化白名单子集：出站协议限 freedom / blackhole / socks / http；路由按 domain / ip / port / network / protocol 匹配，目标为 direct、blocked 或上方自定义出站的 tag。
+        结构化白名单子集：出站协议限 freedom / blackhole / socks / http；路由按 domain / ip / port / network / protocol 匹配，目标为 direct、blocked 或自定义出站的 tag。
         保存时面板校验，agent 下发前再次校验并合并进渲染配置。需要节点 agent 为支持版本——旧 agent 会显式失败而不是静默丢弃。
       </p>
       <div x-show="customMsg" x-transition class="mb-2 text-sm" :class="customMsgErr ? 'text-red-600' : 'text-emerald-700'" x-text="customMsg"></div>
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+
+      <!-- Form mode -->
+      <div x-show="customMode === 'form'">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-xs font-medium text-slate-500">自定义出站（custom_outbounds）</span>
+          <button type="button" x-on:click="addOutbound()"
+                  class="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-200">
+            <i data-lucide="plus" class="w-3 h-3"></i> 添加出站
+          </button>
+        </div>
+        <template x-for="(o, oIdx) in outboundRows" :key="'ob-' + oIdx">
+          <div class="mb-2 rounded-lg border border-slate-200 p-3">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label class="text-[11px] text-slate-400">tag</label>
+                <input type="text" x-model="o.tag" x-on:input="syncCustomTexts()" aria-label="出站 tag" placeholder="up"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+              <div>
+                <label class="text-[11px] text-slate-400">protocol</label>
+                <select x-model="o.protocol" x-on:change="syncCustomTexts()" aria-label="出站协议"
+                        class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                  <option value="freedom">freedom（直连）</option>
+                  <option value="blackhole">blackhole（丢弃）</option>
+                  <option value="socks">socks（上游代理）</option>
+                  <option value="http">http（上游代理）</option>
+                </select>
+              </div>
+              <div x-show="o.protocol === 'freedom'">
+                <label class="text-[11px] text-slate-400">domain_strategy</label>
+                <select x-model="o.domain_strategy" x-on:change="syncCustomTexts()" aria-label="出站 domain_strategy"
+                        class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                  <option value="">默认（AsIs）</option>
+                  <option value="AsIs">AsIs</option>
+                  <option value="UseIP">UseIP</option>
+                  <option value="UseIPv4">UseIPv4</option>
+                  <option value="UseIPv6">UseIPv6</option>
+                </select>
+              </div>
+              <div x-show="o.protocol === 'socks' || o.protocol === 'http'">
+                <label class="text-[11px] text-slate-400">address</label>
+                <input type="text" x-model="o.address" x-on:input="syncCustomTexts()" aria-label="出站地址" placeholder="10.0.0.2"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+              <div x-show="o.protocol === 'socks' || o.protocol === 'http'">
+                <label class="text-[11px] text-slate-400">port</label>
+                <input type="number" min="1" max="65535" x-model="o.port" x-on:input="syncCustomTexts()" aria-label="出站端口" placeholder="1080"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+              <div x-show="o.protocol === 'socks' || o.protocol === 'http'">
+                <label class="text-[11px] text-slate-400">username（可选）</label>
+                <input type="text" x-model="o.username" x-on:input="syncCustomTexts()" aria-label="出站用户名" autocomplete="off"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+              <div x-show="o.protocol === 'socks' || o.protocol === 'http'">
+                <label class="text-[11px] text-slate-400">password（可选）</label>
+                <input type="password" x-model="o.password" x-on:input="syncCustomTexts()" aria-label="出站密码" autocomplete="new-password"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+            </div>
+            <div class="mt-2 text-right">
+              <button type="button" x-on:click="outboundRows.splice(oIdx, 1); syncCustomTexts()"
+                      class="px-2 py-0.5 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded transition-colors">删除出站</button>
+            </div>
+          </div>
+        </template>
+        <div x-show="outboundRows.length === 0" class="mb-2 rounded-lg border border-dashed border-slate-200 px-3 py-3 text-center text-xs text-slate-400">暂无自定义出站</div>
+
+        <div class="mb-2 mt-4 flex items-center justify-between">
+          <span class="text-xs font-medium text-slate-500">自定义路由（custom_routes，按顺序插入 api 规则之后）</span>
+          <button type="button" x-on:click="addRoute()"
+                  class="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-200">
+            <i data-lucide="plus" class="w-3 h-3"></i> 添加路由
+          </button>
+        </div>
+        <template x-for="(r, rIdx) in routeRows" :key="'rt-' + rIdx">
+          <div class="mb-2 rounded-lg border border-slate-200 p-3">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <label class="text-[11px] text-slate-400">outbound_tag（目标出站）</label>
+                <select x-model="r.outbound_tag" x-on:change="syncCustomTexts()" aria-label="路由目标出站"
+                        class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                  <option value="">选择出站…</option>
+                  <option value="direct">direct（内置直连）</option>
+                  <option value="blocked">blocked（内置拦截）</option>
+                  <template x-for="t in customTagOptions()" :key="t">
+                    <option :value="t" x-text="t"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label class="text-[11px] text-slate-400">domains（逗号/空格分隔；支持 domain: full: keyword: geosite: 前缀）</label>
+                <input type="text" x-model="r.domains" x-on:input="syncCustomTexts()" aria-label="路由 domains" placeholder="geosite:openai, domain:example.com"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+              <div>
+                <label class="text-[11px] text-slate-400">ips（ip / cidr / geoip:cn）</label>
+                <input type="text" x-model="r.ips" x-on:input="syncCustomTexts()" aria-label="路由 ips" placeholder="geoip:private, 10.0.0.0/8"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+              <div>
+                <label class="text-[11px] text-slate-400">ports</label>
+                <input type="text" x-model="r.ports" x-on:input="syncCustomTexts()" aria-label="路由 ports" placeholder="443 或 1000-2000,8443"
+                       class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500">
+              </div>
+              <div>
+                <label class="text-[11px] text-slate-400">network</label>
+                <select x-model="r.network" x-on:change="syncCustomTexts()" aria-label="路由 network"
+                        class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                  <option value="">不限</option>
+                  <option value="tcp">tcp</option>
+                  <option value="udp">udp</option>
+                  <option value="tcp,udp">tcp,udp</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-[11px] text-slate-400">protocols（嗅探协议）</label>
+                <div class="mt-1.5 flex flex-wrap gap-3">
+                  <template x-for="p in ['http', 'tls', 'bittorrent', 'quic']" :key="p">
+                    <label class="flex items-center gap-1 text-xs text-slate-600">
+                      <input type="checkbox" :value="p" x-model="r.protocols" x-on:change="syncCustomTexts()"
+                             class="rounded border-slate-300 text-blue-600 focus:ring-blue-500">
+                      <span x-text="p"></span>
+                    </label>
+                  </template>
+                </div>
+              </div>
+            </div>
+            <div class="mt-2 text-right">
+              <button type="button" x-on:click="routeRows.splice(rIdx, 1); syncCustomTexts()"
+                      class="px-2 py-0.5 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded transition-colors">删除路由</button>
+            </div>
+          </div>
+        </template>
+        <div x-show="routeRows.length === 0" class="rounded-lg border border-dashed border-slate-200 px-3 py-3 text-center text-xs text-slate-400">暂无自定义路由</div>
+      </div>
+
+      <!-- JSON mode (advanced; two-way synced with the form) -->
+      <div x-show="customMode === 'json'" class="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div>
           <label class="text-xs font-medium text-slate-500">custom_outbounds（JSON 数组）</label>
           <textarea x-model="customOutboundsText" x-on:input="refreshPreview()" rows="7" spellcheck="false" aria-label="自定义出站 JSON"
@@ -443,12 +591,39 @@ function nodeDeployPage() {
     return (arr && arr.length) ? JSON.stringify(arr, null, 2) : '';
   }
 
+  function outboundsToRows(arr) {
+    return (arr || []).map(o => ({
+      tag: o.tag || '', protocol: o.protocol || 'freedom',
+      address: o.address || '', port: o.port ? String(o.port) : '',
+      username: o.username || '', password: o.password || '',
+      domain_strategy: o.domain_strategy || ''
+    }));
+  }
+
+  function routesToRows(arr) {
+    return (arr || []).map(r => ({
+      outbound_tag: r.outbound_tag || '',
+      domains: (r.domains || []).join(', '),
+      ips: (r.ips || []).join(', '),
+      ports: r.ports || '', network: r.network || '',
+      protocols: (r.protocols || []).slice()
+    }));
+  }
+
+  // splitEntries turns "a, b c" into ["a","b","c"]; empty -> [].
+  function splitEntries(text) {
+    return (text || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  }
+
   return {
     managedMsg: '', managedMsgErr: false,
     customMsg: '', customMsgErr: false,
     rollbackOnFail: !!initialRollback,
     rollbackBackup: '',
     varsRows: varsToRows(initialVars),
+    customMode: 'form',
+    outboundRows: outboundsToRows(initialCustomOutbounds),
+    routeRows: routesToRows(initialCustomRoutes),
     customOutboundsText: customText(initialCustomOutbounds),
     customRoutesText: customText(initialCustomRoutes),
     renderPreview: '',
@@ -498,6 +673,88 @@ function nodeDeployPage() {
       try { v = JSON.parse(t); } catch (e) { throw new Error(label + ' 不是合法 JSON: ' + e.message); }
       if (!Array.isArray(v)) throw new Error(label + ' 必须是 JSON 数组');
       return v;
+    },
+
+    // --- form-mode <-> JSON-mode sync ------------------------------------
+    // The JSON textareas stay the single source of truth for save/preview;
+    // form mode is a structured editor over the same data. Form edits are
+    // pushed into the textareas immediately (syncCustomTexts); switching
+    // form -> json shows the same JSON; switching json -> form re-parses
+    // and rebuilds rows (invalid JSON blocks the switch with a message).
+
+    collectOutbounds() {
+      return this.outboundRows.map(o => {
+        const out = { tag: (o.tag || '').trim(), protocol: o.protocol };
+        if (o.protocol === 'socks' || o.protocol === 'http') {
+          out.address = (o.address || '').trim();
+          const port = parseInt(o.port, 10);
+          if (!isNaN(port)) out.port = port;
+          if ((o.username || '').length) out.username = o.username;
+          if ((o.password || '').length) out.password = o.password;
+        }
+        if (o.protocol === 'freedom' && o.domain_strategy) out.domain_strategy = o.domain_strategy;
+        return out;
+      });
+    },
+
+    collectRoutes() {
+      return this.routeRows.map(r => {
+        const out = { outbound_tag: (r.outbound_tag || '').trim() };
+        const domains = splitEntries(r.domains);
+        const ips = splitEntries(r.ips);
+        if (domains.length) out.domains = domains;
+        if (ips.length) out.ips = ips;
+        if ((r.ports || '').trim()) out.ports = r.ports.trim();
+        if (r.network) out.network = r.network;
+        if (r.protocols && r.protocols.length) out.protocols = r.protocols.slice();
+        return out;
+      });
+    },
+
+    syncCustomTexts() {
+      this.customOutboundsText = customText(this.collectOutbounds());
+      this.customRoutesText = customText(this.collectRoutes());
+      this.refreshPreview();
+    },
+
+    setCustomMode(mode) {
+      if (mode === this.customMode) return;
+      if (mode === 'form') {
+        // Rebuild rows from the JSON; invalid JSON keeps the user in JSON
+        // mode so nothing they typed is silently dropped.
+        try {
+          const outs = this.parseCustomArray(this.customOutboundsText, 'custom_outbounds');
+          const rts = this.parseCustomArray(this.customRoutesText, 'custom_routes');
+          this.outboundRows = outboundsToRows(outs);
+          this.routeRows = routesToRows(rts);
+          this.customMsg = ''; this.customMsgErr = false;
+        } catch (e) {
+          this.customMsg = e.message + '（请先修正 JSON 再切换表单模式）';
+          this.customMsgErr = true;
+          return;
+        }
+      }
+      this.customMode = mode;
+    },
+
+    customTagOptions() {
+      const seen = new Set();
+      const out = [];
+      for (const o of this.outboundRows) {
+        const t = (o.tag || '').trim();
+        if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+      }
+      return out;
+    },
+
+    addOutbound() {
+      this.outboundRows.push({ tag: '', protocol: 'freedom', address: '', port: '', username: '', password: '', domain_strategy: '' });
+      this.syncCustomTexts();
+    },
+
+    addRoute() {
+      this.routeRows.push({ outbound_tag: '', domains: '', ips: '', ports: '', network: '', protocols: [] });
+      this.syncCustomTexts();
     },
 
     buildExtraJSON(vars, rollbackOnFail) {
@@ -585,6 +842,8 @@ function nodeDeployPage() {
         await this.apiJSON('PATCH', '/api/v1/nodes/' + nodeID, this.nodePatchPayload(""));
         this.rollbackOnFail = true;
         this.varsRows = [];
+        this.outboundRows = [];
+        this.routeRows = [];
         this.customOutboundsText = '';
         this.customRoutesText = '';
         this.renderPreview = '';

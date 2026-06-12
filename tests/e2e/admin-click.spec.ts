@@ -214,9 +214,16 @@ test('nodes and deploy workflow are clickable from rendered controls', async ({ 
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.locator('#managed-xray')).toContainText('已保存 extra_json');
 
-  // Custom outbounds/routes: validate + preview, then save them into extra_json.
-  await page.getByLabel('自定义出站 JSON').fill('[{"tag":"pw-up","protocol":"socks","address":"10.0.0.9","port":1080}]');
-  await page.getByLabel('自定义路由 JSON').fill('[{"outbound_tag":"pw-up","domains":["geosite:openai"]}]');
+  // Custom outbounds/routes via the structured form editor: build a socks
+  // outbound + a geosite route, validate + preview, then save into extra_json.
+  await page.getByRole('button', { name: '添加出站' }).click();
+  await page.getByLabel('出站 tag').fill('pw-up');
+  await page.getByLabel('出站协议').selectOption('socks');
+  await page.getByLabel('出站地址').fill('10.0.0.9');
+  await page.getByLabel('出站端口').fill('1080');
+  await page.getByRole('button', { name: '添加路由' }).click();
+  await page.getByLabel('路由目标出站').selectOption('pw-up');
+  await page.getByLabel('路由 domains').fill('geosite:openai');
   await page.getByRole('button', { name: '校验并预览渲染配置' }).click();
   await expect(page.locator('#custom-xray-config')).toContainText('校验通过');
   await expect(page.locator('#render-preview')).toContainText('pw-up');
@@ -224,11 +231,23 @@ test('nodes and deploy workflow are clickable from rendered controls', async ({ 
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.locator('#managed-xray')).toContainText('已保存 extra_json');
 
+  // JSON mode shows the same data the form built (two-way sync).
+  await page.locator('#custom-xray-config').getByRole('button', { name: 'JSON' }).click();
+  await expect(page.getByLabel('自定义出站 JSON')).toHaveValue(/pw-up/);
+  await expect(page.getByLabel('自定义路由 JSON')).toHaveValue(/geosite:openai/);
+
   // Invalid custom config must be rejected by the preview with an error.
   await page.getByLabel('自定义路由 JSON').fill('[{"outbound_tag":"ghost","ports":"443"}]');
   await page.getByRole('button', { name: '校验并预览渲染配置' }).click();
   await expect(page.locator('#custom-xray-config')).toContainText('ghost');
+
+  // Broken JSON blocks switching back to form mode instead of dropping it.
+  await page.getByLabel('自定义路由 JSON').fill('[{"broken"');
+  await page.locator('#custom-xray-config').getByRole('button', { name: '表单' }).click();
+  await expect(page.locator('#custom-xray-config')).toContainText('不是合法 JSON');
   await page.getByLabel('自定义路由 JSON').fill('');
+  await page.locator('#custom-xray-config').getByRole('button', { name: '表单' }).click();
+  await expect(page.getByLabel('路由 domains')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Deploy Xray' }).click();
   await clickConfirmOK(page);

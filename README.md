@@ -69,6 +69,7 @@ Neutrino 是一个基于 **Go + SQLite + SSR Templates + HTMX/Alpine.js** 的代
   - target 别名：`mihomo` / `clashmeta` / `stash` → clash，`sing-box` → singbox；也接受 Xboard 风格的 `flag=` 参数
   - `types=vless,hy2,tuic`：按协议过滤节点（别名 `vless`/`reality`→vless_reality、`hy2`→hysteria2）
   - `filter=hk|jp`：按节点名关键字过滤（不区分大小写，`|` 为或）；过滤后为空返回 400 而不是回退配置
+  - `preset=default|global|minimal`：内置 Clash 配置预设——default 全分流（外部 geosite rule-providers）、global 全代理（无外部规则源，仅 LAN 直连）、minimal 仅节点 + 基础分组；未知 preset 返回 400；裸 URI 类 target（v2rayn/shadowrocket）与 singbox 片段忽略该参数
 
 ## 本地运行
 
@@ -191,7 +192,7 @@ API Key 生命周期管理（需要管理员 session 或 `admin`/`*` scope 的�
 
 ### 订阅接口
 
-- `GET /sub/{token}?target=clash|singbox|v2rayn|shadowrocket`（别名 `mihomo`/`clashmeta`/`stash`/`sing-box`，`flag=` 同义；`types=` 协议过滤；`filter=` 名称关键字过滤）
+- `GET /sub/{token}?target=clash|singbox|v2rayn|shadowrocket`（别名 `mihomo`/`clashmeta`/`stash`/`sing-box`，`flag=` 同义；`types=` 协议过滤；`filter=` 名称关键字过滤；`preset=default|global|minimal` Clash 配置预设）
   - `target` 省略时按客户端 `User-Agent` 自动识别（Clash/Stash → `clash`，sing-box/SFA/SFI → `singbox`，Shadowrocket/Quantumult/Surge/Loon → `shadowrocket`，其他 → `v2rayn`）。
   - 响应 header：
     - `Subscription-Userinfo: upload=<bytes>; download=<bytes>; total=<bytes>; expire=<unix>` — 上下行用量、配额上限（含信用额度）、到期时间，便于客户端订阅面板直接展示。
