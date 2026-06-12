@@ -142,8 +142,6 @@ test('users workflow is clickable from rendered controls', async ({ page }) => {
 
   await page.getByLabel('复制订阅 URL').click();
   await expect(page.locator('body')).toContainText('已复制');
-  await page.getByLabel('复制 Telegram 绑定命令').click();
-  await expect(page.locator('body')).toContainText('已复制');
   for (const period of ['日', '月', '小时']) {
     await page.getByRole('button', { name: period }).click();
     await expect(page.getByRole('button', { name: period })).toBeVisible();

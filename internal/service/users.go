@@ -45,7 +45,6 @@ func (s *UserService) requestManagedXrayReload(ctx context.Context) {
 type UserDetail struct {
 	User               repo.User
 	SubscriptionToken  *repo.SubscriptionToken
-	TelegramBinding    *repo.TelegramBinding
 	AccessEvents       []repo.UserEvent
 	OnlineSessions     []repo.OnlineUser
 	OnlineDeviceCount  int
@@ -172,11 +171,6 @@ func (s *UserService) GetDetail(ctx context.Context, userID int64, eventLimit, o
 	} else if !errors.Is(err, repo.ErrUserNotFound) && !errors.Is(err, sql.ErrNoRows) {
 		return UserDetail{}, err
 	}
-	if bind, err := s.store.GetTelegramBindingByUserID(ctx, userID); err == nil {
-		detail.TelegramBinding = &bind
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return UserDetail{}, err
-	}
 	return detail, nil
 }
 
@@ -266,12 +260,4 @@ func (s *UserService) GetSubscriptionToken(ctx context.Context, userID int64) (r
 
 func (s *UserService) RotateSubscriptionToken(ctx context.Context, userID int64) (repo.SubscriptionToken, error) {
 	return s.store.RotateSubscriptionToken(ctx, userID)
-}
-
-func (s *UserService) GetTelegramBinding(ctx context.Context, userID int64) (repo.TelegramBinding, error) {
-	return s.store.GetTelegramBindingByUserID(ctx, userID)
-}
-
-func (s *UserService) RegenerateTelegramBindCode(ctx context.Context, userID int64) (repo.TelegramBinding, error) {
-	return s.store.RegenerateTelegramBindCode(ctx, userID)
 }

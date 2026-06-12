@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"neutrino/internal/bot"
 	"neutrino/internal/config"
 	"neutrino/internal/hostnet"
 	"neutrino/internal/monitor"
@@ -33,7 +32,6 @@ type App struct {
 	pages       map[string]*template.Template
 	notifier    *notify.Notifier
 	hostMonitor *monitor.HostMonitor
-	telegram    *bot.TelegramBot
 	rl          *rateLimiter
 	csrfSecret  []byte
 
@@ -70,8 +68,6 @@ type indexData struct {
 type userDetailData struct {
 	User               repo.User
 	SubscriptionURL    string
-	TelegramBindCode   string
-	TelegramBoundHint  string
 	AccessEvents       []repo.UserEvent
 	OnlineSessions     []repo.OnlineUser
 	OnlineDeviceCount  int
@@ -257,9 +253,6 @@ func New(cfg config.Config, store *repo.Store) *App {
 		csrfSecret:  secret,
 	}
 	a.userService = service.NewUserService(store, a)
-	// The bot mutates users through UserService so admin commands trigger
-	// node users-sync; it must be constructed after the service.
-	a.telegram = bot.New(cfg, store, a.userService)
 	a.usageService = service.NewUsageService(store, cfg.OnlineWindowSec, cfg.IPLimitStrikes, a)
 	a.nodeService = service.NewNodeService(store, cfg.NodeStaleDeleteAfterSec, a)
 	a.opsService = service.NewOpsService(store)
@@ -772,7 +765,6 @@ func (a *App) StartWorkers(ctx context.Context) {
 	}
 	spawn(func() { a.hostMonitor.Start(ctx, a.cfg.HostMetricsInterval(), a.store.GetTrafficTotals) })
 	spawn(func() { a.startHostNetMonthlyRecorder(ctx) })
-	spawn(func() { a.telegram.Start(ctx) })
 	spawn(func() { a.startNodeReconciler(ctx) })
 	spawn(func() { a.startNodeJobTimeoutSweeper(ctx) })
 	spawn(func() { a.startOpsSnapshotPublisher(ctx) })
@@ -1068,17 +1060,6 @@ func (a *App) renderUserDetail(w http.ResponseWriter, r *http.Request, userID in
 	if detail.SubscriptionToken != nil {
 		subURL = subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, detail.SubscriptionToken.Token, "v2rayn")
 	}
-	tgCode := ""
-	tgHint := "未绑定"
-	if detail.TelegramBinding != nil {
-		tgCode = detail.TelegramBinding.BindCode
-		if detail.TelegramBinding.TelegramChatID != nil {
-			tgHint = fmt.Sprintf("已绑定 chat_id=%d", *detail.TelegramBinding.TelegramChatID)
-			if strings.TrimSpace(detail.TelegramBinding.TelegramUsername) != "" {
-				tgHint += " @" + detail.TelegramBinding.TelegramUsername
-			}
-		}
-	}
 	data := PageData{
 		CurrentAdmin: current,
 		ActivePage:   "users",
@@ -1086,8 +1067,6 @@ func (a *App) renderUserDetail(w http.ResponseWriter, r *http.Request, userID in
 		Content: userDetailData{
 			User:               detail.User,
 			SubscriptionURL:    subURL,
-			TelegramBindCode:   tgCode,
-			TelegramBoundHint:  tgHint,
 			AccessEvents:       detail.AccessEvents,
 			OnlineSessions:     detail.OnlineSessions,
 			OnlineDeviceCount:  detail.OnlineDeviceCount,

@@ -15,7 +15,7 @@ Neutrino 是一个基于 **Go + SQLite + SSR Templates + HTMX/Alpine.js** 的代
 
 - `/login` / `/logout`：管理员会话登录
 - `/users`：创建用户、查看在线统计、生成链接、启用/禁用/删除
-- `/users/{id}`：用户详情、订阅 URL、Telegram 绑定码、配额操作、异步流量图、在线会话、访问事件
+- `/users/{id}`：用户详情、订阅 URL、配额操作、异步流量图、在线会话、访问事件
 - `/nodes`：节点列表、启停、删除、版本对齐状态
 - `/nodes/{id}/deploy`：Enroll Code、节点一键部署脚本、托管 Xray 配置、证书吊销、Job 历史
 - `/traffic`：按时间范围 / 用户 / 节点查看流量趋势、Top 用户、Top 目标、Top SNI
@@ -59,16 +59,12 @@ Neutrino 是一个基于 **Go + SQLite + SSR Templates + HTMX/Alpine.js** 的代
 - 托管 Xray 仅下发模板与变量；真正执行的 reload / test argv 固定在节点本地环境变量中
 - 节点部署页可直接生成一键脚本；脚本会优先检查并自动安装 `docker compose`
 
-### 流量、订阅与通知
+### 流量与订阅
 
 - 统一用量入口：`POST /api/v1/usage`
 - 幂等键：`source + source_event_id`
 - 节点上报：Xray stats delta + access log 事件
 - 订阅：`/sub/{token}?target=clash|singbox|v2rayn|shadowrocket`
-- Telegram：
-  - 用户命令：`/bind <code>`、`/me`、`/usage`、`/sub`
-  - 管理员命令：`/summary`、`/user <name>`、`/enable <name>`、`/disable <name>`、`/quota_reset <name>`
-  - 用户自助命令必须先完成 `/bind <code>`；当前实现不再按 Telegram username 猜测本地用户
 
 ## 本地运行
 
@@ -150,8 +146,6 @@ API Key 生命周期管理（需要管理员 session 或 `admin`/`*` scope 的�
 - `POST /api/v1/users/{id}/plan/extend`
 - `GET /api/v1/users/{id}/subscription`
 - `POST /api/v1/users/{id}/subscription/rotate`
-- `GET /api/v1/users/{id}/telegram-bind`
-- `POST /api/v1/users/{id}/telegram-bind/rotate`
 - `GET|POST /api/v1/nodes`
 - `GET|PUT|PATCH|DELETE /api/v1/nodes/{id}`
 - `POST /api/v1/nodes/{id}/enable`
@@ -255,7 +249,7 @@ go test ./...
 - 功能测试：`tests/functional/`
   - 用户生命周期
   - 用户详情流量接口
-  - 订阅 / Telegram 绑定
+  - 订阅
   - 节点 CRUD / deploy 页
   - mTLS enroll / renew / jobs 流程
 

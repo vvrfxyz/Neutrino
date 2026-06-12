@@ -57,7 +57,6 @@ func TestFunctional_AgentCertRenewHotSwap(t *testing.T) {
 	cfg := config.Load()
 	cfg.DBPath = dbPath
 	cfg.AllowBasicAuth = true
-	cfg.TelegramBotToken = ""
 	cfg.PanelAgentMTLSSigningCACertPath = caCertPath
 	cfg.PanelAgentMTLSSigningCAKeyPath = caKeyPath
 	cfg.PanelAgentMTLSCACertPaths = caCertPath

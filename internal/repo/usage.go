@@ -1122,7 +1122,7 @@ WHERE user_id = ? AND window_start = ?;
 		dedupeKey := fmt.Sprintf("quota:%s:%d:%s", th, userID, cycleKey)
 		_, err := tx.ExecContext(ctx, `
 INSERT INTO alerts(user_id, type, threshold, channel, message, dedupe_key, created_at)
-VALUES (?, 'quota', ?, 'telegram', ?, ?, ?)
+VALUES (?, 'quota', ?, 'email', ?, ?, ?)
 ON CONFLICT(dedupe_key) DO NOTHING;
 `, userID, th, message, dedupeKey, now)
 		return err

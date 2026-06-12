@@ -123,9 +123,6 @@ func (s *Store) CreateUser(ctx context.Context, in CreateUserInput) (User, error
 	if _, err := s.createSubscriptionTokenTx(ctx, tx, id); err != nil {
 		return User{}, err
 	}
-	if _, err := s.ensureTelegramBindingTx(ctx, tx, id); err != nil {
-		return User{}, err
-	}
 
 	// Ensure the user is immediately usable: create an initial active proxy link.
 	//

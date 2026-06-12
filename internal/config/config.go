@@ -92,9 +92,6 @@ type Config struct {
 	UsageEventKeyRetentionDays int
 	PruneEverySec              int
 
-	TelegramBotToken     string
-	TelegramAdminChatIDs string
-
 	SMTPHost string
 	SMTPPort int
 	SMTPUser string
@@ -188,9 +185,6 @@ func Load() Config {
 		QuotaWindowRetentionDays:       envInt("QUOTA_WINDOW_RETENTION_DAYS", 90),
 		UsageEventKeyRetentionDays:     envInt("USAGE_EVENT_KEY_RETENTION_DAYS", 14),
 		PruneEverySec:                  envInt("PRUNE_EVERY_SEC", 3600),
-
-		TelegramBotToken:     env("TELEGRAM_BOT_TOKEN", ""),
-		TelegramAdminChatIDs: env("TELEGRAM_ADMIN_CHAT_IDS", ""),
 
 		SMTPHost: env("SMTP_HOST", ""),
 		SMTPPort: envInt("SMTP_PORT", 587),

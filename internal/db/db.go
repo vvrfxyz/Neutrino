@@ -440,26 +440,6 @@ func Migrate(conn *sql.DB) error {
 			sent_at TEXT,
 			created_at TEXT NOT NULL
 		);`,
-		`CREATE TABLE IF NOT EXISTS telegram_bindings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-			bind_code TEXT NOT NULL UNIQUE,
-			bind_code_expires_at TEXT,
-			telegram_chat_id INTEGER UNIQUE,
-			telegram_user_id INTEGER,
-			telegram_username TEXT,
-			verified_at TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS telegram_bind_attempts (
-			chat_id INTEGER NOT NULL,
-			code TEXT NOT NULL,
-			attempts INTEGER NOT NULL DEFAULT 0,
-			window_start TEXT NOT NULL,
-			last_attempt_at TEXT NOT NULL,
-			PRIMARY KEY(chat_id, code)
-		);`,
 		`CREATE TABLE IF NOT EXISTS host_net_monthly_usage (
 			month_key TEXT PRIMARY KEY,
 			rx_bytes INTEGER NOT NULL DEFAULT 0,
@@ -541,9 +521,6 @@ func Migrate(conn *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_node_cert_pins_node_purpose ON node_cert_pins(node_id, purpose, revoked_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_logs_time ON audit_logs(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_alerts_sent_at ON alerts(sent_at, created_at DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_telegram_bindings_chat ON telegram_bindings(telegram_chat_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_telegram_bindings_user ON telegram_bindings(user_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_telegram_bind_attempts_last ON telegram_bind_attempts(last_attempt_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_user_node_access_node ON user_node_access(node_id);`,
 	}
 
@@ -554,6 +531,18 @@ func Migrate(conn *sql.DB) error {
 	}
 
 	if _, err := conn.Exec(`DROP TABLE IF EXISTS block_checks;`); err != nil {
+		return err
+	}
+
+	// Telegram integration was removed; drop its tables and re-route any
+	// queued telegram alerts to the email channel so they still dispatch.
+	if _, err := conn.Exec(`DROP TABLE IF EXISTS telegram_bindings;`); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(`DROP TABLE IF EXISTS telegram_bind_attempts;`); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(`UPDATE alerts SET channel = 'email' WHERE channel = 'telegram';`); err != nil {
 		return err
 	}
 
@@ -640,7 +629,6 @@ func Migrate(conn *sql.DB) error {
 		{"node_monthly_usage", "last_tx_total", "INTEGER NOT NULL DEFAULT 0"},
 		{"node_monthly_usage", "counter_source", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "node_id", "INTEGER REFERENCES nodes(id) ON DELETE SET NULL"},
-		{"telegram_bindings", "bind_code_expires_at", "TEXT"},
 	}
 	for _, c := range compatCols {
 		if err := addColumnIfMissing(conn, c.table, c.col, c.def); err != nil {
