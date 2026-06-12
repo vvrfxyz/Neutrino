@@ -486,7 +486,7 @@ export all_proxy=socks5://127.0.0.1:6153
 1. `go test ./...`
 2. 面板登录成功：`/login`
 3. `/users` 创建用户、生成链接、启用/禁用/删除正常
-4. `/users/{id}` 的配额操作、订阅 URL、Telegram 绑定码、流量图正常
+4. `/users/{id}` 的配额操作、订阅 URL、流量图正常
 5. `/nodes/{id}/deploy` 可生成 Enroll Code 和部署脚本
 6. 节点上线后：
    - `/ops` 能看到节点运行态、最近心跳、最近上报、自然月 RX/TX 累计

@@ -79,7 +79,6 @@ func setupTestEnv(t *testing.T) *testEnv {
 	cfg.ProxyHost = "example.com"
 	cfg.RealityPublicK = "REPLACE_WITH_REALITY_PUBLIC_KEY"
 	cfg.RealityShortID = "REPLACE_WITH_SHORT_ID"
-	cfg.TelegramBotToken = ""
 
 	store := repo.New(conn, cfg)
 	if err := store.UpsertAdminCredential(context.Background(), cfg.AdminUser, cfg.AdminPass); err != nil {
@@ -1711,15 +1710,12 @@ func TestFunctional_DeviceLimitAndSSRAdminActions(t *testing.T) {
 	}
 }
 
-func TestFunctional_SubscriptionAndTelegramBindEndpoints(t *testing.T) {
+func TestFunctional_SubscriptionEndpoints(t *testing.T) {
 	env := setupTestEnv(t)
 	userID, _ := createUserViaAPI(t, env)
 
 	if _, err := env.store.RawDB().ExecContext(context.Background(), `DELETE FROM subscription_tokens WHERE user_id = ?`, userID); err != nil {
 		t.Fatalf("delete subscription token: %v", err)
-	}
-	if _, err := env.store.RawDB().ExecContext(context.Background(), `DELETE FROM telegram_bindings WHERE user_id = ?`, userID); err != nil {
-		t.Fatalf("delete telegram binding: %v", err)
 	}
 
 	resp := env.request(t, http.MethodGet, fmt.Sprintf("/api/v1/users/%d/subscription", userID), nil, true, "")
@@ -1727,13 +1723,6 @@ func TestFunctional_SubscriptionAndTelegramBindEndpoints(t *testing.T) {
 	sub := decodeBodyMap(t, resp)
 	if token, _ := sub["token"].(string); token != "" {
 		t.Fatalf("subscription GET unexpectedly created token: %q", token)
-	}
-
-	resp = env.request(t, http.MethodGet, fmt.Sprintf("/api/v1/users/%d/telegram-bind", userID), nil, true, "")
-	mustStatus(t, resp, http.StatusOK)
-	bind := decodeBodyMap(t, resp)
-	if code, _ := bind["bind_code"].(string); code != "" {
-		t.Fatalf("telegram bind GET unexpectedly created bind code: %q", code)
 	}
 
 	resp = env.request(t, http.MethodPost, fmt.Sprintf("/api/v1/users/%d/subscription/rotate", userID), map[string]any{}, true, "")
@@ -1757,22 +1746,6 @@ func TestFunctional_SubscriptionAndTelegramBindEndpoints(t *testing.T) {
 		if strings.Contains(string(decoded), "00000000-0000-0000-0000-000000000000") {
 			t.Fatalf("subscription contains placeholder uuid: %s", string(decoded))
 		}
-	}
-
-	resp = env.request(t, http.MethodPost, fmt.Sprintf("/api/v1/users/%d/telegram-bind/rotate", userID), map[string]any{}, true, "")
-	mustStatus(t, resp, http.StatusOK)
-	bind2 := decodeBodyMap(t, resp)
-	code2, _ := bind2["bind_code"].(string)
-	if code2 == "" {
-		t.Fatalf("bind code rotate failed: empty code")
-	}
-
-	resp = env.request(t, http.MethodGet, fmt.Sprintf("/api/v1/users/%d/telegram-bind", userID), nil, true, "")
-	mustStatus(t, resp, http.StatusOK)
-	bind3 := decodeBodyMap(t, resp)
-	code3, _ := bind3["bind_code"].(string)
-	if code3 == "" || code3 != code2 {
-		t.Fatalf("telegram bind GET returned wrong code got=%q want=%q", code3, code2)
 	}
 }
 

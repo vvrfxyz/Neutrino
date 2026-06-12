@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Removed the Telegram integration entirely (bot polling worker, `/bind` flow, per-user bind codes, admin commands, alert delivery channel, `TELEGRAM_*` envs). Alert delivery is now email-only: new alerts enqueue with `channel='email'` and a startup migration re-routes queued `telegram` alerts and drops the `telegram_bindings` / `telegram_bind_attempts` tables.
 - Embedded the SSR templates into the panel binary via `go:embed`, removing the must-run-from-repo-root constraint (and the template COPY from the Docker image). `/ops-v2` preview assets remain a runtime path read.
 - Consolidated the triplicated host-net counter reading (`internal/app`, `internal/agent`, `internal/monitor`) into `hostnet.ReadTotals`.
 - Deleted verified-dead code: `internal/singboxapi` (contained a `sh -lc` exec conflicting with the argv-only principle; never imported), `internal/cryptoutil`, the S3/restore helpers in `internal/backup` (live restore is the `handlers_backups.go` staging path; drops the `minio-go` dependency and six indirects), the orphaned `docker/xray/` image (all stacks use the upstream `ghcr.io/xtls/xray-core` image; the stale Dockerfile pinned 1.8.24), the never-read `State.Pending*` fields in the agent, and ten `repo.Store` methods with zero callers.

@@ -70,7 +70,7 @@ func TestFunctional_Subscription_HeadersIncludeUserinfoAndUpdateInterval(t *test
 	}
 
 	// Drain the body so the connection can be reused; we don't assert on
-	// payload here because TestFunctional_SubscriptionAndTelegramBindEndpoints
+	// payload here because TestFunctional_SubscriptionEndpoints
 	// already covers that.
 	_, _ = io.Copy(io.Discard, resp.Body)
 }

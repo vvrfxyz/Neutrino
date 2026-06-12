@@ -256,7 +256,7 @@ func (s *Store) queueOpsAlertNotification(ctx context.Context, opsAlertID int64,
 	body := trimLimit(fmt.Sprintf("ops %s: %s", kind, message), 2048)
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO alerts(type, threshold, channel, message, dedupe_key, created_at)
-VALUES ('system', ?, 'telegram', ?, ?, ?)
+VALUES ('system', ?, 'email', ?, ?, ?)
 ON CONFLICT(dedupe_key) DO UPDATE SET
 	threshold = excluded.threshold,
 	message = excluded.message

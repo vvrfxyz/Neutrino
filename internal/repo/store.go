@@ -19,10 +19,9 @@ var (
 	ErrNodeJobInvalidStatus       = errors.New("node job finish status must be succeeded or failed")
 	// ErrEnrollCodeInvalid covers every enroll-code rejection (missing, wrong,
 	// already used, expired); the wrapping message carries the specific cause.
-	ErrEnrollCodeInvalid       = errors.New("enroll code rejected")
-	ErrUsageTimestampSkew      = errors.New("usage event timestamp outside allowed skew")
-	ErrUsageTimestampTooOld    = errors.New("usage event timestamp too old")
-	ErrTelegramBindRateLimited = errors.New("telegram bind rate limited")
+	ErrEnrollCodeInvalid    = errors.New("enroll code rejected")
+	ErrUsageTimestampSkew   = errors.New("usage event timestamp outside allowed skew")
+	ErrUsageTimestampTooOld = errors.New("usage event timestamp too old")
 )
 
 type Store struct {
@@ -203,19 +202,6 @@ type BackupRecord struct {
 	Storage   string    `json:"storage"`
 	ObjectKey string    `json:"object_key,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
-}
-
-type TelegramBinding struct {
-	ID                int64      `json:"id"`
-	UserID            int64      `json:"user_id"`
-	BindCode          string     `json:"bind_code"`
-	BindCodeExpiresAt *time.Time `json:"bind_code_expires_at,omitempty"`
-	TelegramChatID    *int64     `json:"telegram_chat_id,omitempty"`
-	TelegramUserID    *int64     `json:"telegram_user_id,omitempty"`
-	TelegramUsername  string     `json:"telegram_username,omitempty"`
-	VerifiedAt        *time.Time `json:"verified_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type Alert struct {

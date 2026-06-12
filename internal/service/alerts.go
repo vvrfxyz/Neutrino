@@ -19,11 +19,10 @@ const (
 	opsAlertJobStuckAfter     = 10 * time.Minute
 )
 
-// AlertSender abstracts the notification transports used to deliver pending
+// AlertSender abstracts the notification transport used to deliver pending
 // alerts. Implemented by internal/notify.Notifier.
 type AlertSender interface {
 	SendMail(subject, body string, to []string) error
-	SendTelegramAdmins(text string) error
 }
 
 // AlertService owns ops-alert lifecycle: deriving node health alerts from the
@@ -241,9 +240,9 @@ func (s *AlertService) SyncNodeJobAlert(ctx context.Context, nodeID int64, jobKi
 	return s.upsertNodeAlert(ctx, nodeID, "xray_apply_failed", "critical", message, at)
 }
 
-// DispatchPending delivers queued alerts via the sender, marking each as sent
-// on success. Returns the first error encountered, but keeps going so one bad
-// channel does not wedge the queue.
+// DispatchPending delivers queued alerts via email, marking each as sent on
+// success. Returns the first error encountered, but keeps going so one bad
+// alert does not wedge the queue.
 func (s *AlertService) DispatchPending(ctx context.Context, sender AlertSender, emailTo []string) error {
 	alerts, err := s.store.ListPendingAlerts(ctx, 200)
 	if err != nil {
@@ -252,13 +251,7 @@ func (s *AlertService) DispatchPending(ctx context.Context, sender AlertSender, 
 	var firstErr error
 	for _, al := range alerts {
 		message := fmt.Sprintf("[%s] %s", upperASCII(al.Type), al.Message)
-		sendErr := error(nil)
-		if al.Channel == "email" {
-			sendErr = sender.SendMail("Neutrino Alert", message, emailTo)
-		} else {
-			sendErr = sender.SendTelegramAdmins(message)
-		}
-		if sendErr != nil {
+		if sendErr := sender.SendMail("Neutrino Alert", message, emailTo); sendErr != nil {
 			log.Printf("alert send failed id=%d channel=%s err=%v", al.ID, al.Channel, sendErr)
 			if firstErr == nil {
 				firstErr = sendErr

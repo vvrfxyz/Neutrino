@@ -92,27 +92,7 @@
 - 是否存在启用中的节点
 - 如果没有节点，panel fallback 的 `PROXY_PUBLIC_HOST / REALITY_PUBLIC_KEY / REALITY_SHORT_ID` 是否配置完整
 
-## 3.3 Telegram 绑定
-
-页面会显示：
-
-- 当前绑定状态
-- 未绑定时的 `/bind <code>` 绑定命令
-
-用户在 Telegram 里发送：
-
-```text
-/bind <code>
-```
-
-成功后，详情页会显示已绑定的 `chat_id` / `@username`。
-
-说明：
-
-- `/me`、`/usage`、`/sub` 等用户自助命令必须基于已验证的 chat 绑定；
-- 当前实现不会再按 Telegram username 自动推断面板用户，避免越权读取别人的订阅或配额信息。
-
-## 3.4 管理操作
+## 3.3 管理操作
 
 详情页当前可直接执行：
 
@@ -123,7 +103,7 @@
 
 这些操作会记录审计日志，并影响后续配额判断。
 
-## 3.5 流量图
+## 3.4 流量图
 
 详情页流量图是**异步加载**的，数据源：
 
@@ -135,7 +115,7 @@
 - loading / error / retry 状态
 - 请求竞态保护
 
-## 3.6 在线会话
+## 3.5 在线会话
 
 会显示：
 
@@ -146,7 +126,7 @@
   - node id
   - 最后活跃时间
 
-## 3.7 访问事件
+## 3.6 访问事件
 
 详情页底部会显示最近访问事件（当前页面展示最近 120 条），字段包括：
 
@@ -425,68 +405,9 @@ curl -u "$ADMIN_USER:$ADMIN_PASS" -X POST \
 
 Restore 建议只在维护窗口执行，并先在测试环境演练。
 
-## 10. Telegram
+## 10. 常见排查
 
-## 10.1 需要的环境变量
-
-panel `.env` 中配置：
-
-```env
-TELEGRAM_BOT_TOKEN=<bot token>
-TELEGRAM_ADMIN_CHAT_IDS=<chat_id1,chat_id2>
-```
-
-修改后重启 panel 容器：
-
-```bash
-# panel-only
-cd /root/neutrino && docker compose -f docker-compose.panel-only.yml restart neutrino || true
-
-# /data/docker-compose.yml 托管
-cd /data && docker compose -f docker-compose.yml restart neutrino-panel || true
-```
-
-## 10.2 获取管理员 chat_id
-
-1. 给 bot 发 `/start`
-2. 执行：
-
-```bash
-curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates" | jq
-```
-
-3. 找到 `message.chat.id`
-
-## 10.3 用户命令
-
-- `/bind <code>`
-- `/me`
-- `/usage`
-- `/sub`
-
-> 这些自助命令要求当前 chat 已先成功完成 `/bind <code>`。
-
-## 10.4 管理员命令
-
-- `/summary`
-- `/user <name>`
-- `/enable <name>`
-- `/disable <name>`
-- `/quota_reset <name>`
-
-## 10.5 轮询模式说明
-
-当前实现使用 `getUpdates` 轮询，不使用 webhook。
-
-如果之前给该 bot 配过 webhook，需要先清掉：
-
-```bash
-curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
-```
-
-## 11. 常见排查
-
-### 11.1 浏览器复制链接失败
+### 10.1 浏览器复制链接失败
 
 浏览器剪贴板 API 通常要求 HTTPS 安全上下文。
 
@@ -494,7 +415,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 建议通过 HTTPS 域名访问后台
 - 页面已经提供降级复制逻辑，但最稳妥仍是 HTTPS
 
-### 11.2 节点不在线 / Jobs 不推进
+### 10.2 节点不在线 / Jobs 不推进
 
 优先检查：
 
@@ -504,7 +425,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - `/nodes/{id}/deploy` 页面的 last error 和 job history
 - `/ops` 页面里最近心跳、最近上报、queue / runtime / 自然月累计是否正常刷新
 
-### 11.3 Managed Xray 发布失败
+### 10.3 Managed Xray 发布失败
 
 重点检查：
 
@@ -513,7 +434,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 是否挂载 `/var/run/docker.sock`
 - `extra_json` 是否少了必要变量
 
-### 11.4 订阅不可用
+### 10.4 订阅不可用
 
 常见错误与含义：
 
@@ -522,7 +443,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - `subscription unavailable: no enabled nodes`
   - 没有启用中的节点，且 panel fallback 代理参数也不可用
 
-### 11.5 怀疑节点流量重复 / 丢失
+### 10.5 怀疑节点流量重复 / 丢失
 
 优先参考：
 
@@ -535,7 +456,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 节点 `state.json` 里的 `acked_stats`
 - panel 侧相同 `source_event_id` 的入库情况
 
-### 11.6 节点自然月流量不更新 / 看起来不对
+### 10.6 节点自然月流量不更新 / 看起来不对
 
 先分清楚你在看的是什么：
 
@@ -556,7 +477,7 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"
 - 先确认是否发生过 panel DB 月累计状态丢失或计数源迁移
 - 当前实现会在计数源变化 / raw counter 重置时保留已累计值并重设基线，但无法回填迁移前缺失的宿主机流量历史
 
-### 11.7 `/ops` 时间看起来超前 / 落后真实时间
+### 10.7 `/ops` 时间看起来超前 / 落后真实时间
 
 先分清语义：
 
@@ -586,7 +507,7 @@ docker exec neutrino-panel date -u
 docker exec neutrino-agent date -u
 ```
 
-## 12. 常用 API（给运维 / 自动化）
+## 11. 常用 API（给运维 / 自动化）
 
 如果你需要用 curl 自动化，推荐先确保：
 

@@ -361,29 +361,6 @@ func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusOK, map[string]any{"token": tok.Token, "url": subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, tok.Token, "v2rayn")})
 		return
 	}
-	if len(parts) == 2 && parts[1] == "telegram-bind" && r.Method == http.MethodGet {
-		bind, err := a.users().GetTelegramBinding(r.Context(), userID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				a.writeJSON(w, http.StatusOK, map[string]any{})
-				return
-			}
-			http.Error(w, "query bind failed", http.StatusInternalServerError)
-			return
-		}
-		a.writeJSON(w, http.StatusOK, bind)
-		return
-	}
-	if len(parts) == 3 && parts[1] == "telegram-bind" && parts[2] == "rotate" && r.Method == http.MethodPost {
-		bind, err := a.users().RegenerateTelegramBindCode(r.Context(), userID)
-		if err != nil {
-			http.Error(w, "rotate bind failed", http.StatusInternalServerError)
-			return
-		}
-		auditAction(a, r, "user.telegram_bind.rotate", "user", fmt.Sprintf("%d", userID), nil)
-		a.writeJSON(w, http.StatusOK, bind)
-		return
-	}
 	http.NotFound(w, r)
 }
 

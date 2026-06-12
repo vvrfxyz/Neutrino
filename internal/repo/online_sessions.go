@@ -325,7 +325,7 @@ VALUES (?, 'disable_user', 'over_ip_limit', ?, ?);
 					dedupe := fmt.Sprintf("ip:%d:%s", userID, now.Format("2006-01-02T15:04"))
 					_, _ = tx.ExecContext(ctx, `
 INSERT INTO alerts(user_id, type, threshold, channel, message, dedupe_key, created_at)
-VALUES (?, 'ip', ?, 'telegram', ?, ?, ?)
+VALUES (?, 'ip', ?, 'email', ?, ?, ?)
 ON CONFLICT(dedupe_key) DO NOTHING;
 `, userID, strconv.Itoa(deviceLimit), fmt.Sprintf("user=%d exceeded ip limit (%d)", userID, deviceLimit), dedupe, nowStr)
 				}

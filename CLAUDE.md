@@ -11,7 +11,7 @@ For authoritative constraints and runtime decisions, see `AGENTS.md`.
 rtk go run ./cmd/server          # panel (templates are embedded; /ops-v2 assets still need repo root)
 rtk go run ./cmd/node-agent      # node agent
 
-rtk go test ./...                # full suite (~335 tests across 21 packages)
+rtk go test ./...                # full suite
 rtk go test ./internal/app       # one package
 rtk go test ./internal/app -run TestName
 
@@ -36,7 +36,7 @@ Panel layering: `internal/app` (HTTP/SSR/workers) → `internal/service` (orches
 `internal/app`:
 - `routes.go` — SSR pages: `/login`, `/users` (+ `/users/table` HTMX partial), `/users/{id}`, `/nodes`, `/nodes/{id}/deploy`, `/traffic`, `/enforcements`, `/apikeys`, `/ops`, `/ops-v2` (flag-gated). Public: `/sub/{token}`, `/healthz`. API: `/api/v1/*` including `ops/config|nodes|alerts`, backups, apikeys, and the admin WebSocket `/api/v1/stream` (session-only, same-origin checked).
 - `AgentRoutes` (separate mTLS listener): `/api/v1/usage`, `/api/v1/nodes/{id}/report`, `…/agent/users`, `…/jobs/claim?wait=N`, `…/jobs/{job}/finish`, `…/cert/renew`. Every agent handler re-checks client-cert CN `node-{id}` against the path id. `/api/v1/usage` is also registered on the main mux but can never authenticate there (mTLS-only middleware on a plain-HTTP listener) — the agent listener is the only live usage-ingest path.
-- `StartWorkers` (app.go) runs: host metrics sampler, host-net natural-month rollup (keyed by `PANEL_TZ`), Telegram polling, node reconciler (30s: users_sync + managed-xray convergence), job timeout sweeper (5s), ops WebSocket snapshot publisher (no DB work with 0 subscribers), metric-history queue (memory → disk spillover → drop + ops alert), and a 5s tick loop: lifecycle/quota/IP-limit enforcement + stale-node cleanup, pruning, ops-alert sync, pending-alert dispatch (Telegram/SMTP).
+- `StartWorkers` (app.go) runs: host metrics sampler, host-net natural-month rollup (keyed by `PANEL_TZ`), node reconciler (30s: users_sync + managed-xray convergence), job timeout sweeper (5s), ops WebSocket snapshot publisher (no DB work with 0 subscribers), metric-history queue (memory → disk spillover → drop + ops alert), and a 5s tick loop: lifecycle/quota/IP-limit enforcement + stale-node cleanup, pruning, ops-alert sync, pending-alert dispatch (SMTP).
 - Auth ladder (`auth.go`): admin session cookie → optional Basic (only with non-default creds) → mTLS node identity (CN + per-node cert-pin allowlist; fixed scopes `nodes:report`, `usage:write`) → API key (`X-API-Key`, SHA-256 hash lookup, scope map in `requiredScope`). CSRF token = HMAC-SHA256(`CSRF_SECRET`, sessionID), enforced on SSR POSTs and session-authenticated API writes.
 
 `internal/repo` + `internal/db`: hand-written parameterized SQL; all timestamps UTC RFC3339 TEXT. DSN forces `_foreign_keys=on`, `_busy_timeout=15000`, `_txlock=immediate` (every `BeginTx` is a write transaction); WAL set during `Migrate`.
@@ -70,7 +70,7 @@ Node deletion is staged: enabled → disable + drain `users_sync` → actual DB 
 ## Testing Notes
 
 - Unit tests are colocated with packages.
-- `tests/functional` boots the real app (HTTP httptest + a second mTLS httptest server with a generated CA and per-node client certs). Coverage: user lifecycle, traffic endpoints, usage idempotency + mTLS node-identity override, disabled-node drain semantics, managed-node job ordering, subscription failure modes/headers/UA detection, Telegram bind, backups + restore staging + `ApplyPendingRestore`, agent cert renew hot-swap, `/api/v1/stream` snapshot + WS/poll payload parity, sidebar HTMX invariants.
+- `tests/functional` boots the real app (HTTP httptest + a second mTLS httptest server with a generated CA and per-node client certs). Coverage: user lifecycle, traffic endpoints, usage idempotency + mTLS node-identity override, disabled-node drain semantics, managed-node job ordering, subscription failure modes/headers/UA detection, backups + restore staging + `ApplyPendingRestore`, agent cert renew hot-swap, `/api/v1/stream` snapshot + WS/poll payload parity, sidebar HTMX invariants.
 - `tests/e2e/admin-click.spec.ts` (Playwright, chromium) click-drives login/sidebar, users workflow, nodes + deploy + managed-xray, traffic/ops/enforcements.
 - Neither Go tests nor Playwright/vitest run in CI (`build` + `docker` checks compile/build only).
 

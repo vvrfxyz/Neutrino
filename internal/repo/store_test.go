@@ -1154,49 +1154,6 @@ func TestSubscriptionTokenRejectsInactiveOrExpiredUser(t *testing.T) {
 	}
 }
 
-func TestTelegramBindingFlow(t *testing.T) {
-	ctx := context.Background()
-	s := newTestStore(t)
-	u := newActiveUser(t, s)
-
-	bind, err := s.EnsureTelegramBinding(ctx, u.ID)
-	if err != nil {
-		t.Fatalf("ensure telegram binding: %v", err)
-	}
-	if bind.BindCode == "" {
-		t.Fatalf("empty bind code")
-	}
-	if len(bind.BindCode) < 32 {
-		t.Fatalf("bind code too short: %q", bind.BindCode)
-	}
-	if bind.BindCodeExpiresAt == nil || !bind.BindCodeExpiresAt.After(time.Now().UTC()) {
-		t.Fatalf("expected future bind code expiry, got %+v", bind.BindCodeExpiresAt)
-	}
-	usedCode := bind.BindCode
-
-	boundUser, updated, err := s.BindTelegramChatByCode(ctx, bind.BindCode, 123456, 777, "alice_tg")
-	if err != nil {
-		t.Fatalf("bind by code: %v", err)
-	}
-	if boundUser.ID != u.ID {
-		t.Fatalf("bound wrong user id: %d", boundUser.ID)
-	}
-	if updated.TelegramChatID == nil || *updated.TelegramChatID != 123456 {
-		t.Fatalf("unexpected chat id in binding: %+v", updated)
-	}
-	if _, _, err := s.BindTelegramChatByCode(ctx, usedCode, 654321, 888, "mallory"); !errors.Is(err, ErrUserNotFound) {
-		t.Fatalf("used bind code should be one-time, got %v", err)
-	}
-
-	byChat, err := s.GetUserByTelegramChatID(ctx, 123456)
-	if err != nil {
-		t.Fatalf("get user by chat id: %v", err)
-	}
-	if byChat.ID != u.ID {
-		t.Fatalf("unexpected user by chat id: %d", byChat.ID)
-	}
-}
-
 func TestReadOnlyLookupHelpers(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -1204,9 +1161,6 @@ func TestReadOnlyLookupHelpers(t *testing.T) {
 
 	if _, err := s.GetSubscriptionTokenByUserID(ctx, u.ID); err != nil {
 		t.Fatalf("get subscription token by user id: %v", err)
-	}
-	if _, err := s.GetTelegramBindingByUserID(ctx, u.ID); err != nil {
-		t.Fatalf("get telegram binding by user id: %v", err)
 	}
 
 	u2, err := s.CreateUser(ctx, CreateUserInput{
@@ -1224,15 +1178,9 @@ func TestReadOnlyLookupHelpers(t *testing.T) {
 	if _, err := s.RawDB().ExecContext(ctx, `DELETE FROM subscription_tokens WHERE user_id = ?`, u2.ID); err != nil {
 		t.Fatalf("delete subscription token: %v", err)
 	}
-	if _, err := s.RawDB().ExecContext(ctx, `DELETE FROM telegram_bindings WHERE user_id = ?`, u2.ID); err != nil {
-		t.Fatalf("delete telegram binding: %v", err)
-	}
 
 	if _, err := s.GetSubscriptionTokenByUserID(ctx, u2.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected sql.ErrNoRows for subscription token, got %v", err)
-	}
-	if _, err := s.GetTelegramBindingByUserID(ctx, u2.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("expected sql.ErrNoRows for telegram binding, got %v", err)
 	}
 }
 
