@@ -232,6 +232,19 @@
     {{end}}
   </div>
 
+  <!-- Node-side ops CLI -->
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4" id="neutrinoctl">
+    <h2 class="text-sm font-semibold text-slate-900">节点运维 CLI（neutrinoctl）</h2>
+    <p class="text-xs text-slate-400 mt-0.5 mb-3">agent 镜像内置 <code class="bg-slate-100 px-1 py-0.5 rounded">neutrinoctl</code>：只读本地状态 + 既有固定逻辑，无任意 shell。排障时在节点上执行：</p>
+    <pre class="bg-slate-900 text-slate-200 rounded-lg p-4 overflow-auto text-xs leading-relaxed font-mono"><code>docker exec neutrino-agent neutrinoctl status        # 状态总览：用户基线、队列、证书、xray 配置
+docker exec neutrino-agent neutrinoctl queue         # usage 磁盘队列与隔离区明细
+docker exec neutrino-agent neutrinoctl cert          # mTLS 证书到期与续期窗口（renew_due 时退出码 1）
+docker exec neutrino-agent neutrinoctl enroll-info   # 身份与连接材料检查（不输出私钥）
+docker exec neutrino-agent neutrinoctl test-xray     # 用本机配置的 argv 测试当前 xray 配置
+docker exec neutrino-agent neutrinoctl backups       # 列出配置备份
+docker exec neutrino-agent neutrinoctl rollback      # 回滚到最近备份并 reload（可跟 backup 名）</code></pre>
+  </div>
+
   <!-- mTLS Certificates -->
   <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-4" id="certs">
     <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between">

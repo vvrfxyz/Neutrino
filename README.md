@@ -92,6 +92,23 @@ go run ./cmd/server
 go run ./cmd/node-agent
 ```
 
+### 节点运维 CLI（neutrinoctl）
+
+agent 镜像内置 `neutrinoctl`（也可 `go run ./cmd/neutrinoctl`），读取与 agent 相同的环境变量，仅访问本地状态与既有固定逻辑（无任意 shell）：
+
+```bash
+docker exec neutrino-agent neutrinoctl status        # 状态总览：用户基线、队列、证书、xray 配置
+docker exec neutrino-agent neutrinoctl queue         # usage 磁盘队列与隔离区明细
+docker exec neutrino-agent neutrinoctl cert          # 证书到期 / 续期窗口（renew_due 时退出码 1，可接监控）
+docker exec neutrino-agent neutrinoctl enroll-info   # 身份与连接材料检查（不输出私钥）
+docker exec neutrino-agent neutrinoctl test-xray     # 用本机 XRAY_TEST_ARGS_JSON 测试当前配置
+docker exec neutrino-agent neutrinoctl apply-preview # 本地渲染 bootstrap 模板并检查 JSON
+docker exec neutrino-agent neutrinoctl backups       # 列出配置备份
+docker exec neutrino-agent neutrinoctl rollback      # 回滚最近备份并 reload（可指定 backup 名）
+```
+
+所有命令支持 `-json` 输出，便于脚本化。
+
 ## 认证方式
 
 ### 管理员认证

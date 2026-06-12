@@ -42,6 +42,9 @@ jobs:
       - name: Build node-agent
         run: go build -trimpath ./cmd/node-agent
 
+      - name: Build neutrinoctl
+        run: go build -trimpath ./cmd/neutrinoctl
+
       - name: Vet
         run: go vet ./...
 
