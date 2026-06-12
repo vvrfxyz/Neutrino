@@ -148,3 +148,44 @@ func TestCSRFSkipsMTLS(t *testing.T) {
 		t.Fatalf("got %d, want 200", rr.Code)
 	}
 }
+
+// Basic auth bypasses the CSRF token (no session, no token to bind to), but
+// must not bypass it for provably cross-site browser requests: browsers
+// attach cached Basic credentials to cross-site form posts.
+func TestCSRFBasicAuthCrossSiteRules(t *testing.T) {
+	a := newCSRFTestApp()
+
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"no browser headers (curl)", nil, http.StatusOK},
+		{"same-origin fetch", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+		{"matching origin", map[string]string{"Origin": "http://example.com"}, http.StatusOK},
+		{"cross-site fetch metadata", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"foreign origin", map[string]string{"Origin": "https://evil.test"}, http.StatusForbidden},
+		{"null origin", map[string]string{"Origin": "null"}, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sink := &csrfTestSink{}
+			handler := a.csrfProtect(sink)
+			req := httptest.NewRequest(http.MethodPost, "http://example.com/users", nil)
+			req.SetBasicAuth("admin", "pass")
+			for k, v := range c.headers {
+				req.Header.Set(k, v)
+			}
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if rr.Code != c.want {
+				t.Fatalf("got %d, want %d", rr.Code, c.want)
+			}
+
+			// The /api/v1 session gate must agree with csrfProtect.
+			if gateAllows := a.apiV1SessionCSRFGate(req); gateAllows != (c.want == http.StatusOK) {
+				t.Fatalf("apiV1SessionCSRFGate = %v, want %v", gateAllows, c.want == http.StatusOK)
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -94,6 +95,34 @@ func requestHasAPIKeyHeader(r *http.Request, header string) bool {
 	return strings.TrimSpace(r.Header.Get(header)) != ""
 }
 
+// crossSiteBrowserRequest reports whether an unsafe request provably comes
+// from another site in a browser. Browsers attach cached Basic credentials to
+// cross-site form posts, so Basic auth alone must not bypass CSRF for them.
+// Non-browser clients (curl, SDKs) send neither Sec-Fetch-Site nor Origin and
+// are never flagged, keeping ALLOW_BASIC_AUTH automation working.
+func crossSiteBrowserRequest(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
+	case "cross-site":
+		return true
+	case "same-origin", "same-site", "none":
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	// "null" (sandboxed iframe, some redirect chains) is exactly CSRF-shaped
+	// for an authenticated write.
+	if strings.EqualFold(origin, "null") {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return true
+	}
+	return !strings.EqualFold(u.Host, r.Host)
+}
+
 func (a *App) csrfProtect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if csrfSafeMethod(r.Method) {
@@ -112,6 +141,10 @@ func (a *App) csrfProtect(next http.Handler) http.Handler {
 				return
 			}
 			if _, _, ok := r.BasicAuth(); ok {
+				if crossSiteBrowserRequest(r) {
+					http.Error(w, "cross-site request rejected", http.StatusForbidden)
+					return
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -149,10 +182,12 @@ func (a *App) apiV1SessionCSRFGate(r *http.Request) bool {
 	}
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c == nil || strings.TrimSpace(c.Value) == "" {
-		return true
+		// No session cookie: the request authenticated via Basic. Allow
+		// non-browser automation, but never a provably cross-site browser.
+		return !crossSiteBrowserRequest(r)
 	}
 	if _, _, ok := r.BasicAuth(); ok {
-		return true
+		return !crossSiteBrowserRequest(r)
 	}
 	expected := a.computeCSRFToken(c.Value)
 	if expected == "" {

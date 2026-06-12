@@ -96,7 +96,7 @@ go run ./cmd/node-agent
 ### 管理员认证
 
 - 默认：管理员 session cookie（Web 登录）
-- 可选：`ALLOW_BASIC_AUTH=true` 且管理员账号不是默认值时，可用 Basic Auth 作为 curl / 自动化 fallback
+- 可选：`ALLOW_BASIC_AUTH=true` 且管理员账号不是默认值时，可用 Basic Auth 作为 curl / 自动化 fallback。Basic Auth 仅面向非浏览器自动化：写请求若带有浏览器跨站特征（`Sec-Fetch-Site: cross-site`、外站 / null `Origin`），即便携带合法 Basic 凭据也会被 403 拒绝（浏览器会自动附带缓存的 Basic 凭据，这是 CSRF 向量）
 
 ### `/api/v1/*` 机器接口
 

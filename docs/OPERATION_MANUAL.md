@@ -7,7 +7,7 @@
 - 登录页：`/login`
 - 默认首页：`/users`
 - 默认认证方式：管理员 session 登录
-- 可选 fallback：`ALLOW_BASIC_AUTH=true` 且管理员账号不是默认值时，可用于 curl / 自动化脚本
+- 可选 fallback：`ALLOW_BASIC_AUTH=true` 且管理员账号不是默认值时，可用于 curl / 自动化脚本。注意 Basic Auth 仅限非浏览器自动化使用：带浏览器跨站特征（cross-site `Sec-Fetch-Site` / 外站 `Origin`）的写请求会被直接拒绝
 
 登录后侧边栏页面：
 
