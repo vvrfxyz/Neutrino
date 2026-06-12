@@ -49,24 +49,24 @@ func usageErrorResult(userID int64, code string, permanent bool, legacyMsg strin
 
 func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	var req UsageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
 	if len(req.Events) == 0 {
-		http.Error(w, "events required", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "events required")
 		return
 	}
 
 	if err := a.users().RefreshLifecycleState(r.Context()); err != nil {
 		log.Printf("api usage lifecycle refresh failed: %v", err)
-		http.Error(w, "record failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "record failed")
 		return
 	}
 
@@ -137,7 +137,7 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 		batchResults, err := a.usage().RecordBatch(r.Context(), batch)
 		if err != nil {
 			log.Printf("api usage record batch failed events=%d: %v", len(batch), err)
-			http.Error(w, "record failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "record failed")
 			return
 		}
 		for i, br := range batchResults {
@@ -199,11 +199,6 @@ func (a *App) handleAPIUsageV1(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAPITrafficSummaryV1(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	rangeParam := r.URL.Query().Get("range")
 	if rangeParam == "" {
 		rangeParam = "24h"
@@ -224,7 +219,7 @@ func (a *App) handleAPITrafficSummaryV1(w http.ResponseWriter, r *http.Request) 
 
 	summary, err := a.usage().TrafficSummary(r.Context(), rangeParam, nodeID, userID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("query failed: %v", err), http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
 		return
 	}
 

@@ -66,7 +66,7 @@ WHERE id = ?;
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	a := &App{store: store}
-	a.handleAPIUserRoutesV1(rr, req)
+	a.handleAPIUserPlanExtendV1(rr, req, user.ID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("plan extend got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -121,7 +121,7 @@ func TestHandleAPIQuotaResetRejectsInvalidJSONWithoutMutation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	a := &App{store: store}
-	a.handleAPIUserRoutesV1(rr, req)
+	a.handleAPIUserQuotaResetV1(rr, req, user.ID)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("quota reset invalid json got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -172,7 +172,7 @@ func TestHandleAPIQuotaResetAllowsEmptyBody(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	a := &App{store: store}
-	a.handleAPIUserRoutesV1(rr, req)
+	a.handleAPIUserQuotaResetV1(rr, req, user.ID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("quota reset empty body got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -214,7 +214,7 @@ func TestHandleAPIUserPatchValidatesBeforeStatusMutation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	a := &App{store: store}
-	a.handleAPIUserRoutesV1(rr, req)
+	a.handleAPIUserByIDV1(rr, req, user.ID)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("patch invalid device_limit got %d body=%s", rr.Code, rr.Body.String())
 	}

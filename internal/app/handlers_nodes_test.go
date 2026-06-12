@@ -536,7 +536,7 @@ func TestHandleAPINodeDeleteDisablesAndWaitsForEmptyUsersSync(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v1/nodes/%d", node.ID), nil)
 	rr := httptest.NewRecorder()
-	a.handleAPINodeByIDV1(rr, req)
+	a.handleAPINodeByIDV1(rr, req, node.ID)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("first delete got %d body=%s, want 202", rr.Code, rr.Body.String())
 	}
@@ -557,7 +557,7 @@ func TestHandleAPINodeDeleteDisablesAndWaitsForEmptyUsersSync(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v1/nodes/%d", node.ID), nil)
 	rr = httptest.NewRecorder()
-	a.handleAPINodeByIDV1(rr, req)
+	a.handleAPINodeByIDV1(rr, req, node.ID)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("second delete before applied got %d body=%s, want 202", rr.Code, rr.Body.String())
 	}
@@ -571,7 +571,7 @@ func TestHandleAPINodeDeleteDisablesAndWaitsForEmptyUsersSync(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v1/nodes/%d", node.ID), nil)
 	rr = httptest.NewRecorder()
-	a.handleAPINodeByIDV1(rr, req)
+	a.handleAPINodeByIDV1(rr, req, node.ID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete after applied got %d body=%s, want 200", rr.Code, rr.Body.String())
 	}
@@ -596,7 +596,7 @@ func TestHandleAPINodeDeleteMissingReturnsNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/404", nil)
 	rr := httptest.NewRecorder()
 
-	a.handleAPINodeByIDV1(rr, req)
+	a.handleAPINodeByIDV1(rr, req, 404)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("delete missing node got %d body=%s, want 404", rr.Code, rr.Body.String())
@@ -631,7 +631,7 @@ func TestHandleAPINodePatchPreservesOmittedFieldsAndQueuesDisableSync(t *testing
 	req := httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/nodes/%d", node.ID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	a.handleAPINodeByIDV1(rr, req)
+	a.handleAPINodeByIDV1(rr, req, node.ID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("patch host got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -647,7 +647,7 @@ func TestHandleAPINodePatchPreservesOmittedFieldsAndQueuesDisableSync(t *testing
 	req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/nodes/%d", node.ID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr = httptest.NewRecorder()
-	a.handleAPINodeByIDV1(rr, req)
+	a.handleAPINodeByIDV1(rr, req, node.ID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("patch disable got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -694,7 +694,7 @@ func TestHandleManagedXrayRollbackRejectsInvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/managed/xray/rollback", node.ID), strings.NewReader("{"))
 	rr := httptest.NewRecorder()
-	a.handleAPINodeByIDV1Extended(rr, req)
+	a.handleAPINodeManagedXrayRollback(rr, req, node.ID)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("invalid json rollback got %d body=%s, want 400", rr.Code, rr.Body.String())
 	}
@@ -723,7 +723,7 @@ func TestHandleManagedXrayDeployMissingNodeReturnsNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/404/managed/xray/deploy", nil)
 	rr := httptest.NewRecorder()
 
-	a.handleAPINodeByIDV1Extended(rr, req)
+	a.handleAPINodeManagedXrayDeploy(rr, req, 404)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("deploy missing node got %d body=%s, want 404", rr.Code, rr.Body.String())
@@ -763,7 +763,7 @@ func TestHandleManagedXrayDeployInvalidExtraJSONReturnsBadRequest(t *testing.T) 
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/nodes/%d/managed/xray/deploy", node.ID), nil)
 	rr := httptest.NewRecorder()
 
-	a.handleAPINodeByIDV1Extended(rr, req)
+	a.handleAPINodeManagedXrayDeploy(rr, req, node.ID)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("deploy invalid extra_json got %d body=%s, want 400", rr.Code, rr.Body.String())

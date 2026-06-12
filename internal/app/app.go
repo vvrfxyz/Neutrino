@@ -588,31 +588,25 @@ func (a *App) handleUsersTable(w http.ResponseWriter, r *http.Request) {
 	a.renderUsersTableOnly(w, r)
 }
 
-func (a *App) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/users/")
-	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.NotFound(w, r)
+// handleUserDetailPage serves GET /users/{id}.
+func (a *App) handleUserDetailPage(w http.ResponseWriter, r *http.Request) {
+	userID, err := parseInt64Path(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "bad user id", http.StatusBadRequest)
 		return
 	}
+	a.renderUserDetail(w, r, userID, "")
+}
 
-	userID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || userID <= 0 {
+// handleUserAction serves POST /users/{id}/{action} for the admin UI forms.
+func (a *App) handleUserAction(w http.ResponseWriter, r *http.Request) {
+	userID, err := parseInt64Path(r.PathValue("id"))
+	if err != nil {
 		http.Error(w, "bad user id", http.StatusBadRequest)
 		return
 	}
 
-	if r.Method == http.MethodGet && len(parts) == 1 {
-		a.renderUserDetail(w, r, userID, "")
-		return
-	}
-
-	if r.Method != http.MethodPost || len(parts) != 2 {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	switch parts[1] {
+	switch r.PathValue("action") {
 	case "links":
 		linkUser, err := a.users().RotateProxyLink(r.Context(), userID)
 		if err != nil {

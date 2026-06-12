@@ -34,7 +34,7 @@ func (a *App) adminOnly(next http.Handler) http.Handler {
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			a.apiError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		if r.Header.Get("HX-Request") == "true" {
@@ -96,7 +96,7 @@ func (a *App) apiV1Auth(next http.Handler) http.Handler {
 		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/nodes/") && strings.HasSuffix(r.URL.Path, "/enroll") {
 			ip := a.clientIPFromRequest(r)
 			if !a.rl.Allow("enroll:ip:"+ip, 60, time.Minute, time.Now()) {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				a.apiError(w, http.StatusTooManyRequests, "too many requests")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -105,7 +105,7 @@ func (a *App) apiV1Auth(next http.Handler) http.Handler {
 
 		if r2, _, ok := a.ensureAdminIdentity(r); ok {
 			if !a.apiV1SessionCSRFGate(r2) {
-				http.Error(w, "invalid csrf token", http.StatusForbidden)
+				a.apiError(w, http.StatusForbidden, "invalid csrf token")
 				return
 			}
 			next.ServeHTTP(w, r2)
@@ -115,22 +115,22 @@ func (a *App) apiV1Auth(next http.Handler) http.Handler {
 		// Agent -> panel: mTLS node identity. This is the only supported auth for node-agent.
 		if nodeID, ok := nodeIDFromMTLS(r); ok {
 			if !a.rl.Allow("node:"+strconv.FormatInt(nodeID, 10), 20000, time.Minute, time.Now()) {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				a.apiError(w, http.StatusTooManyRequests, "too many requests")
 				return
 			}
 			node, err := a.store.GetNode(r.Context(), nodeID)
 			if err != nil {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				a.apiError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 			if !node.Enabled && !allowDisabledNodeControlPlane(r.Method, r.URL.Path) {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				a.apiError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 			// Enforce node cert allowlist / revocation.
 			cert := r.TLS.PeerCertificates[0]
 			if err := a.store.ValidateNodeMTLSCert(r.Context(), nodeID, cert, time.Now().UTC()); err != nil {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				a.apiError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 
@@ -140,7 +140,7 @@ func (a *App) apiV1Auth(next http.Handler) http.Handler {
 			}
 			scope := requiredScope(r.Method, r.URL.Path)
 			if scope != "" && !hasScope(scopes, scope) {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				a.apiError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 			ctx := context.WithValue(r.Context(), apiKeyContextKey{}, &APIKeyContext{
@@ -153,34 +153,34 @@ func (a *App) apiV1Auth(next http.Handler) http.Handler {
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/api/v1/usage") {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			a.apiError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
 		rawKey := strings.TrimSpace(r.Header.Get(a.cfg.APIKeyHeader))
 		auth, ok, err := a.store.ValidateAPIKey(r.Context(), rawKey)
 		if err != nil {
-			http.Error(w, "auth failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "auth failed")
 			return
 		}
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			a.apiError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		if auth.NodeID != nil {
 			node, nodeErr := a.store.GetNode(r.Context(), *auth.NodeID)
 			if nodeErr != nil || !node.Enabled {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				a.apiError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 		}
 		if !a.rl.Allow("key:"+strconv.FormatInt(auth.ID, 10), 10000, time.Minute, time.Now()) {
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			a.apiError(w, http.StatusTooManyRequests, "too many requests")
 			return
 		}
 		scope := requiredScope(r.Method, r.URL.Path)
 		if scope != "" && !hasScope(auth.Scopes, scope) {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			a.apiError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		ctx := context.WithValue(r.Context(), apiKeyContextKey{}, &APIKeyContext{
@@ -197,26 +197,26 @@ func (a *App) apiV1AuthMTLSOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nodeID, ok := nodeIDFromMTLS(r)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			a.apiError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		if !a.rl.Allow("node:"+strconv.FormatInt(nodeID, 10), 20000, time.Minute, time.Now()) {
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			a.apiError(w, http.StatusTooManyRequests, "too many requests")
 			return
 		}
 		node, err := a.store.GetNode(r.Context(), nodeID)
 		if err != nil {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			a.apiError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		if !node.Enabled && !allowDisabledNodeControlPlane(r.Method, r.URL.Path) {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			a.apiError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		// Enforce node cert allowlist / revocation.
 		cert := r.TLS.PeerCertificates[0]
 		if err := a.store.ValidateNodeMTLSCert(r.Context(), nodeID, cert, time.Now().UTC()); err != nil {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			a.apiError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 
@@ -226,7 +226,7 @@ func (a *App) apiV1AuthMTLSOnly(next http.Handler) http.Handler {
 		}
 		scope := requiredScope(r.Method, r.URL.Path)
 		if scope != "" && !hasScope(scopes, scope) {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			a.apiError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		ctx := context.WithValue(r.Context(), apiKeyContextKey{}, &APIKeyContext{

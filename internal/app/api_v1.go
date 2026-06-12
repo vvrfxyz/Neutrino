@@ -144,23 +144,15 @@ func buildSubscriptionUserinfo(u repo.User) string {
 }
 
 func (a *App) handleAPIOnlineUsers(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	out, err := a.ops().ListOnlineUsers(r.Context(), a.cfg.OnlineDisplayWindowSec)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"count": len(out), "items": out})
 }
 
 func (a *App) handleAPIMetricsHost(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	items := a.hostMonitor.Query(r.URL.Query().Get("range"))
 	now := time.Now()
 	monthKey := now.In(a.cfg.PanelLocation()).Format("2006-01")
@@ -186,14 +178,14 @@ func (a *App) handleAPIUsersV1(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		users, err := a.users().List(r.Context())
 		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"count": len(users), "items": users})
 	case http.MethodPost:
 		var in repo.CreateUserInput
 		if err := a.readJSON(r, &in); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		u, err := a.users().Create(r.Context(), in)
@@ -202,7 +194,7 @@ func (a *App) handleAPIUsersV1(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, repo.ErrNodeNotFound) {
 				message = err.Error()
 			}
-			http.Error(w, message, http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, message)
 			return
 		}
 		auditAction(a, r, "user.create", "user", fmt.Sprintf("%d", u.ID), in)
@@ -215,165 +207,146 @@ func (a *App) handleAPIUsersV1(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (a *App) handleAPIUserRoutesV1(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
-	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.NotFound(w, r)
+func (a *App) handleAPIUserTrafficV1(w http.ResponseWriter, r *http.Request, userID int64) {
+	if _, err := a.users().Get(r.Context(), userID); err != nil {
+		if errors.Is(err, repo.ErrUserNotFound) {
+			a.apiError(w, http.StatusNotFound, "not found")
+			return
+		}
+		a.apiError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	userID, err := parseInt64Path(parts[0])
+	period := strings.TrimSpace(r.URL.Query().Get("period"))
+	if period == "" {
+		period = "hourly"
+	}
+	series, err := a.usage().TrafficSeries(r.Context(), userID, period)
 	if err != nil {
-		http.Error(w, "bad user id", http.StatusBadRequest)
+		status := http.StatusInternalServerError
+		message := "query failed"
+		if errors.Is(err, repo.ErrUnsupportedTrafficPeriod) {
+			status = http.StatusBadRequest
+			message = err.Error()
+		}
+		a.apiError(w, status, message)
 		return
 	}
-	if len(parts) == 1 {
-		a.handleAPIUserByIDV1(w, r, userID)
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"user_id": userID,
+		"period":  period,
+		"series":  series,
+	})
+}
+
+func (a *App) handleAPIUserEventsV1(w http.ResponseWriter, r *http.Request, userID int64) {
+	limit := 100
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			limit = parsed
+		}
+	}
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	var nodeID *int64
+	if v := strings.TrimSpace(r.URL.Query().Get("node_id")); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
+			nodeID = &parsed
+		}
+	}
+	items, err := a.usage().UserEvents(r.Context(), userID, limit, source, nodeID)
+	if err != nil {
+		a.apiError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if len(parts) == 2 && parts[1] == "traffic" && r.Method == http.MethodGet {
-		if _, err := a.users().Get(r.Context(), userID); err != nil {
-			if errors.Is(err, repo.ErrUserNotFound) {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "query failed"})
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"user_id": userID,
+		"count":   len(items),
+		"events":  items,
+	})
+}
+
+func (a *App) handleAPIUserQuotaResetV1(w http.ResponseWriter, r *http.Request, userID int64) {
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := a.readJSON(r, &req); err != nil {
+		if !errors.Is(err, io.EOF) {
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		period := strings.TrimSpace(r.URL.Query().Get("period"))
-		if period == "" {
-			period = "hourly"
-		}
-		series, err := a.usage().TrafficSeries(r.Context(), userID, period)
-		if err != nil {
-			status := http.StatusInternalServerError
-			message := "query failed"
-			if errors.Is(err, repo.ErrUnsupportedTrafficPeriod) {
-				status = http.StatusBadRequest
-				message = err.Error()
-			}
-			a.writeJSON(w, status, map[string]any{"error": message})
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{
-			"user_id": userID,
-			"period":  period,
-			"series":  series,
-		})
+	}
+	if err := a.users().ResetQuota(r.Context(), userID, req.Reason); err != nil {
+		a.apiError(w, http.StatusBadRequest, "reset failed")
 		return
 	}
-	if len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet {
-		limit := 100
-		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-			if parsed, err := strconv.Atoi(v); err == nil {
-				limit = parsed
-			}
-		}
-		source := strings.TrimSpace(r.URL.Query().Get("source"))
-		var nodeID *int64
-		if v := strings.TrimSpace(r.URL.Query().Get("node_id")); v != "" {
-			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
-				nodeID = &parsed
-			}
-		}
-		items, err := a.usage().UserEvents(r.Context(), userID, limit, source, nodeID)
-		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{
-			"user_id": userID,
-			"count":   len(items),
-			"events":  items,
-		})
+	auditAction(a, r, "user.quota.reset", "user", fmt.Sprintf("%d", userID), map[string]any{"reason": req.Reason})
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleAPIUserQuotaCreditV1(w http.ResponseWriter, r *http.Request, userID int64) {
+	var req struct {
+		Bytes int64 `json:"bytes"`
+	}
+	if err := a.readJSON(r, &req); err != nil {
+		a.apiError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if len(parts) == 3 && parts[1] == "quota" && parts[2] == "reset" && r.Method == http.MethodPost {
-		var req struct {
-			Reason string `json:"reason"`
-		}
-		if err := a.readJSON(r, &req); err != nil {
-			if !errors.Is(err, io.EOF) {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-		}
-		if err := a.users().ResetQuota(r.Context(), userID, req.Reason); err != nil {
-			http.Error(w, "reset failed", http.StatusBadRequest)
-			return
-		}
-		auditAction(a, r, "user.quota.reset", "user", fmt.Sprintf("%d", userID), map[string]any{"reason": req.Reason})
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	if err := a.users().CreditQuota(r.Context(), userID, req.Bytes); err != nil {
+		a.apiError(w, http.StatusBadRequest, "credit failed")
 		return
 	}
-	if len(parts) == 3 && parts[1] == "quota" && parts[2] == "credit" && r.Method == http.MethodPost {
-		var req struct {
-			Bytes int64 `json:"bytes"`
-		}
-		if err := a.readJSON(r, &req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
-			return
-		}
-		if err := a.users().CreditQuota(r.Context(), userID, req.Bytes); err != nil {
-			http.Error(w, "credit failed", http.StatusBadRequest)
-			return
-		}
-		auditAction(a, r, "user.quota.credit", "user", fmt.Sprintf("%d", userID), map[string]any{"bytes": req.Bytes})
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	auditAction(a, r, "user.quota.credit", "user", fmt.Sprintf("%d", userID), map[string]any{"bytes": req.Bytes})
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleAPIUserPlanExtendV1(w http.ResponseWriter, r *http.Request, userID int64) {
+	var req struct {
+		Days int `json:"days"`
+	}
+	if err := a.readJSON(r, &req); err != nil {
+		a.apiError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if len(parts) == 3 && parts[1] == "plan" && parts[2] == "extend" && r.Method == http.MethodPost {
-		var req struct {
-			Days int `json:"days"`
-		}
-		if err := a.readJSON(r, &req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
-			return
-		}
-		if err := a.users().ExtendPlan(r.Context(), userID, req.Days); err != nil {
-			http.Error(w, "extend failed", http.StatusBadRequest)
-			return
-		}
-		auditAction(a, r, "user.plan.extend", "user", fmt.Sprintf("%d", userID), map[string]any{"days": req.Days})
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	if err := a.users().ExtendPlan(r.Context(), userID, req.Days); err != nil {
+		a.apiError(w, http.StatusBadRequest, "extend failed")
 		return
 	}
-	if len(parts) == 2 && parts[1] == "subscription" && r.Method == http.MethodGet {
-		tok, err := a.users().GetSubscriptionToken(r.Context(), userID)
-		if err != nil {
-			if errors.Is(err, repo.ErrUserNotFound) || errors.Is(err, sql.ErrNoRows) {
-				a.writeJSON(w, http.StatusOK, map[string]any{})
-				return
-			}
-			http.Error(w, "token query failed", http.StatusInternalServerError)
+	auditAction(a, r, "user.plan.extend", "user", fmt.Sprintf("%d", userID), map[string]any{"days": req.Days})
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleAPIUserSubscriptionV1(w http.ResponseWriter, r *http.Request, userID int64) {
+	tok, err := a.users().GetSubscriptionToken(r.Context(), userID)
+	if err != nil {
+		if errors.Is(err, repo.ErrUserNotFound) || errors.Is(err, sql.ErrNoRows) {
+			a.writeJSON(w, http.StatusOK, map[string]any{})
 			return
 		}
-		a.writeJSON(w, http.StatusOK, map[string]any{
-			"token": tok.Token,
-			"url":   subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, tok.Token, "v2rayn"),
-		})
+		a.apiError(w, http.StatusInternalServerError, "token query failed")
 		return
 	}
-	if len(parts) == 3 && parts[1] == "subscription" && parts[2] == "rotate" && r.Method == http.MethodPost {
-		tok, err := a.users().RotateSubscriptionToken(r.Context(), userID)
-		if err != nil {
-			http.Error(w, "rotate failed", http.StatusBadRequest)
-			return
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"token": tok.Token,
+		"url":   subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, tok.Token, "v2rayn"),
+	})
+}
+
+func (a *App) handleAPIUserSubscriptionRotateV1(w http.ResponseWriter, r *http.Request, userID int64) {
+	tok, err := a.users().RotateSubscriptionToken(r.Context(), userID)
+	if err != nil {
+		a.apiError(w, http.StatusBadRequest, "rotate failed")
+		return
+	}
+	auditAction(a, r, "user.subscription.rotate", "user", fmt.Sprintf("%d", userID), map[string]any{"token_prefix": func() string {
+		if len(tok.Token) > 8 {
+			return tok.Token[:8]
 		}
-		auditAction(a, r, "user.subscription.rotate", "user", fmt.Sprintf("%d", userID), map[string]any{"token_prefix": func() string {
-			if len(tok.Token) > 8 {
-				return tok.Token[:8]
-			}
-			return tok.Token
-		}()})
-		a.writeJSON(w, http.StatusOK, map[string]any{"token": tok.Token, "url": subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, tok.Token, "v2rayn")})
-		return
-	}
-	http.NotFound(w, r)
+		return tok.Token
+	}()})
+	a.writeJSON(w, http.StatusOK, map[string]any{"token": tok.Token, "url": subscription.BuildSubscriptionURL(a.cfg.SubBaseURL, tok.Token, "v2rayn")})
 }
 
 func (a *App) handleAPIUserByIDV1(w http.ResponseWriter, r *http.Request, userID int64) {
@@ -382,10 +355,10 @@ func (a *App) handleAPIUserByIDV1(w http.ResponseWriter, r *http.Request, userID
 		u, err := a.users().Get(r.Context(), userID)
 		if err != nil {
 			if errors.Is(err, repo.ErrUserNotFound) {
-				http.Error(w, "not found", http.StatusNotFound)
+				a.apiError(w, http.StatusNotFound, "not found")
 				return
 			}
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		a.writeJSON(w, http.StatusOK, u)
@@ -395,57 +368,106 @@ func (a *App) handleAPIUserByIDV1(w http.ResponseWriter, r *http.Request, userID
 			DeviceLimit *int    `json:"device_limit"`
 		}
 		if err := a.readJSON(r, &req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		if req.Status == nil && req.DeviceLimit == nil {
-			http.Error(w, "empty patch", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "empty patch")
 			return
 		}
 		targetStatus := ""
 		if req.Status != nil {
 			targetStatus = strings.TrimSpace(*req.Status)
 			if targetStatus != "active" && targetStatus != "disabled" {
-				http.Error(w, "update failed", http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, "update failed")
 				return
 			}
 		}
 		if req.DeviceLimit != nil && *req.DeviceLimit <= 0 {
-			http.Error(w, "update failed", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "update failed")
 			return
 		}
 		if req.Status != nil {
 			if _, err := a.users().SetStatus(r.Context(), userID, targetStatus); err != nil {
-				http.Error(w, "update failed", http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, "update failed")
 				return
 			}
 			auditAction(a, r, "user.status.set", "user", fmt.Sprintf("%d", userID), map[string]any{"status": targetStatus})
 		}
 		if req.DeviceLimit != nil {
 			if _, err := a.users().SetDeviceLimit(r.Context(), userID, *req.DeviceLimit); err != nil {
-				http.Error(w, "update failed", http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, "update failed")
 				return
 			}
 			auditAction(a, r, "user.device_limit.set", "user", fmt.Sprintf("%d", userID), map[string]any{"device_limit": *req.DeviceLimit})
 		}
 		u, err := a.users().Get(r.Context(), userID)
 		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		a.writeJSON(w, http.StatusOK, u)
 	case http.MethodDelete:
 		username, err := a.users().Delete(r.Context(), userID)
 		if err != nil {
-			http.Error(w, "delete failed", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "delete failed")
 			return
 		}
 		auditAction(a, r, "user.delete", "user", fmt.Sprintf("%d", userID), map[string]any{"username": username})
 		_ = username
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func formBool(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
+}
+
+// applyNodeFormInput copies the HTMX node-form fields onto in. With
+// onlyPresent (PATCH semantics) a field is copied only when the form carries
+// the key; otherwise (POST/PUT semantics) every field is copied, except that
+// the numeric/boolean fields keep their prior value when the submitted value
+// is empty or unparsable.
+func applyNodeFormInput(in *repo.CreateNodeInput, r *http.Request, onlyPresent bool) {
+	set := func(key string, apply func(string)) {
+		if onlyPresent {
+			if _, ok := r.Form[key]; !ok {
+				return
+			}
+		}
+		apply(r.FormValue(key))
+	}
+	set("name", func(v string) { in.Name = v })
+	set("core_type", func(v string) { in.CoreType = v })
+	set("protocol", func(v string) { in.Protocol = v })
+	set("host", func(v string) { in.Host = v })
+	set("port", func(v string) {
+		if p, err := parseInt64Path(v); err == nil {
+			in.Port = int(p)
+		}
+	})
+	set("transport", func(v string) { in.Transport = v })
+	set("security", func(v string) { in.Security = v })
+	set("flow", func(v string) { in.Flow = v })
+	set("sni", func(v string) { in.SNI = v })
+	set("fp", func(v string) { in.FP = v })
+	set("public_key", func(v string) { in.PublicKey = v })
+	set("short_id", func(v string) { in.ShortID = v })
+	set("extra_json", func(v string) { in.ExtraJSON = v })
+	set("agent_url", func(v string) { in.AgentURL = v })
+	set("enabled", func(v string) {
+		if onlyPresent || strings.TrimSpace(v) != "" {
+			in.Enabled = formBool(v)
+		}
+	})
+	set("managed", func(v string) {
+		if onlyPresent || strings.TrimSpace(v) != "" {
+			in.Managed = formBool(v)
+		}
+	})
 }
 
 func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
@@ -453,7 +475,7 @@ func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		items, err := a.nodes().List(r.Context())
 		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"count": len(items), "items": items})
@@ -462,47 +484,23 @@ func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
 		if strings.HasPrefix(ct, "application/json") {
 			if err := a.readJSON(r, &in); err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, "invalid json")
 				return
 			}
 		} else {
 			// Support HTMX form posts.
 			if err := r.ParseForm(); err != nil {
-				http.Error(w, "invalid form", http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, "invalid form")
 				return
 			}
-			in.Name = r.FormValue("name")
-			in.CoreType = r.FormValue("core_type")
-			in.Protocol = r.FormValue("protocol")
-			in.Host = r.FormValue("host")
-			if v := strings.TrimSpace(r.FormValue("port")); v != "" {
-				if p, err := parseInt64Path(v); err == nil {
-					in.Port = int(p)
-				}
-			}
-			in.Transport = r.FormValue("transport")
-			in.Security = r.FormValue("security")
-			in.Flow = r.FormValue("flow")
-			in.SNI = r.FormValue("sni")
-			in.FP = r.FormValue("fp")
-			in.PublicKey = r.FormValue("public_key")
-			in.ShortID = r.FormValue("short_id")
-			in.ExtraJSON = r.FormValue("extra_json")
-			in.AgentURL = r.FormValue("agent_url")
-			if v := strings.TrimSpace(r.FormValue("enabled")); v != "" {
-				in.Enabled = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
-			} else {
-				// HTML forms omit unchecked values; default to enabled.
-				in.Enabled = true
-			}
-			if v := strings.TrimSpace(r.FormValue("managed")); v != "" {
-				in.Managed = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
-			}
+			// HTML forms omit unchecked values; default to enabled.
+			in.Enabled = true
+			applyNodeFormInput(&in, r, false)
 		}
 
 		item, managed, err := a.nodes().Create(r.Context(), in)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		auditAction(a, r, "node.create", "node", fmt.Sprintf("%d", item.ID), nil)
@@ -511,11 +509,12 @@ func (a *App) handleAPINodesV1(w http.ResponseWriter, r *http.Request) {
 			auditActionAs(a, r, "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
 				map[string]any{"desired_version": managed.DesiredVersion, "job_id": managed.JobID, "enqueued": managed.Enqueued})
 		}
+		// Best-effort ops-cache refresh; the create itself already succeeded.
 		_ = a.ops().RefreshNode(r.Context(), item.ID)
 
 		a.writeJSON(w, http.StatusCreated, item)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -611,23 +610,16 @@ func applyNodePatchInput(in repo.CreateNodeInput, patch patchNodeInput) repo.Cre
 	return in
 }
 
-func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
-	idPart := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
-	idPart = strings.Trim(idPart, "/")
-	nodeID, err := parseInt64Path(idPart)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
+func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request, nodeID int64) {
 	switch r.Method {
 	case http.MethodGet:
 		item, err := a.nodes().Get(r.Context(), nodeID)
 		if err != nil {
 			if errors.Is(err, repo.ErrNodeNotFound) {
-				http.Error(w, "not found", http.StatusNotFound)
+				a.apiError(w, http.StatusNotFound, "not found")
 				return
 			}
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		a.writeJSON(w, http.StatusOK, item)
@@ -635,122 +627,49 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 		before, beforeErr := a.nodes().Get(r.Context(), nodeID)
 		if beforeErr != nil {
 			if errors.Is(beforeErr, repo.ErrNodeNotFound) {
-				http.Error(w, "not found", http.StatusNotFound)
+				a.apiError(w, http.StatusNotFound, "not found")
 				return
 			}
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		var in repo.CreateNodeInput
 		ct := r.Header.Get("Content-Type")
+		isJSON := strings.HasPrefix(ct, "application/json")
 		if r.Method == http.MethodPatch {
 			in = nodeToCreateInput(before)
-			if strings.HasPrefix(ct, "application/json") {
+			if isJSON {
 				var patch patchNodeInput
 				if err := a.readJSON(r, &patch); err != nil {
-					http.Error(w, "invalid json", http.StatusBadRequest)
+					a.apiError(w, http.StatusBadRequest, "invalid json")
 					return
 				}
 				in = applyNodePatchInput(in, patch)
 			} else {
 				if err := r.ParseForm(); err != nil {
-					http.Error(w, "invalid form", http.StatusBadRequest)
+					a.apiError(w, http.StatusBadRequest, "invalid form")
 					return
 				}
-				if _, ok := r.Form["name"]; ok {
-					in.Name = r.FormValue("name")
-				}
-				if _, ok := r.Form["core_type"]; ok {
-					in.CoreType = r.FormValue("core_type")
-				}
-				if _, ok := r.Form["protocol"]; ok {
-					in.Protocol = r.FormValue("protocol")
-				}
-				if _, ok := r.Form["host"]; ok {
-					in.Host = r.FormValue("host")
-				}
-				if _, ok := r.Form["port"]; ok {
-					if p, err := parseInt64Path(r.FormValue("port")); err == nil {
-						in.Port = int(p)
-					}
-				}
-				if _, ok := r.Form["transport"]; ok {
-					in.Transport = r.FormValue("transport")
-				}
-				if _, ok := r.Form["security"]; ok {
-					in.Security = r.FormValue("security")
-				}
-				if _, ok := r.Form["flow"]; ok {
-					in.Flow = r.FormValue("flow")
-				}
-				if _, ok := r.Form["sni"]; ok {
-					in.SNI = r.FormValue("sni")
-				}
-				if _, ok := r.Form["fp"]; ok {
-					in.FP = r.FormValue("fp")
-				}
-				if _, ok := r.Form["public_key"]; ok {
-					in.PublicKey = r.FormValue("public_key")
-				}
-				if _, ok := r.Form["short_id"]; ok {
-					in.ShortID = r.FormValue("short_id")
-				}
-				if _, ok := r.Form["extra_json"]; ok {
-					in.ExtraJSON = r.FormValue("extra_json")
-				}
-				if _, ok := r.Form["agent_url"]; ok {
-					in.AgentURL = r.FormValue("agent_url")
-				}
-				if _, ok := r.Form["enabled"]; ok {
-					v := strings.TrimSpace(r.FormValue("enabled"))
-					in.Enabled = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
-				}
-				if _, ok := r.Form["managed"]; ok {
-					v := strings.TrimSpace(r.FormValue("managed"))
-					in.Managed = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
-				}
+				applyNodeFormInput(&in, r, true)
 			}
 		} else {
-			if strings.HasPrefix(ct, "application/json") {
+			if isJSON {
 				if err := a.readJSON(r, &in); err != nil {
-					http.Error(w, "invalid json", http.StatusBadRequest)
+					a.apiError(w, http.StatusBadRequest, "invalid json")
 					return
 				}
 			} else {
 				if err := r.ParseForm(); err != nil {
-					http.Error(w, "invalid form", http.StatusBadRequest)
+					a.apiError(w, http.StatusBadRequest, "invalid form")
 					return
 				}
-				in.Name = r.FormValue("name")
-				in.CoreType = r.FormValue("core_type")
-				in.Protocol = r.FormValue("protocol")
-				in.Host = r.FormValue("host")
-				if v := strings.TrimSpace(r.FormValue("port")); v != "" {
-					if p, err := parseInt64Path(v); err == nil {
-						in.Port = int(p)
-					}
-				}
-				in.Transport = r.FormValue("transport")
-				in.Security = r.FormValue("security")
-				in.Flow = r.FormValue("flow")
-				in.SNI = r.FormValue("sni")
-				in.FP = r.FormValue("fp")
-				in.PublicKey = r.FormValue("public_key")
-				in.ShortID = r.FormValue("short_id")
-				in.ExtraJSON = r.FormValue("extra_json")
-				in.AgentURL = r.FormValue("agent_url")
-				if v := strings.TrimSpace(r.FormValue("enabled")); v != "" {
-					in.Enabled = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
-				}
-				if v := strings.TrimSpace(r.FormValue("managed")); v != "" {
-					in.Managed = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
-				}
+				applyNodeFormInput(&in, r, false)
 			}
 		}
 
 		update, err := a.nodes().Update(r.Context(), nodeID, in)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		item := update.Node
@@ -759,6 +678,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 			auditActionAs(a, r, "admin", "system", "node.xray.desired.sync", "node", fmt.Sprintf("%d", item.ID),
 				map[string]any{"desired_version": update.ManagedXray.DesiredVersion, "job_id": update.ManagedXray.JobID, "enqueued": update.ManagedXray.Enqueued})
 		}
+		// Best-effort ops-cache refresh; the update itself already succeeded.
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
 
 		a.writeJSON(w, http.StatusOK, item)
@@ -778,7 +698,7 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("HX-Request") == "true" {
 				setHXToast(w, "error", message)
 			}
-			http.Error(w, message, status)
+			a.apiError(w, status, message)
 			return
 		}
 		if result.PendingDelete {
@@ -795,6 +715,6 @@ func (a *App) handleAPINodeByIDV1(w http.ResponseWriter, r *http.Request) {
 		a.ops().RemoveNode(nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }

@@ -553,7 +553,15 @@ function nodeDeployPage() {
       if (meta && meta.content) init.headers['X-CSRF-Token'] = meta.content;
       if (body !== undefined) init.body = JSON.stringify(body);
       const resp = await fetch(url, init);
-      if (!resp.ok) { const txt = await resp.text(); throw new Error(txt || ('HTTP ' + resp.status)); }
+      if (!resp.ok) {
+        const txt = await resp.text();
+        let msg = txt || ('HTTP ' + resp.status);
+        try {
+          const payload = JSON.parse(txt);
+          if (payload && typeof payload.error === 'string' && payload.error.trim()) msg = payload.error.trim();
+        } catch (_) {}
+        throw new Error(msg);
+      }
       const ct = resp.headers.get('content-type') || '';
       if (ct.includes('application/json')) return await resp.json();
       return null;

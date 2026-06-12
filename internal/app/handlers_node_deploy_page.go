@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,29 +30,24 @@ type nodeDeployPageData struct {
 	ExtraJSONError string
 }
 
-func (a *App) handleNodeRoutesPage(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/nodes/")
-	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
-	if len(parts) < 2 {
-		http.NotFound(w, r)
-		return
-	}
-	nodeID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || nodeID <= 0 {
+// handleNodeDeployPageRoute serves GET /nodes/{id}/deploy.
+func (a *App) handleNodeDeployPageRoute(w http.ResponseWriter, r *http.Request) {
+	nodeID, err := parseInt64Path(r.PathValue("id"))
+	if err != nil {
 		http.Error(w, "bad node id", http.StatusBadRequest)
 		return
 	}
-	if len(parts) == 2 && parts[1] == "deploy" {
-		switch r.Method {
-		case http.MethodGet:
-			a.handleNodeDeployPage(w, r, nodeID)
-			return
-		case http.MethodPost:
-			a.handleNodeDeployRotate(w, r, nodeID)
-			return
-		}
+	a.handleNodeDeployPage(w, r, nodeID)
+}
+
+// handleNodeDeployRotateRoute serves POST /nodes/{id}/deploy.
+func (a *App) handleNodeDeployRotateRoute(w http.ResponseWriter, r *http.Request) {
+	nodeID, err := parseInt64Path(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "bad node id", http.StatusBadRequest)
+		return
 	}
-	http.NotFound(w, r)
+	a.handleNodeDeployRotate(w, r, nodeID)
 }
 
 func (a *App) handleNodeDeployRotate(w http.ResponseWriter, r *http.Request, nodeID int64) {

@@ -47,7 +47,7 @@ func (a *App) handleAPIKeysV1(w http.ResponseWriter, r *http.Request) {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		in := service.CreateAPIKeyInput{
@@ -58,7 +58,7 @@ func (a *App) handleAPIKeysV1(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.ExpiresAt) != "" {
 			t, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt))
 			if err != nil {
-				http.Error(w, "expires_at must be RFC3339", http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, "expires_at must be RFC3339")
 				return
 			}
 			in.ExpiresAt = &t
@@ -67,11 +67,11 @@ func (a *App) handleAPIKeysV1(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			switch {
 			case errors.Is(err, repo.ErrNodeNotFound):
-				http.Error(w, err.Error(), http.StatusNotFound)
+				a.apiError(w, http.StatusNotFound, err.Error())
 			case errors.Is(err, service.ErrAPIKeyInvalidScope), errors.Is(err, service.ErrAPIKeyInvalidInput):
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, err.Error())
 			default:
-				http.Error(w, "create failed", http.StatusInternalServerError)
+				a.apiError(w, http.StatusInternalServerError, "create failed")
 			}
 			return
 		}
@@ -88,26 +88,20 @@ func (a *App) handleAPIKeysV1(w http.ResponseWriter, r *http.Request) {
 			"item": meta,
 		})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (a *App) handleAPIKeyByIDV1(w http.ResponseWriter, r *http.Request) {
-	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/apikeys/"), "/")
-	id, err := parseInt64Path(rest)
-	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
-		return
-	}
+func (a *App) handleAPIKeyByIDV1(w http.ResponseWriter, r *http.Request, id int64) {
 	switch r.Method {
 	case http.MethodGet:
 		item, err := a.apikeys().Get(r.Context(), id)
 		if err != nil {
 			if errors.Is(err, service.ErrAPIKeyNotFound) {
-				a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+				a.apiError(w, http.StatusNotFound, "not found")
 				return
 			}
-			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "lookup failed"})
+			a.apiError(w, http.StatusInternalServerError, "lookup failed")
 			return
 		}
 		a.writeJSON(w, http.StatusOK, item)
@@ -115,10 +109,10 @@ func (a *App) handleAPIKeyByIDV1(w http.ResponseWriter, r *http.Request) {
 		item, err := a.apikeys().Revoke(r.Context(), id)
 		if err != nil {
 			if errors.Is(err, service.ErrAPIKeyNotFound) {
-				a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+				a.apiError(w, http.StatusNotFound, "not found")
 				return
 			}
-			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "revoke failed"})
+			a.apiError(w, http.StatusInternalServerError, "revoke failed")
 			return
 		}
 		auditAction(a, r, "apikey.revoke", "api_key", strconv.FormatInt(id, 10), map[string]any{
@@ -126,7 +120,7 @@ func (a *App) handleAPIKeyByIDV1(w http.ResponseWriter, r *http.Request) {
 		})
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -286,14 +280,9 @@ func (a *App) handleAPIKeysPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *App) handleAPIKeyPageRoutes(w http.ResponseWriter, r *http.Request) {
-	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/apikeys/"), "/")
-	parts := strings.Split(rest, "/")
-	if len(parts) != 2 || parts[1] != "revoke" || r.Method != http.MethodPost {
-		http.NotFound(w, r)
-		return
-	}
-	id, err := parseInt64Path(parts[0])
+// handleAPIKeyRevokePage serves POST /apikeys/{id}/revoke from the admin page.
+func (a *App) handleAPIKeyRevokePage(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64Path(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return

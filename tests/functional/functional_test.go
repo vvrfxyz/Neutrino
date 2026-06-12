@@ -780,14 +780,14 @@ func TestFunctional_UserDetailTrafficAPIAndOnlineSessions(t *testing.T) {
 
 	resp = env.request(t, http.MethodGet, "/api/v1/users/not-a-number/traffic", nil, true, "")
 	mustStatus(t, resp, http.StatusBadRequest)
-	if body := strings.TrimSpace(decodeBodyText(t, resp)); body != "bad user id" {
-		t.Fatalf("unexpected bad-user-id body=%q", body)
+	if payload := decodeBodyMap(t, resp); payload["error"] != "bad user id" {
+		t.Fatalf("unexpected bad-user-id payload=%v", payload)
 	}
 
 	resp = env.request(t, http.MethodGet, "/api/v1/users/999999999/traffic", nil, true, "")
 	mustStatus(t, resp, http.StatusNotFound)
-	if body := strings.TrimSpace(decodeBodyText(t, resp)); body != "not found" {
-		t.Fatalf("unexpected missing-user body=%q", body)
+	if payload := decodeBodyMap(t, resp); payload["error"] != "not found" {
+		t.Fatalf("unexpected missing-user payload=%v", payload)
 	}
 
 	resp = env.request(t, http.MethodGet, fmt.Sprintf("/users/%d", userID), nil, true, "")

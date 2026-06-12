@@ -127,37 +127,37 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 	}
 	body, err := readAllLimit(r.Body, 64*1024)
 	if err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if _, err := a.nodes().Get(r.Context(), nodeID); err != nil {
-		http.Error(w, "node not found", http.StatusNotFound)
+		a.apiError(w, http.StatusNotFound, "node not found")
 		return
 	}
 	if err := a.nodes().ValidateEnrollCode(r.Context(), nodeID, req.EnrollCode); err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
+		a.apiError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	csr, err := certutil.ParseCSRPEM(req.CSRPEM)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	wantCN := fmt.Sprintf("node-%d", nodeID)
 	if strings.TrimSpace(csr.Subject.CommonName) != wantCN {
-		http.Error(w, "csr CN must be "+wantCN, http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "csr CN must be "+wantCN)
 		return
 	}
 
 	caCert, caKey, err := a.loadSigningCA()
 	if err != nil {
-		http.Error(w, "signing CA not configured", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "signing CA not configured")
 		return
 	}
 	now := time.Now().UTC()
@@ -171,7 +171,7 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 	})
 	if err != nil {
-		http.Error(w, "sign failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "sign failed")
 		return
 	}
 	// Keep allowlist tight: install the new cert, consume the one-time code, and
@@ -179,10 +179,10 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 	revoked, err := a.nodes().CompleteEnroll(r.Context(), nodeID, req.EnrollCode, cert, now)
 	if err != nil {
 		if errors.Is(err, repo.ErrEnrollCodeInvalid) {
-			http.Error(w, err.Error(), http.StatusForbidden)
+			a.apiError(w, http.StatusForbidden, err.Error())
 			return
 		}
-		http.Error(w, "enroll failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "enroll failed")
 		return
 	}
 	auditActionAs(a, r, "node", fmt.Sprintf("%d", nodeID), "node.enroll", "node", fmt.Sprintf("%d", nodeID),
@@ -200,29 +200,29 @@ func (a *App) handleAPINodeEnroll(w http.ResponseWriter, r *http.Request, nodeID
 func (a *App) handleAPINodeCertRenew(w http.ResponseWriter, r *http.Request, nodeID int64) {
 	// Node-agent control-plane is mTLS only (no bearer tokens).
 	if mtlsID, ok := nodeIDFromMTLS(r); !ok || mtlsID != nodeID {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		a.apiError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	var req struct {
 		CSRPEM string `json:"csr_pem"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	csr, err := certutil.ParseCSRPEM(req.CSRPEM)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	wantCN := fmt.Sprintf("node-%d", nodeID)
 	if strings.TrimSpace(csr.Subject.CommonName) != wantCN {
-		http.Error(w, "csr CN must be "+wantCN, http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "csr CN must be "+wantCN)
 		return
 	}
 	caCert, caKey, err := a.loadSigningCA()
 	if err != nil {
-		http.Error(w, "signing CA not configured", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "signing CA not configured")
 		return
 	}
 	now := time.Now().UTC()
@@ -236,12 +236,12 @@ func (a *App) handleAPINodeCertRenew(w http.ResponseWriter, r *http.Request, nod
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 	})
 	if err != nil {
-		http.Error(w, "sign failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "sign failed")
 		return
 	}
 	revoked, err := a.nodes().RenewCertPin(r.Context(), nodeID, "agent_client", cert, now)
 	if err != nil {
-		http.Error(w, "renew failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "renew failed")
 		return
 	}
 	auditAction(a, r, "node.cert.renew", "node", fmt.Sprintf("%d", nodeID), map[string]any{"cert_sha256": certutil.CertSHA256Hex(cert), "revoked_old": revoked})
@@ -264,13 +264,13 @@ func (a *App) handleAPINodeCertRevoke(w http.ResponseWriter, r *http.Request, no
 	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(ct, "application/json") {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 	} else {
 		// Allow simple HTML forms (safer for admin UI); but require an explicit action.
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "bad form")
 			return
 		}
 		req.CertSHA256 = strings.TrimSpace(r.FormValue("cert_sha256"))
@@ -278,7 +278,7 @@ func (a *App) handleAPINodeCertRevoke(w http.ResponseWriter, r *http.Request, no
 		revokeAll = strings.TrimSpace(r.FormValue("revoke_all")) == "1"
 	}
 	if !revokeAll && strings.TrimSpace(req.CertSHA256) == "" {
-		http.Error(w, "cert_sha256 required (or set revoke_all=1)", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "cert_sha256 required (or set revoke_all=1)")
 		return
 	}
 	if revokeAll {
@@ -287,7 +287,7 @@ func (a *App) handleAPINodeCertRevoke(w http.ResponseWriter, r *http.Request, no
 
 	n, err := a.nodes().RevokeCertPin(r.Context(), nodeID, req.CertSHA256, req.Reason)
 	if err != nil {
-		http.Error(w, "revoke failed", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "revoke failed")
 		return
 	}
 	auditAction(a, r, "node.cert.revoke", "node", fmt.Sprintf("%d", nodeID), map[string]any{"cert_sha256": strings.TrimSpace(req.CertSHA256), "reason": strings.TrimSpace(req.Reason), "revoked": n})

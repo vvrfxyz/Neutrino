@@ -30,54 +30,11 @@ const (
 // limited to ones that have always existed in Neutrino.
 var requiredRestoreTables = []string{"users", "nodes", "admin_accounts"}
 
-func (a *App) handleAPIBackupsV1(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		a.handleAPIListBackups(w, r)
-	case http.MethodPost:
-		a.handleAPICreateBackup(w, r)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (a *App) handleAPIBackupRoutesV1(w http.ResponseWriter, r *http.Request) {
-	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/backups/"), "/")
-	if rest == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if rest == "restore" {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleAPIRestoreBackup(w, r)
-		return
-	}
-	parts := strings.Split(rest, "/")
-	id, err := parseInt64Path(parts[0])
-	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
-		return
-	}
-	switch {
-	case len(parts) == 1 && r.Method == http.MethodGet:
-		a.handleAPIGetBackup(w, r, id)
-	case len(parts) == 1 && r.Method == http.MethodDelete:
-		a.handleAPIDeleteBackup(w, r, id)
-	case len(parts) == 2 && parts[1] == "download" && r.Method == http.MethodGet:
-		a.handleAPIDownloadBackup(w, r, id)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
 func (a *App) handleAPIListBackups(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	recs, err := a.backups().List(r.Context(), limit)
 	if err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list failed"})
+		a.apiError(w, http.StatusInternalServerError, "list failed")
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"count": len(recs), "items": recs})
@@ -86,7 +43,7 @@ func (a *App) handleAPIListBackups(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAPICreateBackup(w http.ResponseWriter, r *http.Request) {
 	stored, err := a.backups().Create(r.Context())
 	if err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "create backup failed: " + err.Error()})
+		a.apiError(w, http.StatusInternalServerError, "create backup failed: "+err.Error())
 		return
 	}
 	auditAction(a, r, "backup.create", "backup", strconv.FormatInt(stored.ID, 10), map[string]any{
@@ -100,7 +57,7 @@ func (a *App) handleAPICreateBackup(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAPIGetBackup(w http.ResponseWriter, r *http.Request, id int64) {
 	rec, err := a.backups().Get(r.Context(), id)
 	if err != nil {
-		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		a.apiError(w, http.StatusNotFound, "not found")
 		return
 	}
 	a.writeJSON(w, http.StatusOK, rec)
@@ -110,10 +67,10 @@ func (a *App) handleAPIDeleteBackup(w http.ResponseWriter, r *http.Request, id i
 	rec, err := a.backups().Delete(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			a.apiError(w, http.StatusNotFound, "not found")
 			return
 		}
-		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "delete failed"})
+		a.apiError(w, http.StatusInternalServerError, "delete failed")
 		return
 	}
 	auditAction(a, r, "backup.delete", "backup", strconv.FormatInt(id, 10), map[string]any{
@@ -125,16 +82,16 @@ func (a *App) handleAPIDeleteBackup(w http.ResponseWriter, r *http.Request, id i
 func (a *App) handleAPIDownloadBackup(w http.ResponseWriter, r *http.Request, id int64) {
 	rec, err := a.backups().Get(r.Context(), id)
 	if err != nil {
-		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		a.apiError(w, http.StatusNotFound, "not found")
 		return
 	}
 	if rec.Storage != "local" || rec.FilePath == "" {
-		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "not a local backup"})
+		a.apiError(w, http.StatusBadRequest, "not a local backup")
 		return
 	}
 	f, err := os.Open(rec.FilePath)
 	if err != nil {
-		a.writeJSON(w, http.StatusGone, map[string]any{"error": "backup file missing on disk"})
+		a.apiError(w, http.StatusGone, "backup file missing on disk")
 		return
 	}
 	defer f.Close()
@@ -156,7 +113,7 @@ func (a *App) handleAPIDownloadBackup(w http.ResponseWriter, r *http.Request, id
 func (a *App) handleAPIRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBackupUploadBytes)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "parse multipart failed: " + err.Error()})
+		a.apiError(w, http.StatusBadRequest, "parse multipart failed: "+err.Error())
 		return
 	}
 	defer func() {
@@ -166,7 +123,7 @@ func (a *App) handleAPIRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}()
 	file, hdr, err := r.FormFile("backup")
 	if err != nil {
-		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing 'backup' form field"})
+		a.apiError(w, http.StatusBadRequest, "missing 'backup' form field")
 		return
 	}
 	defer file.Close()
@@ -178,36 +135,36 @@ func (a *App) handleAPIRestoreBackup(w http.ResponseWriter, r *http.Request) {
 
 	rawTmp, err := os.CreateTemp(stagingDir, "restore-*.upload")
 	if err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "stage upload failed"})
+		a.apiError(w, http.StatusInternalServerError, "stage upload failed")
 		return
 	}
 	rawTmpPath := rawTmp.Name()
 	defer os.Remove(rawTmpPath)
 	if _, err := io.Copy(rawTmp, file); err != nil {
 		_ = rawTmp.Close()
-		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "upload failed: " + err.Error()})
+		a.apiError(w, http.StatusBadRequest, "upload failed: "+err.Error())
 		return
 	}
 	if err := rawTmp.Close(); err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "upload close failed"})
+		a.apiError(w, http.StatusInternalServerError, "upload close failed")
 		return
 	}
 
 	candidate, err := materializeUploadedDB(rawTmpPath, stagingDir, maxBackupRestoreBytes)
 	if err != nil {
-		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decompress failed: " + err.Error()})
+		a.apiError(w, http.StatusBadRequest, "decompress failed: "+err.Error())
 		return
 	}
 	defer os.Remove(candidate)
 
 	if err := validateSQLiteCandidate(candidate); err != nil {
-		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "validation failed: " + err.Error()})
+		a.apiError(w, http.StatusBadRequest, "validation failed: "+err.Error())
 		return
 	}
 
 	pending := a.cfg.DBPath + pendingRestoreSuffix
 	if err := os.Rename(candidate, pending); err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "stage pending failed: " + err.Error()})
+		a.apiError(w, http.StatusInternalServerError, "stage pending failed: "+err.Error())
 		return
 	}
 

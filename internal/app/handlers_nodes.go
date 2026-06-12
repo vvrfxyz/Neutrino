@@ -28,15 +28,13 @@ func defaultString(v string, fallback string) string {
 	return v
 }
 
+// handleAPINodeReport ingests an agent heartbeat/report. Registered as
+// POST-only on both listeners; the method is enforced by the route pattern.
 func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID int64) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	a.ensureServices()
 	// Node-agent control-plane is mTLS only (no bearer tokens).
 	if mtlsID, ok := nodeIDFromMTLS(r); !ok || mtlsID != nodeID {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		a.apiError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -47,7 +45,7 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 	var rep repo.NodeReportInput
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "application/json") {
 		if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 	} else {
@@ -56,7 +54,7 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 	}
 	reportedAt, err := a.nodes().ApplyReport(r.Context(), nodeID, rep)
 	if err != nil {
-		http.Error(w, "apply node report failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "apply node report failed")
 		return
 	}
 	if rep.Metrics != nil {
@@ -74,13 +72,9 @@ func (a *App) handleAPINodeReport(w http.ResponseWriter, r *http.Request, nodeID
 }
 
 func (a *App) handleAPINodeAgentUsers(w http.ResponseWriter, r *http.Request, nodeID int64) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	// Node-agent control-plane is mTLS only (no bearer tokens).
 	if mtlsID, ok := nodeIDFromMTLS(r); !ok || mtlsID != nodeID {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		a.apiError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	// Lifecycle refresh must not request users sync from inside this full
@@ -88,13 +82,13 @@ func (a *App) handleAPINodeAgentUsers(w http.ResponseWriter, r *http.Request, no
 	// through the app's coalesced (unthrottled) sync signal afterwards.
 	lifecycle, err := a.users().RefreshLifecycleStateNoSync(r.Context())
 	if err != nil {
-		http.Error(w, "refresh users failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "refresh users failed")
 		return
 	}
 
 	version, items, err := a.nodes().MaterializeUsersForAgent(r.Context(), nodeID)
 	if err != nil {
-		http.Error(w, "list users failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "list users failed")
 		return
 	}
 	if lifecycle.Changed() {
@@ -108,13 +102,9 @@ func (a *App) handleAPINodeAgentUsers(w http.ResponseWriter, r *http.Request, no
 }
 
 func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nodeID int64) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	// Node-agent control-plane is mTLS only (no bearer tokens).
 	if mtlsID, ok := nodeIDFromMTLS(r); !ok || mtlsID != nodeID {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		a.apiError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if ip := a.clientIPFromRequest(r); ip != "" {
@@ -140,7 +130,7 @@ func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nod
 	for {
 		node, err := a.nodes().Get(r.Context(), nodeID)
 		if err != nil {
-			http.Error(w, "claim failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "claim failed")
 			return
 		}
 		var allowedKinds []string
@@ -149,7 +139,7 @@ func (a *App) handleAPINodeJobsClaim(w http.ResponseWriter, r *http.Request, nod
 		}
 		job, ok, err := a.nodes().ClaimNextJob(r.Context(), nodeID, allowedKinds)
 		if err != nil {
-			http.Error(w, "claim failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "claim failed")
 			return
 		}
 		if ok {
@@ -260,14 +250,21 @@ func managedXrayFailureUsersRepairReason(kind string, result any) (string, bool)
 	return "", false
 }
 
-func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nodeID int64, jobID int64) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+// handleAPINodeJobFinishRoute adapts the {job} path wildcard for the agent
+// mTLS listener's job-finish route.
+func (a *App) handleAPINodeJobFinishRoute(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	jobID, err := parseInt64Path(r.PathValue("job"))
+	if err != nil {
+		a.apiError(w, http.StatusBadRequest, "bad job id")
 		return
 	}
+	a.handleAPINodeJobFinish(w, r, nodeID, jobID)
+}
+
+func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nodeID int64, jobID int64) {
 	// Node-agent control-plane is mTLS only (no bearer tokens).
 	if mtlsID, ok := nodeIDFromMTLS(r); !ok || mtlsID != nodeID {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		a.apiError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	var req struct {
@@ -280,11 +277,11 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 		Attempt        int    `json:"attempt,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Attempt <= 0 {
-		http.Error(w, "attempt required", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "attempt required")
 		return
 	}
 	status := strings.TrimSpace(req.Status)
@@ -311,7 +308,7 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 		// A transient lookup error must not silently route a users_sync finish
 		// through the generic path, skipping applied-version validation and the
 		// delta-ready marker. The agent retries the finish.
-		http.Error(w, "finish failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "finish failed")
 		return
 	}
 	var final string
@@ -327,17 +324,21 @@ func (a *App) handleAPINodeJobFinish(w http.ResponseWriter, r *http.Request, nod
 	}
 	if err != nil {
 		if errors.Is(err, repo.ErrNodeJobNotRunning) {
-			http.Error(w, "job is not running for this attempt", http.StatusConflict)
+			a.apiError(w, http.StatusConflict, "job is not running for this attempt")
 			return
 		}
 		if errors.Is(err, repo.ErrNodeJobInvalidStatus) {
-			http.Error(w, "status must be succeeded or failed", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "status must be succeeded or failed")
 			return
 		}
-		http.Error(w, "finish failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "finish failed")
 		return
 	}
 
+	// Post-finish enrichment (ops cache, probe results, alerts, applied-version
+	// markers) is best-effort: the job's terminal transition above is already
+	// committed, so failures here must not turn the finish into an error —
+	// the reconciler/sweeper converges the derived state on its next pass.
 	job, ok, _ := a.nodes().GetJob(r.Context(), jobID)
 	if ok {
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
@@ -440,7 +441,7 @@ func (a *App) handleAPINodeMetadata(w http.ResponseWriter, r *http.Request, node
 	case http.MethodGet:
 		item, ok, err := a.nodes().GetMetadata(r.Context(), nodeID)
 		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		if !ok {
@@ -453,26 +454,23 @@ func (a *App) handleAPINodeMetadata(w http.ResponseWriter, r *http.Request, node
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&in); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		if err := a.nodes().UpsertMetadata(r.Context(), nodeID, in); err != nil {
-			http.Error(w, "metadata update failed", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "metadata update failed")
 			return
 		}
+		// Best-effort ops-cache refresh and re-read for the response.
 		_ = a.ops().RefreshNode(r.Context(), nodeID)
 		item, _, _ := a.nodes().GetMetadata(r.Context(), nodeID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
 func (a *App) handleAPINodeProbes(w http.ResponseWriter, r *http.Request, nodeID int64) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	var req struct {
 		Kind string `json:"kind"`
 		probe.Payload
@@ -480,18 +478,18 @@ func (a *App) handleAPINodeProbes(w http.ResponseWriter, r *http.Request, nodeID
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	kind := probe.NormalizeKind(req.Kind)
 	if err := probe.Validate(kind, req.Payload); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	body, _ := json.Marshal(req.Payload)
 	jobID, enqueued, err := a.nodes().EnqueueProbeJob(r.Context(), nodeID, kind, string(body), probeTimeoutSec(req.Payload.TimeoutMS), probe.CorrelationID(kind, req.Payload))
 	if err != nil {
-		http.Error(w, "enqueue probe failed", http.StatusBadRequest)
+		a.apiError(w, http.StatusBadRequest, "enqueue probe failed")
 		return
 	}
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "job_id": jobID, "enqueued": enqueued})
@@ -514,278 +512,184 @@ func probeTimeoutSec(timeoutMS int) int {
 	return sec
 }
 
-func (a *App) handleAPINodeByIDV1Extended(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
-	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.NotFound(w, r)
-		return
-	}
-	nodeID, err := parseInt64Path(parts[0])
-	if err != nil {
-		http.Error(w, "bad node id", http.StatusBadRequest)
-		return
-	}
-
-	// Public enrollment (no auth, validated by enroll_code).
-	if len(parts) == 2 && parts[1] == "enroll" && r.Method == http.MethodPost {
-		a.handleAPINodeEnroll(w, r, nodeID)
-		return
-	}
-
-	// Admin actions.
-	if len(parts) == 3 && parts[1] == "cert" && parts[2] == "revoke" && r.Method == http.MethodPost {
-		a.handleAPINodeCertRevoke(w, r, nodeID)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "enable" && r.Method == http.MethodPost {
-		if err := a.nodes().SetEnabled(r.Context(), nodeID, true); err != nil {
-			a.writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		auditAction(a, r, "node.enable", "node", fmt.Sprintf("%d", nodeID), nil)
-		_ = a.ops().RefreshNode(r.Context(), nodeID)
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
-	}
-	if len(parts) == 2 && parts[1] == "disable" && r.Method == http.MethodPost {
-		if err := a.nodes().SetEnabled(r.Context(), nodeID, false); err != nil {
-			a.writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		auditAction(a, r, "node.disable", "node", fmt.Sprintf("%d", nodeID), nil)
-		_ = a.ops().RefreshNode(r.Context(), nodeID)
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
-	}
-
-	// Existing routes.
-	if len(parts) == 2 && parts[1] == "report" {
-		a.handleAPINodeReport(w, r, nodeID)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "jobs" && r.Method == http.MethodGet {
-		limit := 50
-		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-			if parsed, err := parseInt64Path(v); err == nil {
-				limit = int(parsed)
-			}
-		}
-		items, err := a.nodes().ListJobs(r.Context(), nodeID, limit)
-		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"count": len(items), "items": items})
-		return
-	}
-	if len(parts) == 2 && parts[1] == "metadata" {
-		a.handleAPINodeMetadata(w, r, nodeID)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "probes" {
-		a.handleAPINodeProbes(w, r, nodeID)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "probe-results" && r.Method == http.MethodGet {
-		items, err := a.nodes().ListProbeResults(r.Context(), nodeID, 100)
-		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "count": len(items), "items": items})
-		return
-	}
-	if len(parts) == 2 && parts[1] == "metrics" && r.Method == http.MethodGet {
-		rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
-		step := strings.TrimSpace(r.URL.Query().Get("step"))
-		items, err := a.nodes().ListMetricSeries(r.Context(), nodeID, rangeName, step, time.Now().UTC())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{
-			"node_id": nodeID,
-			"range":   defaultString(rangeName, "1h"),
-			"step":    defaultString(step, "raw"),
-			"count":   len(items),
-			"items":   items,
-		})
-		return
-	}
-	if len(parts) == 3 && parts[1] == "metric-details" && parts[2] == "latest" && r.Method == http.MethodGet {
-		item, ok, err := a.nodes().GetLatestMetricDetails(r.Context(), nodeID)
-		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		if !ok {
-			a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": nil})
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": item})
-		return
-	}
-	if len(parts) == 3 && parts[1] == "static-facts" && parts[2] == "latest" && r.Method == http.MethodGet {
-		item, ok, err := a.nodes().GetLatestStaticFacts(r.Context(), nodeID)
-		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		if !ok {
-			a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": nil})
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": item})
-		return
-	}
-	if len(parts) == 3 && parts[1] == "static-facts" && parts[2] == "history" && r.Method == http.MethodGet {
-		items, err := a.nodes().ListStaticFacts(r.Context(), nodeID, 100)
-		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "count": len(items), "items": items})
-		return
-	}
-	if len(parts) >= 2 && parts[1] == "agent" {
-		if len(parts) == 3 && parts[2] == "users" {
-			a.handleAPINodeAgentUsers(w, r, nodeID)
-			return
-		}
-	}
-
-	// Managed config deployment endpoints (panel-managed config -> desired state + job).
-	if len(parts) == 4 && parts[1] == "managed" && parts[2] == "xray" && parts[3] == "preview" && r.Method == http.MethodPost {
-		var req struct {
-			// Optional draft extra_json so the UI can preview unsaved edits.
-			ExtraJSON *string `json:"extra_json"`
-		}
-		body, err := readAllLimit(r.Body, 256*1024)
-		if err != nil {
-			http.Error(w, "invalid body", http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(string(body)) != "" {
-			dec := json.NewDecoder(bytes.NewReader(body))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&req); err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-		}
-		preview, err := a.nodes().PreviewManagedXray(r.Context(), nodeID, req.ExtraJSON)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, repo.ErrNodeNotFound) {
-				status = http.StatusNotFound
-			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || errors.Is(err, service.ErrNodeNotManaged) || errors.Is(err, service.ErrNodeCoreTypeNotXray) {
-				status = http.StatusBadRequest
-			}
-			http.Error(w, err.Error(), status)
-			return
-		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "preview": string(preview)})
-		return
-	}
-	if len(parts) == 4 && parts[1] == "managed" && parts[2] == "xray" && parts[3] == "deploy" && r.Method == http.MethodPost {
-		result, err := a.nodes().DeployManagedXray(r.Context(), nodeID)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, repo.ErrNodeNotFound) {
-				status = http.StatusNotFound
-			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || errors.Is(err, service.ErrNodeNotManaged) || errors.Is(err, service.ErrNodeCoreTypeNotXray) {
-				status = http.StatusBadRequest
-			}
-			http.Error(w, err.Error(), status)
-			return
-		}
-		auditAction(a, r, "node.xray.deploy", "node", fmt.Sprintf("%d", nodeID), map[string]any{"desired_version": result.DesiredVersion, "job_id": result.JobID, "enqueued": result.Enqueued})
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued, "desired_version": result.DesiredVersion})
-		return
-	}
-	if len(parts) == 4 && parts[1] == "managed" && parts[2] == "xray" && parts[3] == "rollback" && r.Method == http.MethodPost {
-		var req struct {
-			BackupName string `json:"backup_name"`
-			// Backward-compat: accept backup_path but only use its basename.
-			BackupPath string `json:"backup_path"`
-		}
-		body, err := readAllLimit(r.Body, 64*1024)
-		if err != nil {
-			http.Error(w, "invalid body", http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(string(body)) != "" {
-			dec := json.NewDecoder(bytes.NewReader(body))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&req); err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-		}
-		backupName := strings.TrimSpace(req.BackupName)
-		if backupName == "" && strings.TrimSpace(req.BackupPath) != "" {
-			backupName = strings.TrimSpace(filepath.Base(req.BackupPath))
-		}
-		result, err := a.nodes().RollbackManagedXray(r.Context(), nodeID, backupName)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, repo.ErrNodeNotFound) {
-				status = http.StatusNotFound
-			} else if errors.Is(err, service.ErrInvalidManagedXrayConfig) || errors.Is(err, service.ErrNodeNotManaged) || errors.Is(err, service.ErrNodeCoreTypeNotXray) {
-				status = http.StatusBadRequest
-			}
-			http.Error(w, err.Error(), status)
-			return
-		}
-		auditAction(a, r, "node.xray.rollback", "node", fmt.Sprintf("%d", nodeID), map[string]any{"job_id": result.JobID, "enqueued": result.Enqueued})
-		a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued})
-		return
-	}
-
-	// Fall back to original handler for basic CRUD
-	a.handleAPINodeByIDV1(w, r)
+func (a *App) handleAPINodeEnable(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	a.setNodeEnabled(w, r, nodeID, true)
 }
 
-// handleAgentNodeRoutes is served on the dedicated agent mTLS listener. Keep this surface area minimal.
-func (a *App) handleAgentNodeRoutes(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
-	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
-	if len(parts) < 2 || parts[0] == "" {
-		http.NotFound(w, r)
-		return
-	}
-	nodeID, err := parseInt64Path(parts[0])
-	if err != nil || nodeID <= 0 {
-		http.Error(w, "bad node id", http.StatusBadRequest)
-		return
-	}
+func (a *App) handleAPINodeDisable(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	a.setNodeEnabled(w, r, nodeID, false)
+}
 
-	if len(parts) == 2 && parts[1] == "report" {
-		a.handleAPINodeReport(w, r, nodeID)
+func (a *App) setNodeEnabled(w http.ResponseWriter, r *http.Request, nodeID int64, enabled bool) {
+	action := "node.disable"
+	if enabled {
+		action = "node.enable"
+	}
+	if err := a.nodes().SetEnabled(r.Context(), nodeID, enabled); err != nil {
+		// Keep the {"ok":false,"error":...} shape: the nodes SSR page's HTMX
+		// buttons predate the {"error":...} envelope.
+		a.writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	if len(parts) == 3 && parts[1] == "agent" && parts[2] == "users" {
-		a.handleAPINodeAgentUsers(w, r, nodeID)
+	auditAction(a, r, action, "node", fmt.Sprintf("%d", nodeID), nil)
+	_ = a.ops().RefreshNode(r.Context(), nodeID)
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleAPINodeJobsV1(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	limit := 50
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if parsed, err := parseInt64Path(v); err == nil {
+			limit = int(parsed)
+		}
+	}
+	items, err := a.nodes().ListJobs(r.Context(), nodeID, limit)
+	if err != nil {
+		a.apiError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if len(parts) == 3 && parts[1] == "jobs" && parts[2] == "claim" {
-		a.handleAPINodeJobsClaim(w, r, nodeID)
+	a.writeJSON(w, http.StatusOK, map[string]any{"count": len(items), "items": items})
+}
+
+func (a *App) handleAPINodeProbeResultsV1(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	items, err := a.nodes().ListProbeResults(r.Context(), nodeID, 100)
+	if err != nil {
+		a.apiError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if len(parts) == 4 && parts[1] == "jobs" && parts[3] == "finish" {
-		jobID, err := parseInt64Path(parts[2])
-		if err != nil {
-			http.Error(w, "bad job id", http.StatusBadRequest)
+	a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "count": len(items), "items": items})
+}
+
+func (a *App) handleAPINodeMetricsV1(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
+	step := strings.TrimSpace(r.URL.Query().Get("step"))
+	items, err := a.nodes().ListMetricSeries(r.Context(), nodeID, rangeName, step, time.Now().UTC())
+	if err != nil {
+		a.apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"node_id": nodeID,
+		"range":   defaultString(rangeName, "1h"),
+		"step":    defaultString(step, "raw"),
+		"count":   len(items),
+		"items":   items,
+	})
+}
+
+func (a *App) handleAPINodeMetricDetailsLatestV1(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	item, ok, err := a.nodes().GetLatestMetricDetails(r.Context(), nodeID)
+	if err != nil {
+		a.apiError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if !ok {
+		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": nil})
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": item})
+}
+
+func (a *App) handleAPINodeStaticFactsLatestV1(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	item, ok, err := a.nodes().GetLatestStaticFacts(r.Context(), nodeID)
+	if err != nil {
+		a.apiError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if !ok {
+		a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": nil})
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "item": item})
+}
+
+func (a *App) handleAPINodeStaticFactsHistoryV1(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	items, err := a.nodes().ListStaticFacts(r.Context(), nodeID, 100)
+	if err != nil {
+		a.apiError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "count": len(items), "items": items})
+}
+
+// managedXrayErrorStatus maps managed-xray service errors to HTTP status.
+func managedXrayErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, repo.ErrNodeNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, service.ErrInvalidManagedXrayConfig),
+		errors.Is(err, service.ErrNodeNotManaged),
+		errors.Is(err, service.ErrNodeCoreTypeNotXray):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func (a *App) handleAPINodeManagedXrayPreview(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	var req struct {
+		// Optional draft extra_json so the UI can preview unsaved edits.
+		ExtraJSON *string `json:"extra_json"`
+	}
+	body, err := readAllLimit(r.Body, 256*1024)
+	if err != nil {
+		a.apiError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(string(body)) != "" {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		a.handleAPINodeJobFinish(w, r, nodeID, jobID)
+	}
+	preview, err := a.nodes().PreviewManagedXray(r.Context(), nodeID, req.ExtraJSON)
+	if err != nil {
+		a.apiError(w, managedXrayErrorStatus(err), err.Error())
 		return
 	}
-	if len(parts) == 3 && parts[1] == "cert" && parts[2] == "renew" {
-		a.handleAPINodeCertRenew(w, r, nodeID)
-		return
-	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "preview": string(preview)})
+}
 
-	http.NotFound(w, r)
+func (a *App) handleAPINodeManagedXrayDeploy(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	result, err := a.nodes().DeployManagedXray(r.Context(), nodeID)
+	if err != nil {
+		a.apiError(w, managedXrayErrorStatus(err), err.Error())
+		return
+	}
+	auditAction(a, r, "node.xray.deploy", "node", fmt.Sprintf("%d", nodeID), map[string]any{"desired_version": result.DesiredVersion, "job_id": result.JobID, "enqueued": result.Enqueued})
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued, "desired_version": result.DesiredVersion})
+}
+
+func (a *App) handleAPINodeManagedXrayRollback(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	var req struct {
+		BackupName string `json:"backup_name"`
+		// Backward-compat: accept backup_path but only use its basename.
+		BackupPath string `json:"backup_path"`
+	}
+	body, err := readAllLimit(r.Body, 64*1024)
+	if err != nil {
+		a.apiError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(string(body)) != "" {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			a.apiError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+	}
+	backupName := strings.TrimSpace(req.BackupName)
+	if backupName == "" && strings.TrimSpace(req.BackupPath) != "" {
+		backupName = strings.TrimSpace(filepath.Base(req.BackupPath))
+	}
+	result, err := a.nodes().RollbackManagedXray(r.Context(), nodeID, backupName)
+	if err != nil {
+		a.apiError(w, managedXrayErrorStatus(err), err.Error())
+		return
+	}
+	auditAction(a, r, "node.xray.rollback", "node", fmt.Sprintf("%d", nodeID), map[string]any{"job_id": result.JobID, "enqueued": result.Enqueued})
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job_id": result.JobID, "enqueued": result.Enqueued})
 }

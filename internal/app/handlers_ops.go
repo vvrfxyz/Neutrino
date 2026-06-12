@@ -9,23 +9,15 @@ import (
 )
 
 func (a *App) handleAPIOpsNodesV1(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	items, err := a.buildOpsNodesItems(r.Context())
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		a.apiError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"count": len(items), "items": items})
 }
 
 func (a *App) handleAPIOpsConfigV1(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	snapshot := a.cfg.OpsSnapshotInterval()
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"ops_snapshot_interval_sec": int(snapshot / time.Second),
@@ -40,7 +32,7 @@ func (a *App) handleAPIOpsAlertsV1(w http.ResponseWriter, r *http.Request) {
 		status := strings.TrimSpace(r.URL.Query().Get("status"))
 		items, err := a.alerts().List(r.Context(), status, 200)
 		if err != nil {
-			http.Error(w, "query failed", http.StatusInternalServerError)
+			a.apiError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"count": len(items), "items": items})
@@ -56,13 +48,13 @@ func (a *App) handleAPIOpsAlertsV1(w http.ResponseWriter, r *http.Request) {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		if strings.TrimSpace(req.Action) == "resolve" {
 			ok, err := a.alerts().Resolve(r.Context(), req.DedupeKey, time.Now().UTC())
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				a.apiError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			a.writeJSON(w, http.StatusOK, map[string]any{"ok": ok})
@@ -70,12 +62,12 @@ func (a *App) handleAPIOpsAlertsV1(w http.ResponseWriter, r *http.Request) {
 		}
 		id, err := a.alerts().Upsert(r.Context(), req.NodeID, req.Kind, req.Severity, req.Message, req.DedupeKey, time.Now().UTC())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			a.apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		a.writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": id})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		a.apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
