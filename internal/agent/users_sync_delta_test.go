@@ -14,7 +14,7 @@ import (
 	"neutrino/internal/usersync"
 )
 
-func newDeltaTestAgent(t *testing.T, xray xrayRuntimeClient) *Agent {
+func newDeltaTestAgent(t *testing.T, xray RuntimeClient) *Agent {
 	t.Helper()
 	state := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
 	return &Agent{state: state, xray: xray}
@@ -569,7 +569,7 @@ func TestXrayRuntimeGuardRetriesFailedRestore(t *testing.T) {
 	seedBaseline(t, a, []UserSyncItem{{UserID: 1, Email: "alice@x", Status: "active", UUID: "u1"}})
 
 	g := &xrayRuntimeGuard{agent: a}
-	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+	g.prober, g.canProbe = a.xray.(UptimeProber)
 	ctx := context.Background()
 
 	g.attempt(ctx, "startup")
@@ -601,7 +601,7 @@ func TestXrayRuntimeGuardReaddsUsersAfterRestart(t *testing.T) {
 	seedBaseline(t, a, []UserSyncItem{{UserID: 1, Email: "alice@x", Status: "active", UUID: "u1"}})
 
 	g := &xrayRuntimeGuard{agent: a}
-	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+	g.prober, g.canProbe = a.xray.(UptimeProber)
 	ctx := context.Background()
 
 	g.attempt(ctx, "startup")
@@ -632,7 +632,7 @@ func TestXrayRuntimeGuardIgnoresProbeErrors(t *testing.T) {
 	seedBaseline(t, a, []UserSyncItem{{UserID: 1, Email: "alice@x", Status: "active", UUID: "u1"}})
 
 	g := &xrayRuntimeGuard{agent: a}
-	g.prober, g.canProbe = a.xray.(xrayUptimeProber)
+	g.prober, g.canProbe = a.xray.(UptimeProber)
 	ctx := context.Background()
 
 	g.attempt(ctx, "startup")
