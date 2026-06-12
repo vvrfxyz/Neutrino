@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -32,7 +33,44 @@ func (a *Agent) bootstrapXrayConfigIfMissing(ctx context.Context) {
 		return
 	}
 
-	rendered := os.Expand(tpl, func(k string) string {
+	rendered, err := a.renderBootstrapTemplate()
+	if err != nil {
+		log.Printf("warn: render bootstrap xray config failed: %v", err)
+		return
+	}
+	b := []byte(rendered)
+	if !json.Valid(b) {
+		log.Printf("warn: bootstrap xray config is not valid json; skipping")
+		return
+	}
+
+	if err := writeFileAtomic0600(cfgPath, b); err != nil {
+		log.Printf("warn: write bootstrap xray config failed (%s): %v", cfgPath, err)
+		return
+	}
+	log.Printf("info: bootstrapped xray config at %s", cfgPath)
+
+	// Best-effort restart so xray picks up the new config. Ignore errors: xray container might not exist yet.
+	if len(a.xrayReloadArgs) > 0 {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		reloadCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		defer cancel()
+		if err := runArgs(reloadCtx, expandArgs(a.xrayReloadArgs, cfgPath, cfgPath), cfgPath, cfgPath); err != nil {
+			log.Printf("warn: xray reload after bootstrap failed (args=%v): %v", a.xrayReloadArgs, err)
+		}
+	}
+}
+
+// renderBootstrapTemplate renders the embedded template with the bootstrap
+// precedence: env (non-placeholder) > agent-local fallbacks > fixed defaults.
+func (a *Agent) renderBootstrapTemplate() (string, error) {
+	tpl := strings.TrimSpace(templates.XrayConfigTemplate)
+	if tpl == "" {
+		return "", fmt.Errorf("embedded xray template is empty")
+	}
+	return os.Expand(tpl, func(k string) string {
 		// Prefer explicit environment values unless they are placeholders.
 		if v := os.Getenv(k); !isPlaceholder(v) {
 			return v
@@ -57,28 +95,5 @@ func (a *Agent) bootstrapXrayConfigIfMissing(ctx context.Context) {
 			// Last resort: return env (even if placeholder) so failures are explicit.
 			return os.Getenv(k)
 		}
-	})
-	b := []byte(rendered)
-	if !json.Valid(b) {
-		log.Printf("warn: bootstrap xray config is not valid json; skipping")
-		return
-	}
-
-	if err := writeFileAtomic0600(cfgPath, b); err != nil {
-		log.Printf("warn: write bootstrap xray config failed (%s): %v", cfgPath, err)
-		return
-	}
-	log.Printf("info: bootstrapped xray config at %s", cfgPath)
-
-	// Best-effort restart so xray picks up the new config. Ignore errors: xray container might not exist yet.
-	if len(a.xrayReloadArgs) > 0 {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		reloadCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		defer cancel()
-		if err := runArgs(reloadCtx, expandArgs(a.xrayReloadArgs, cfgPath, cfgPath), cfgPath, cfgPath); err != nil {
-			log.Printf("warn: xray reload after bootstrap failed (args=%v): %v", a.xrayReloadArgs, err)
-		}
-	}
+	}), nil
 }
