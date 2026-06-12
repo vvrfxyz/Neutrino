@@ -73,20 +73,25 @@ func (r LifecycleRefreshResult) Changed() bool {
 	return r.Expired > 0 || r.Reactivated > 0
 }
 
-// RefreshLifecycleStateNoSync runs the lifecycle sweeps without requesting
-// any users sync. Sync-preparation paths use it so the sweeps (which open
-// their own transactions) never run inside a prepare transaction; callers
-// must check Changed() and schedule a global reconcile themselves.
-func (s *UserService) RefreshLifecycleStateNoSync(ctx context.Context) (LifecycleRefreshResult, error) {
-	expired, err := s.store.SweepExpiredUsers(ctx)
+// refreshLifecycleNoSync runs the global lifecycle sweeps (expiry, quota
+// windows) without requesting any users sync. Sync-preparation paths use it
+// so the sweeps (which open their own transactions) never run inside a
+// prepare transaction; callers must check Changed() and schedule a global
+// reconcile themselves. Shared by UserService and NodeService.
+func refreshLifecycleNoSync(ctx context.Context, store *repo.Store) (LifecycleRefreshResult, error) {
+	expired, err := store.SweepExpiredUsers(ctx)
 	if err != nil {
 		return LifecycleRefreshResult{}, err
 	}
-	reactivated, err := s.store.SweepQuotaWindows(ctx)
+	reactivated, err := store.SweepQuotaWindows(ctx)
 	if err != nil {
 		return LifecycleRefreshResult{Expired: expired}, err
 	}
 	return LifecycleRefreshResult{Expired: expired, Reactivated: reactivated}, nil
+}
+
+func (s *UserService) RefreshLifecycleStateNoSync(ctx context.Context) (LifecycleRefreshResult, error) {
+	return refreshLifecycleNoSync(ctx, s.store)
 }
 
 func (s *UserService) List(ctx context.Context) ([]repo.User, error) {

@@ -281,19 +281,12 @@ func (s *NodeService) FinishUsersSyncJob(ctx context.Context, nodeID, jobID int6
 	return s.store.FinishUsersSyncJobForNode(ctx, nodeID, jobID, in, appliedVersion)
 }
 
-// refreshLifecycleNoSync runs the global lifecycle sweeps (expiry, quota
-// windows) without requesting any sync. It must run before — never inside —
-// the users-sync preparation transaction, and once per reconcile cycle.
+// refreshLifecycleNoSync runs the shared global lifecycle sweeps (see
+// users.go). It must run before — never inside — the users-sync preparation
+// transaction, and once per reconcile cycle.
 func (s *NodeService) refreshLifecycleNoSync(ctx context.Context) (changed bool, err error) {
-	expired, err := s.store.SweepExpiredUsers(ctx)
-	if err != nil {
-		return false, err
-	}
-	reactivated, err := s.store.SweepQuotaWindows(ctx)
-	if err != nil {
-		return expired > 0, err
-	}
-	return expired > 0 || reactivated > 0, nil
+	res, err := refreshLifecycleNoSync(ctx, s.store)
+	return res.Changed(), err
 }
 
 func (s *NodeService) EnqueueUsersSyncForEnabledNodes(ctx context.Context) error {
