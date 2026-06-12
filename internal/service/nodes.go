@@ -8,12 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"neutrino/internal/repo"
 	"neutrino/internal/templates"
 	"neutrino/internal/usersync"
+	"neutrino/internal/xraycfg"
 )
 
 type NodeService struct {
@@ -36,12 +39,19 @@ type NodeExtraXray struct {
 	Template       string            `json:"template"`
 	Vars           map[string]string `json:"vars"`
 	RollbackOnFail bool              `json:"rollback_on_fail"`
+	// CustomOutbounds/CustomRoutes are the structured, allowlisted config
+	// extension (module 4). Validated by xraycfg on save and again on the
+	// agent; merged into the rendered config after var expansion.
+	CustomOutbounds []xraycfg.Outbound `json:"custom_outbounds,omitempty"`
+	CustomRoutes    []xraycfg.Route    `json:"custom_routes,omitempty"`
 }
 
 type XrayApplyPayload struct {
-	Template       string            `json:"template"`
-	Vars           map[string]string `json:"vars"`
-	RollbackOnFail bool              `json:"rollback_on_fail,omitempty"`
+	Template        string             `json:"template"`
+	Vars            map[string]string  `json:"vars"`
+	RollbackOnFail  bool               `json:"rollback_on_fail,omitempty"`
+	CustomOutbounds []xraycfg.Outbound `json:"custom_outbounds,omitempty"`
+	CustomRoutes    []xraycfg.Route    `json:"custom_routes,omitempty"`
 }
 
 type XrayRollbackPayload struct {
@@ -119,6 +129,11 @@ func ParseNodeExtra(raw string) (NodeExtra, error) {
 	if err := json.Unmarshal([]byte(raw), &ex); err != nil {
 		return NodeExtra{}, err
 	}
+	if ex.Xray != nil {
+		if err := xraycfg.Validate(ex.Xray.CustomOutbounds, ex.Xray.CustomRoutes); err != nil {
+			return NodeExtra{}, err
+		}
+	}
 	return ex, nil
 }
 
@@ -147,13 +162,83 @@ func BuildManagedXrayApplyPayload(node repo.Node) (string, error) {
 	if tpl == "" {
 		tpl = templates.XrayConfigTemplate
 	}
+	// With customs present, brand the template with the capability marker:
+	// agents that understand custom config strip it before JSON validation;
+	// older agents fail the apply loudly instead of silently shipping a
+	// config with the custom routes missing.
+	if len(cfg.CustomOutbounds) > 0 || len(cfg.CustomRoutes) > 0 {
+		tpl = strings.TrimRight(tpl, "\n") + "\n" + xraycfg.Marker + "\n"
+	}
 	p := XrayApplyPayload{
-		Template:       tpl,
-		Vars:           cfg.Vars,
-		RollbackOnFail: cfg.RollbackOnFail,
+		Template:        tpl,
+		Vars:            cfg.Vars,
+		RollbackOnFail:  cfg.RollbackOnFail,
+		CustomOutbounds: cfg.CustomOutbounds,
+		CustomRoutes:    cfg.CustomRoutes,
 	}
 	b, _ := json.Marshal(p)
 	return string(b), nil
+}
+
+// PreviewManagedXrayConfig renders the final config the agent would install,
+// for display before deploy. Panel-side vars are applied; node-local vars stay
+// visible as ${VAR} placeholders — the panel never knows (and must never
+// fabricate) node secrets. Numeric placeholders the template needs for JSON
+// validity get the same fixed defaults the agent falls back to.
+func PreviewManagedXrayConfig(node repo.Node) ([]byte, error) {
+	ex, err := ParseNodeExtra(node.ExtraJSON)
+	if err != nil {
+		return nil, fmt.Errorf("%w: extra_json: %w", ErrInvalidManagedXrayConfig, err)
+	}
+	cfg := ex.Xray
+	if cfg == nil {
+		cfg = &NodeExtraXray{RollbackOnFail: true}
+	}
+	tpl := strings.TrimSpace(cfg.Template)
+	if tpl == "" {
+		tpl = templates.XrayConfigTemplate
+	}
+	rendered := os.Expand(tpl, func(k string) string {
+		if cfg.Vars != nil {
+			if v, ok := cfg.Vars[k]; ok {
+				return v
+			}
+		}
+		switch k {
+		case "XRAY_VLESS_PORT":
+			if node.Port > 0 {
+				return strconv.Itoa(node.Port)
+			}
+			return "443"
+		case "XRAY_API_PORT":
+			return "10085"
+		}
+		// Keep the placeholder visible; string positions stay valid JSON.
+		return "${" + k + "}"
+	})
+	raw := []byte(rendered)
+	if stripped, had := xraycfg.StripMarker(rendered); had {
+		raw = []byte(stripped)
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("%w: rendered template is not valid json (unresolved non-string vars?)", ErrInvalidManagedXrayConfig)
+	}
+	merged, err := xraycfg.MergeIntoRendered(raw, cfg.CustomOutbounds, cfg.CustomRoutes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidManagedXrayConfig, err)
+	}
+	if len(cfg.CustomOutbounds) == 0 && len(cfg.CustomRoutes) == 0 {
+		// Normalize formatting so the preview is stable either way.
+		var v any
+		dec := json.NewDecoder(strings.NewReader(string(merged)))
+		dec.UseNumber()
+		if err := dec.Decode(&v); err == nil {
+			if b, err := json.MarshalIndent(v, "", "  "); err == nil {
+				return b, nil
+			}
+		}
+	}
+	return merged, nil
 }
 
 func BuildManagedXrayRollbackPayload(node repo.Node, backupName string) (string, error) {
@@ -467,6 +552,25 @@ func (s *NodeService) ReconcileManagedXray(ctx context.Context) error {
 		log.Printf("xray reconcile node=%d desired=%s job_id=%d enqueued=%t", n.ID, ds.DesiredVersion, jobID, enqueued)
 	}
 	return nil
+}
+
+// PreviewManagedXray validates and renders the deploy preview for a node,
+// optionally against a draft extra_json that has not been saved yet.
+func (s *NodeService) PreviewManagedXray(ctx context.Context, nodeID int64, draftExtraJSON *string) ([]byte, error) {
+	node, err := s.Get(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if !node.Managed {
+		return nil, ErrNodeNotManaged
+	}
+	if node.CoreType != "xray" {
+		return nil, ErrNodeCoreTypeNotXray
+	}
+	if draftExtraJSON != nil {
+		node.ExtraJSON = *draftExtraJSON
+	}
+	return PreviewManagedXrayConfig(node)
 }
 
 func (s *NodeService) DeployManagedXray(ctx context.Context, nodeID int64) (ManagedXrayResult, error) {
