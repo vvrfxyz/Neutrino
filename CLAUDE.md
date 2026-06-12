@@ -21,7 +21,7 @@ cd frontend/ops-demo && npm ci && npm test   # vitest for the /ops-v2 preview SP
 cd frontend/ops-demo && npm run build        # builds dist/ (required before ENABLE_OPS_V2=true serves /ops-v2)
 ```
 
-CI runs `go vet` + `go test ./...` (in the required `build` check) and the Playwright suite (in the `e2e` check); the `frontend/ops-demo` vitest suite is still local-only. Run `rtk go test ./...` before pushing anyway — CI feedback is slower than local.
+CI runs `go vet` + `go test ./...` inside the required `build` check, but NOT the Playwright e2e suite or the ops-demo vitest suite — run `npm run test:e2e` locally before pushing UI changes (the first-ever Linux e2e run caught a real font-metric layout overlap).
 
 ## Architecture Overview
 
@@ -72,7 +72,7 @@ Node deletion is staged: enabled → disable + drain `users_sync` → actual DB 
 - Unit tests are colocated with packages.
 - `tests/functional` boots the real app (HTTP httptest + a second mTLS httptest server with a generated CA and per-node client certs). Coverage: user lifecycle, traffic endpoints, usage idempotency + mTLS node-identity override, disabled-node drain semantics, managed-node job ordering, subscription failure modes/headers/UA detection, backups + restore staging + `ApplyPendingRestore`, agent cert renew hot-swap, `/api/v1/stream` snapshot + WS/poll payload parity, sidebar HTMX invariants.
 - `tests/e2e/admin-click.spec.ts` (Playwright, chromium) click-drives login/sidebar, users workflow, nodes + deploy + managed-xray, traffic/ops/enforcements.
-- CI: the `build` check runs `go vet` + `go test ./...` + shellcheck; the `e2e` check runs Playwright (chromium). The `frontend/ops-demo` vitest suite does not run in CI.
+- CI: the `build` check runs `go vet` + `go test ./...` + shellcheck. Playwright and the `frontend/ops-demo` vitest suite do not run in CI.
 
 ## Important Files
 

@@ -316,7 +316,7 @@ scripts/release/deploy_node_remote.sh <TAG>
 
 `main` 分支保护规则：
 
-- 必须通过状态检查：`build`、`docker`、`e2e`
+- 必须通过状态检查：`build`、`docker`
 - 合入前必须与最新 `main` 同步（strict）
 - 要求线性历史
 - 要求 conversation resolved
